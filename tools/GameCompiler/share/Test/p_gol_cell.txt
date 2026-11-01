@@ -1,0 +1,106 @@
+# Game of life cell
+
+[General]
+Type = PRJ_RECT
+Colour1 = 255,0,0
+Colour2 = 0,255,0
+Colour3 = 0,0,255
+Width = 16
+Height = 16
+Gravity = 0
+Dampening = 0.1
+ActionNum = 2
+
+[PlayerHit]
+Type = GoThrough
+ChangeTargetSpeed = 1,0,0,-1
+#DiffTargetSpeed = 0,-2
+
+[Hit]
+Type = GoThrough
+
+[Action1]
+Event = CellHit
+Type = Disappear2
+
+[CellHit]
+Type = ProjHit
+Target = p_gol_cell.txt
+
+[FrameTime]
+Type = Timer
+Delay = 1
+Repeat = false
+UseGlobalTime = true
+
+[Action2]
+Event = FrameTime
+Type = Disappear2
+Projectiles = true
+Additional = SpawnTL
+
+[Action2.Projectile]
+Projectile = p_gol_framestep_alife.txt
+
+[SpawnTL]
+Projectiles = true
+Additional = SpawnTM
+
+[SpawnTM]
+Projectiles = true
+Additional = SpawnTR
+
+[SpawnTR]
+Projectiles = true
+Additional = SpawnML
+
+[SpawnML]
+Projectiles = true
+Additional = SpawnMR
+
+[SpawnMR]
+Projectiles = true
+Additional = SpawnBL
+
+[SpawnBL]
+Projectiles = true
+Additional = SpawnBM
+
+[SpawnBM]
+Projectiles = true
+Additional = SpawnBR
+
+[SpawnBR]
+Projectiles = true
+
+[SpawnTL.Projectile]
+PosDiff = -16,-16
+Projectile = p_gol_framestep.txt
+
+[SpawnTM.Projectile]
+PosDiff = 0,-16
+Projectile = p_gol_framestep.txt
+
+[SpawnTR.Projectile]
+PosDiff = 16,-16
+Projectile = p_gol_framestep.txt
+
+[SpawnML.Projectile]
+PosDiff = -16,0
+Projectile = p_gol_framestep.txt
+
+[SpawnMR.Projectile]
+PosDiff = 16,0
+Projectile = p_gol_framestep.txt
+
+[SpawnBL.Projectile]
+PosDiff = -16,16
+Projectile = p_gol_framestep.txt
+
+[SpawnBM.Projectile]
+PosDiff = 0,16
+Projectile = p_gol_framestep.txt
+
+[SpawnBR.Projectile]
+PosDiff = 16,16
+Projectile = p_gol_framestep.txt

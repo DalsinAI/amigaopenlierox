@@ -1,0 +1,74 @@
+# Game of life framestep
+# (spawned by cells and will spawn the next frame cells)
+
+[General]
+Type = PRJ_RECT
+Colour1 = 0,255,255,0
+Width = 16
+Height = 16
+Gravity = 0
+ActionNum = 4
+
+[Hit]
+Type = GoThrough
+
+[PlayerHit]
+Type = Nothing
+
+[Action1]
+Event = WaitTimeAlifeCheck
+Type = Disappear2
+
+[WaitTimeAlifeCheck]
+AndEvent = AlifeCheck
+Type = Timer
+Delay = 0.05
+Repeat = false
+
+[AlifeCheck]
+Type = ProjHit
+Target = p_gol_framestep_alife.txt
+
+[Action2]
+Event = WaitTimeOthersCheck
+Type = Disappear2
+
+[WaitTimeOthersCheck]
+AndEvent = OthersCheck
+Type = Timer
+Delay = 0.05
+Repeat = false
+
+[OthersCheck]
+Type = ProjHit
+Target = p_gol_framestep.txt
+
+[Action3]
+Event = TimeRightCellsAmount
+Projectiles = true
+
+[TimeRightCellsAmount]
+AndEvent = RightCellsAmount
+Type = Timer
+Delay = 0.1
+Repeat = false
+
+[RightCellsAmount]
+Type = ProjHit
+Target = p_gol_framestep_alife.txt
+Width = 32
+Height = 32
+MinHitCount = 3
+MaxHitCount = 3
+
+[Action3.Projectile]
+Projectile = p_gol_cell.txt
+
+[Action4]
+Event = EndWaitTime
+Type = Disappear2
+
+[EndWaitTime]
+Type = Timer
+Delay = 0.1
+Repeat = false

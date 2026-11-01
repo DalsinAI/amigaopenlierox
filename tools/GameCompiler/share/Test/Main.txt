@@ -1,0 +1,43 @@
+#####################
+#
+#     Mod Main file
+#
+#      For LieroX
+#
+#####################
+
+
+[General]
+ModName = Test Mod
+
+
+[Weapons]
+NumWeapons = 14
+Weapon1 = w_beamtest1.txt
+Weapon2 = w_beamtest2.txt
+Weapon3 = w_polygontest.txt
+Weapon4 = w_circletest.txt
+Weapon5 = w_gameoflife.txt
+Weapon6 = w_remotebomb.txt
+Weapon7 = w_remotebomb_detonator.txt
+Weapon8 = w_remotebomb_direct.txt
+Weapon9 = w_headingbomb.txt
+Weapon10 = w_seekerbot.txt
+Weapon11 = w_oneremotebomb.txt
+Weapon12 = w_delayedheadingbomb.txt
+Weapon13 = w_blackhole.txt
+Weapon14 = w_forcefield.txt
+
+[NinjaRope]
+RopeLength = 300
+RestLength = 27
+Strength = 4.5
+
+[Worm]
+AngleSpeed = 150
+GroundSpeed = 8
+AirSpeed = 4
+Gravity = 100
+JumpForce = -65
+AirFriction = 0
+GroundFriction = 0.4

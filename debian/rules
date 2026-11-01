@@ -1,0 +1,50 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+export DH_VERBOSE=1
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	cmake . -DVERSION=$(shell ./get_version.sh) \
+		-DCMAKE_C_FLAGS="-g -O3" \
+		-DCMAKE_CXX_FLAGS="-g -O3" \
+		-DHAWKNL_BUILTIN=1 \
+		-DLIBZIP_BUILTIN=0 \
+		-DLIBLUA_BUILTIN=0 \
+		-DBOOST_LINK_STATIC=0 \
+		-DBREAKPAD=Off \
+		-DDEBUG=0 \
+		-DSYSTEM_DATA_DIR=/usr/share/games
+
+override_dh_auto_install:
+	install -d debian/tmp/usr/games/
+	PREFIX=$(CURDIR)/debian/tmp \
+	BIN_DIR=usr/games \
+	SYSTEM_DATA_DIR=usr/share/games \
+		./install.sh
+	find debian/tmp/usr/share/ \
+		-type f \
+		-exec chmod 644 {} \;
+	find debian/tmp/usr/share/games/OpenLieroX/scripts/ \
+		-type f \
+		-exec chmod 755 {} \;
+	find debian/tmp/usr/share/games/OpenLieroX/scripts/ \
+		-type f \
+		\( -name 'dedicated_control_ranking.py' \
+		-o -name 'portalocker.py' \
+		-o -name 'simple_ded_control.php' \
+		-o -name '__init__.py' \
+		-o -name 'available_commands.txt' \)\
+		-exec chmod 644 {} \;
+	find debian/tmp/usr/share/games/OpenLieroX/cfg/ \
+		-name 'dedicated_config*.py' \
+		-exec chmod 755 {} \;
+	dh_auto_install
+
+override_dh_auto_clean:
+	rm -f CMakeCache.txt
+	rm -f Makefile
+	rm -f cmake_install.cmake
+	rm -rf CMakeFiles/
+	dh_auto_clean

@@ -1,0 +1,21 @@
+###################
+# Gun: Dart
+
+
+[General]
+Name = wide laser
+Type = WPN_BEAM
+Recoil = 1
+Recharge = 1
+Drain = 0
+ROF = 0
+
+[Beam]
+Damage = 1
+PlayerDamage = 3
+Colour = 0,255,0,150
+Length = 999999
+InitWidth = 10
+WidthIncrease = 0.5
+DistributeDamageOverWidth = true
+

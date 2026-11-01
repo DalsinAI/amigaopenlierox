@@ -1,0 +1,72 @@
+name: Build Linux bundle
+
+on:
+  pull_request:
+  # Reusable: invoked by release-beta.yml on merges to master.
+  workflow_call:
+
+jobs:
+  build-linux:
+    name: Build Linux-bundle
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          # Drop broken pre-installed third-party apt repos (microsoft/azure); we don't use them.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            build-essential \
+            patchelf \
+            dpkg-dev \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libxml2-dev \
+            libgd-dev \
+            zlib1g-dev \
+            libzip-dev \
+            libx11-dev \
+            libcurl4-openssl-dev \
+            libboost-dev \
+            libopenal-dev \
+            libalut-dev \
+            libvorbis-dev \
+            libyaml-cpp-dev \
+            binutils-dev \
+            libiberty-dev
+
+      - name: Build
+        run: |
+          ./.github/workflows/build-linux.sh
+
+      - name: Package
+        run: ./.github/workflows/package-linux-bundle.sh
+
+      # actions/upload-artifact does not preserve the Unix executable bit, so
+      # we zip the bundle ourselves first (zip stores file permissions) and
+      # upload the single archive. The +x bit on the openlierox binary then
+      # survives the artifact round-trip into the final release asset.
+      - name: Archive bundle (preserves executable bit)
+        id: bundle
+        run: |
+          set -euo pipefail
+          cd distrib
+          dir="$(basename openlierox-*-linux-bundle)"
+          zip -r -y -q "${dir}.zip" "$dir"
+          echo "name=${dir}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload openlierox-linux-bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: distrib/openlierox-*-linux-bundle.zip
+          if-no-files-found: error

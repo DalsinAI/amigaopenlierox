@@ -1,0 +1,64 @@
+name: Build Linux deb
+
+on:
+  pull_request:
+  # Reusable: invoked by release-beta.yml on merges to master.
+  workflow_call:
+
+jobs:
+  build-linux:
+    name: Build Debian/Ubuntu Linux packages
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Debian build scripts
+        run: |
+          # Drop broken pre-installed third-party apt repos (microsoft/azure); we don't use them.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            dpkg-dev \
+            devscripts \
+            equivs
+
+      - name: Install build dependencies
+        run: |
+          mk-build-deps -B
+          sudo apt install -y \
+            ./openlierox-build-deps-depends_*.deb
+
+      # dpkg-buildpackage takes the package version (and thus the .deb
+      # filename) from the top debian/changelog entry, which is pinned to an
+      # old release. Derive it from get_version.sh instead, like every other
+      # package (macOS/wasm/android/linux-bundle). '_' isn't a legal Debian
+      # version character, so map it to '~' (as package-macos.sh does).
+      - name: Set package version from get_version.sh
+        run: |
+          VERSION="$(./get_version.sh | tr '_' '~')"
+          echo "Setting deb version to $VERSION"
+          DEBEMAIL="ci@openlierox.net" DEBFULLNAME="OpenLieroX CI" \
+            dch -b --newversion "$VERSION" --distribution unstable \
+            "Automated build ${VERSION}"
+
+      - name: Build
+        run: |
+          dpkg-buildpackage -us -uc -jauto
+          mv ../openlierox_*.deb ./
+
+      - name: Detect filename
+        id: bundle
+        run: echo "name=$(basename openlierox_*.deb)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: openlierox_*.deb
+          if-no-files-found: error

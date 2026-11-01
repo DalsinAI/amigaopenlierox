@@ -1,0 +1,62 @@
+
+[General]
+Type = PRJ_RECT
+Colour1 = 255,255,255,0
+Width = 200
+Height = 200
+Gravity = 0
+#Dampening = 0.1
+ActionNum = 4
+
+[PlayerHit]
+Type = Nothing
+
+[Hit]
+Type = GoThrough
+
+[Action1]
+Event = SelfHit
+Type = InjureProj
+Damage = 1000
+
+[SelfHit]
+Type = ProjHit
+Target = p_oneremotebomb_init.txt
+SameWormAsProjOwner = true
+TargetTimeIsMore = true
+
+[NotSelfHit]
+Type = ProjHit
+Target = p_oneremotebomb_init.txt
+SameWormAsProjOwner = true
+MinHitCount = 0
+MaxHitCount = 0
+
+[Action2]
+Event = BeginFallback
+Projectiles = true
+
+[BeginFallback]
+Type = Timer
+Delay = 0
+Repeat = false
+AndEvent = NotSelfHit
+
+[Action2.Projectile]
+Projectile = p_remotebomb.txt
+AddParentVel = true
+
+[Action3]
+Type = Disappear2
+Event = WaitTime
+
+[WaitTime]
+Type = Timer
+Delay = 0.2
+
+[Action4]
+Event = Death
+Type = Disappear2
+
+[Death]
+Type = Death
