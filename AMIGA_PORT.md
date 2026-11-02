@@ -1,6 +1,6 @@
 # Amiga port intake: OpenLieroX
 
-- Port Atlas: [g-openlierox](https://www.amigachrome.com/ports/#g-openlierox)
+- Port Atlas: [g-openlierox](https://www.amicradle.com/ports/#g-openlierox)
 - Priority: `P2`
 - Atlas decision: `evaluate`
 - Upstream source: `https://github.com/openlierox/openlierox`
