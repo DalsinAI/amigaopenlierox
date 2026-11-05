@@ -1,0 +1,56 @@
+OpenLieroX for AmigaOS: what is in this drawer, and whose it is
+===============================================================
+
+The program
+-----------
+OpenLieroX is (C) Jason Boettcher 1998-2006 (Liero Xtreme, released under
+a zlib-style licence in 2006) and (C) since 2006 Albert Zeyer, Karel
+Petranek, Martin Griffin, Sergiy Pylypenko, Michal Futer, Daniel Sjoholm
+and the other OpenLieroX authors. It is free software under the GNU
+Library General Public License, version 2 or later: see COPYING.LIB.
+The source is at https://github.com/albertz/openlierox (0.58_rc5); the
+Amiga port's changes are in its git history and in amiga/.
+
+Jason Boettcher's original licence for Liero Xtreme's code (zlib-style):
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+(Liero Xtreme Copyright Jason Boettcher 2002-2006.)
+
+The program is linked with: SDL 2 and sdl12-compat (zlib licence, the
+OpenGPU developer kit), libpng (libpng licence), zlib (zlib licence),
+libxml2 (MIT), and libnix and libstdc++ from the compiler (public domain
+/ GPL with the runtime exception).
+
+The data
+--------
+Everything here comes from OpenLieroX's own repository (share/gamedir),
+as OpenLieroX distributes it with the game, under the same terms:
+
+  data/          the game's graphics, sounds, fonts and menus
+  Classic/       the "Classic" mod that Liero Xtreme came with (enhanced
+                 graphics by Strider, see Classic/gfx/readme.txt)
+  levels/        the levels that come with OpenLieroX
+  skins/         a few of the worm skins that come with OpenLieroX
+  cfg/           the default profiles, weapon restrictions and taunts
+  default.css, default.png
+                 the default style sheet and font
+
+  data/flags/    flag icons from famfamfam.com, public domain
+                 (data/flags/readme.txt)
+
+Left out of the drawer (they stay in the repository): the other mods,
+levels and skins that are drawn after other games, films and characters
+(Zelda, Mario, Naruto, Star Wars, Simpsons and the like), the dedicated
+server's scripts, the server lists, the GeoIP database and the Commander
+Keen tile tables. Mods and levels from the repository, or from the
+OpenLieroX community, can be copied into the drawer and play as they are.

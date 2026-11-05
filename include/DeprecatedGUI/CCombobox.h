@@ -18,16 +18,11 @@
 #define __CCOMBOBOX_H__DEPRECATED_GUI__
 
 #include <list>
-#include <boost/signals2.hpp>
 
 #include "StringUtils.h"
 #include "InputEvents.h"
 #include "DeprecatedGUI/CScrollbar.h"
 #include "DynDraw.h"
-#include "gui/List.h"
-
-class ScriptVar_t;
-struct ScriptVarPtr_t;
 
 namespace DeprecatedGUI {
 
@@ -44,6 +39,7 @@ enum {
 	CBM_GETCOUNT,
 	CBM_GETCURINDEX,
 	CBS_GETCURSINDEX,
+	CBM_GETCURITEM,
     CBS_GETCURNAME,
 	CBM_CLEAR,
 	CBM_SETCURSEL,
@@ -63,22 +59,11 @@ enum  {
 
 
 // Item structure
-struct cb_item_t : GuiListItem {
-	cb_item_t() : iTag(0) {}
-	cb_item_t(const std::string& name) : sName(name), iTag(0) {}
-	
+struct cb_item_t {
 	std::string	sIndex;
 	std::string	sName;
 	SmartPointer<DynDrawIntf> tImage;
 	int iTag;
-	
-	virtual std::string caption() { return sName; }
-	virtual SmartPointer<DynDrawIntf> image() { return tImage; }
-	
-	virtual std::string index() { return sIndex; }
-	virtual int tag() { return iTag; }
-	
-	virtual void setImage(const SmartPointer<DynDrawIntf>& img) { tImage = img; }
 };
 
 
@@ -98,9 +83,9 @@ public:
 		iKeySelectedItem = -1;
 		iSortDirection = SORT_NONE;
 		bUnique = false;
+		bFingerDragged = false;
+		iFingerDraggedPos = 0;
 		iType = wid_Combobox;
-		var = NULL;
-		varPtr = NULL;
 	}
 
 
@@ -108,13 +93,14 @@ private:
 	// Attributes
 
 	// Items
-	GuiList::Pt listBackend;
-	std::list<GuiListItem::Pt> tItems;
+	std::list<cb_item_t> tItems;
 	int 			iSelected;
 	bool			bGotScrollbar;
 	bool			bDropped;
 	bool			bArrowDown;
     bool			bLastDropped;
+	bool			bFingerDragged;
+	int				iFingerDraggedPos;
 	AbsTime			iDropTime;
 	AbsTime			iNow;
 	int				iKeySelectedItem;
@@ -127,16 +113,12 @@ private:
 	// Scrollbar
 	CScrollbar		cScrollbar;
 
-	ScriptVar_t		*var;
-	ScriptVarPtr_t	*varPtr;
-
 private:
-	GuiListItem::Pt getItemRW(int index);
+	cb_item_t* getItemRW(int index);
 	void	Sort(bool ascending);
 	void	Unique();
-	std::list<GuiListItem::Pt>::iterator lowerBound(const GuiListItem::Pt& item, int *index, bool *equal);
-	std::list<GuiListItem::Pt>::iterator upperBound(const GuiListItem::Pt& item, int *index, bool *equal);
-	void	ProcessChangedEvent();
+	std::list<cb_item_t>::iterator lowerBound(const cb_item_t& item, int *index, bool *equal);
+	std::list<cb_item_t>::iterator upperBound(const cb_item_t& item, int *index, bool *equal);
 
 public:
 	// Methods
@@ -155,33 +137,23 @@ public:
 
 	void	Draw(SDL_Surface * bmpDest);
 	
-	uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2);
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param);
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param);
-
-	void	setListBackend(const GuiList::Pt& l) { listBackend = l; }
-	/*
-	 In a perfect world, we would not need this function and it all should
-	 be done automatically (the GuiList automatically pushes the update).
-	 Though, this is easier for now - so now, when you use a list backend
-	 and when it needs an update, you must call this. This will then
-	 clear the current list and just copy everything over from the GuiList.
-	 */
-	void	updateFromListBackend();
+	DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2);
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param);
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param);
 
     void    clear();
 	int		addItem(const std::string& sindex, const std::string& name, const SmartPointer<DynDrawIntf>& img = NULL, int tag = 0);
 	int		addItem(int index, const std::string& sindex, const std::string& name, const SmartPointer<DynDrawIntf>& img = NULL, int tag = 0);
-	const std::list<GuiListItem::Pt>& getItems()	{ return tItems; }
-	const GuiListItem::Pt getItem(int index) const;
-	int getItemIndex(const GuiListItem::Pt& item);	
+	const std::list<cb_item_t>& getItems()	{ return tItems; }
+	const cb_item_t* getItem(int index) const;
+	int getItemIndex(const cb_item_t* item);	
 	int		getItemsCount();
-	const GuiListItem::Pt getItem(const std::string& name) const;
-	const GuiListItem::Pt getSIndexItem(const std::string& sIndex) const;
+	const cb_item_t* getItem(const std::string& name) const;
+	const cb_item_t* getSIndexItem(const std::string& sIndex) const;
 	int getIndexBySIndex(const std::string& szName);
 	int getIndexByName(const std::string& szName);
 	void	setCurItem(int index);
-	void	setCurItem(const GuiListItem::Pt& item);
+	void	setCurItem(const cb_item_t* item);
     void    setCurSIndexItem(const std::string& szString);
     void    setCurItemByName(const std::string& szString);
     bool	selectNext();
@@ -189,20 +161,16 @@ public:
     int		findItem(UnicodeChar startLetter);
 	void	setImage(const SmartPointer<DynDrawIntf>& img, int ItemIndex);
 	int		getSelectedIndex();
-	const GuiListItem::Pt getSelectedItem();
+	const cb_item_t* getSelectedItem();
 	bool	getDropped() { return bDropped; }
 	void	setSorted(int sort_direction);
 	int		getSorted();
 	void	setUnique(bool _u);
 	bool	getUnique();
-	int getItemHeight();
+	int		getItemHeight();
+	int		getItemHeightExpanded();
 	
-	const GuiListItem::Pt getLastItem();
-
-	void	setAttachedVar(ScriptVar_t* v)	{ var = v; }
-	void	setAttachedVar(ScriptVarPtr_t* v)	{ varPtr = v; }
-
-	boost::signals2::signal<void (const GuiListItem::Pt&)> OnChangeSelection;
+	const cb_item_t* getLastItem();
 };
 
 } // namespace DeprecatedGUI

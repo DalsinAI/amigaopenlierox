@@ -72,14 +72,22 @@ void CImage::Change(const SmartPointer<DynDrawIntf>& bmpImg)
 
 /////////////////////
 // This widget is a sendmessage
-uintptr_t CImage::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
+DWORD CImage::SendMessage(int iMsg, DWORD Param1, DWORD Param2)
 {
 	return 0;
 }
 
 int CImage::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 {
-	return isActivationKey(keysym) ? IMG_CLICK : IMG_NONE;
+	if (keysym == SDLK_RETURN ||
+		keysym == SDLK_KP_ENTER ||
+		keysym == SDLK_LALT ||
+		keysym == SDLK_LCTRL ||
+		keysym == SDLK_LSHIFT ||
+		keysym == SDLK_x ||
+		keysym == SDLK_z)
+		return IMG_CLICK;
+	return IMG_NONE;
 }
 
 }; // namespace DeprecatedGUI

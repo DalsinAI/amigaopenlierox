@@ -35,9 +35,6 @@ typedef void CURL;
 //
 void AutoSetupHTTPProxy();
 
-// Make all in-flight transfers abort (or clear the flag); set on shutdown.
-void SetHttpTransfersAborting(bool aborting);
-
 //
 // Classes
 //
@@ -149,7 +146,6 @@ public:
 	void				CancelProcessing();
 	void				ClearReceivedData()			{ Mutex::ScopedLock l(const_cast<Mutex &>(Lock)); Data = ""; }
 	HttpError			GetError() const			{ Mutex::ScopedLock l(const_cast<Mutex &>(Lock)); return Error; }
-	long				GetHTTPStatusCode() const	{ Mutex::ScopedLock l(const_cast<Mutex &>(Lock)); return HTTPStatusCode; }
 	const std::string&	GetData() const				{ Mutex::ScopedLock l(const_cast<Mutex &>(Lock)); return curlThread != NULL ? Empty : Data; }
 	std::string			GetMimeType() const;
 	//const std::string&	GetDataToSend() const		{ Mutex::ScopedLock l(Lock); return DataToSend; }
@@ -186,7 +182,6 @@ private:
 
 	HttpProc_t		ProcessingResult;
 	HttpError		Error;
-	long			HTTPStatusCode;	// HTTP status code of the (final) response, 0 if unavailable
 
 	std::string		Empty; // Returned when Data is being processed
 

@@ -22,7 +22,7 @@
 #include "CServer.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "GfxPrimitives.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "DeprecatedGUI/CBar.h"
 #include "MathLib.h"
 #include "CServerConnection.h"
@@ -33,132 +33,8 @@
 #include "Physics.h"
 #include "WeaponDesc.h"
 #include "Mutex.h"
-#include "game/Game.h"
-#include "gusanos/gusgame.h"
-#include "gusanos/proxy_player.h"
-#include "game/GameMode.h"
-#include "CodeAttributes.h"
-#include "CGameScript.h"
-#ifndef DEDICATED_ONLY
-#include "gusanos/base_animator.h"
-#include "gusanos/animators.h"
-#endif
-#include "gusanos/sprite_set.h"
-#include "gusanos/weapon.h"
-#include "gusanos/weapon_type.h"
-#include "game/ClassInfo.h"
-#include "gusanos/luaapi/classes.h"
-
-
-worm_state_t::worm_state_t() {
-	thisRef.classId = LuaID<worm_state_t>::value;
-	reset();
-}
-
-void worm_state_t::reset() {
-	bShoot = bCarve = bMove = bJump = false;
-}
-
-uint8_t worm_state_t::asInt() const {
-	uint8_t i = 0;
-	if(bShoot) i |= 1;
-	if(bCarve) i |= 2;
-	if(bMove) i |= 4;
-	if(bJump) i |= 8;
-	return i;
-}
-
-void worm_state_t::fromInt(uint8_t i) {
-	bShoot = (i & 1) != 0;
-	bCarve = (i & 2) != 0;
-	bMove = (i & 4) != 0;
-	bJump = (i & 8) != 0;
-}
-
-BaseObject* worm_state_t::parentObject() const {
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if(&w->get()->tState.get() == this)
-			return w->get();
-	}
-	return NULL;
-}
-
-CustomVar* worm_state_t::copy() const { return new worm_state_t(*this); }
-
-bool worm_state_t::operator==(const CustomVar& o) const {
-	const worm_state_t* os = dynamic_cast<const worm_state_t*>(&o);
-	if(!os) return false;
-	return asInt() == os->asInt();
-}
-
-bool worm_state_t::operator<(const CustomVar& o) const {
-	const worm_state_t* os = dynamic_cast<const worm_state_t*>(&o);
-	if(!os) return this < &o;
-	return asInt() < os->asInt();
-}
-
-std::string worm_state_t::toString() const { return to_string<int>(asInt()); }
-bool worm_state_t::fromString(const std::string& str) { fromInt(from_string<int>(str)); return true; }
-
-void worm_state_t::copyFrom(const CustomVar& o) {
-	const worm_state_t* os = dynamic_cast<const worm_state_t*>(&o);
-	assert(os != NULL);
-	*this = *os;
-}
-
-Result worm_state_t::toBytestream( CBytestream* bs, const CustomVar* diffTo) const {
-	bs->writeInt(asInt(), 1);
-	return true;
-}
-
-Result worm_state_t::fromBytestream( CBytestream* bs, bool expectDiffToDefault ) {
-	fromInt(bs->readInt(1));
-	return true;
-}
-
-wpnslot_t::wpnslot_t() {
-	thisRef.classId = LuaID<wpnslot_t>::value;
-}
-
-void wpnslot_t::reset() {
-	*this = wpnslot_t();
-}
-
-const weapon_t* wpnslot_t::weapon() const {
-	if(!game.gameScript()) return NULL;
-	if(!game.gameScript()->isLoaded()) return NULL;
-	if(WeaponId < 0 || WeaponId >= game.gameScript()->GetNumWeapons()) return NULL;
-	return game.gameScript()->GetWeapons() + WeaponId;
-}
-
-BaseObject* wpnslot_t::parentObject() const {
-	for_each_iterator(CWorm*, w, game.worms()) {
-		for(size_t i = 0; i < w->get()->weaponSlots.get().size(); ++i) {
-			const wpnslot_t& slot = w->get()->weaponSlots.get().get(i);
-			if(&slot == this)
-				return w->get();
-		}
-	}
-	return NULL;
-}
-
-std::string wpnslot_t::toString() const {
-	if(!game.gameScript()) return "<gamescript not loaded>";
-	if(!game.gameScript()->isLoaded()) return "<gamescript not loaded>";
-	const weapon_t* wpn = weapon();
-	if(!wpn) return "<weapon " + to_string(WeaponId) + " invalid>";
-	return wpn->Name;
-}
-
-bool wpnslot_t::fromString(const std::string & str) {
-	if(!game.gameScript()) return false;
-	if(!game.gameScript()->isLoaded()) return false;
-	const weapon_t* wpn = game.gameScript()->FindWeapon(str);
-	if(!wpn) return false;
-	reset();
-	WeaponId = int32_t(wpn - game.gameScript()->GetWeapons());
-	return false;
-}
+#include "InputEvents.h"
+#include "Touchscreen.h"
 
 
 
@@ -166,8 +42,7 @@ struct CWorm::SkinDynDrawer : DynDrawIntf {
 	Mutex mutex;
 	CWorm* worm;
 	SkinDynDrawer(CWorm* w) : DynDrawIntf(WORM_SKIN_WIDTH,WORM_SKIN_HEIGHT), worm(w) {}
-	~SkinDynDrawer() {}
-	
+
 	virtual void draw(SDL_Surface* bmpDest, int x, int y) {
 		Mutex::ScopedLock lock(mutex);
 		if(worm) {
@@ -183,50 +58,96 @@ struct CWorm::SkinDynDrawer : DynDrawIntf {
 	}
 };
 
-CWorm::CWorm() :
-	cSparkles(this)
-#ifndef DEDICATED_ONLY
-	,m_fireconeAnimator(NULL), m_animator(NULL)
-#endif
+CWorm::CWorm() : cSparkles(this)
 {
-	thisRef.classId = LuaID<CWorm>::value;
-
 	// set all pointers to NULL
 	m_inputHandler = NULL;
-	m_forceInput = false;
 	cOwner = NULL;
+	tProfile = NULL;
+	pcHookWorm = NULL;
+	cGameScript = NULL;
+	cWeaponRest = NULL;
 	m_type = NULL;
-	m_node = NULL;
-	m_interceptor = NULL;
+	Clear();
+	
+	skinPreviewDrawer = skinPreviewDrawerP = new SkinDynDrawer(this);
+}
 
-	bPrepared = false;
+CWorm::~CWorm() {
+	Shutdown();
+	
+	Mutex::ScopedLock lock(skinPreviewDrawerP->mutex);
+	skinPreviewDrawerP->worm = NULL;
+}
+
+
+///////////////////
+// Clear the worm details
+void CWorm::Clear()
+{
+	bUsed = false;
+	bIsPrepared = false;
 	bSpawnedOnce = false;
-	bCanRespawnNow = false;
 	iID = 0;
 	iTeam = 0;
 	bLocal = false;
 	m_type = PRF_HUMAN;
+	iRanking = 0;
+	iClientID = 0;
+	iClientWormID = 0;
 	cOwner = NULL;
+	bSpectating = false;
+	iAFK = AFK_BACK_ONLINE;
+	sAFKMessage = "";
 
+	iKills = 0;
+	iDeaths = 0;
+	iSuicides = 0;
+	iTeamkills = 0;
+	fDamage = 0.0f;
+
+	health = 100.0f;
+	iLives = 10;
+	bAlive = false;
 	iFaceDirectionSide = DIR_RIGHT;
-	fAngle = 0.f;
-	fAngleSpeed = 0.f;
-	fAimCursorAngle = 0.f;
-	bAimCursorActive = false;
-	fMoveSpeedX = 0.f;
+	fAngle = 0;
+	fAngleSpeed = 0;
+	fMoveSpeedX = 0;
 	fFrame = 0;
 	bDrawMuzzle = false;
-	bVisibleForWorm.write().resize(0);
+	bVisibleForWorm.clear();
+	fVisibilityChangeTime = 0;
 
 	bOnGround = false;
+	vPos = CVec(0,0);
+	vVelocity = CVec(0,0);
+	vFollowPos = CVec(0,0);
+	bFollowOverride = false;
 	fLastUpdateWritten = AbsTime();
+	tLastState = worm_state_t();
 	fLastAngle = -1;
 	iLastCharge = 255;
 	iLastCurWeapon = 255;
+
+	cNinjaRope.Clear();
+	fRopeTime = AbsTime();
+	bRopeDownOnce = false;
+	bRopeDown = false;
+	setSpeedFactor(1);
+	setCanUseNinja(true);
+	setDamageFactor(1);
+	setShieldFactor(1);
+	setCanAirJump(false);
 	fLastAirJumpTime = 0;
-	sLastWeaponHitBy = "";
+	
+	bWeaponsReady = false;
+	iNumWeaponSlots = 2;
+	iCurrentWeapon = 0;
+	bGameReady = false;
 
 	bGotTarget = false;
+	bHooked = false;
+	pcHookWorm = NULL;
 
 	bTagIT = false;
 	fTagTime = 0;
@@ -236,7 +157,23 @@ CWorm::CWorm() :
 
 	fPreLastPosUpdate = fLastPosUpdate = AbsTime();
 
+	//bUsesMouse = false;
 	fLastInputTime = tLX->currentTime;
+
+	//pcViewport = NULL;//.Setup(0,0,640,480);
+	tProfile = NULL;
+
+	cGameScript = NULL;
+	short i;
+	for(i=0;i<NUM_FRAMES;i++)
+		fFrameTimes[i] = AbsTime();
+
+	for(i=0; i<5; i++)
+		tWeapons[i].Weapon = NULL;
+
+	cWeaponRest = NULL;
+	
+	
 
 	bmpGibs = NULL;
 
@@ -247,22 +184,44 @@ CWorm::CWorm() :
 	// Graphics
 	cHealthBar = DeprecatedGUI::CBar(LoadGameImage("data/frontend/worm_health.png", true), 0, 0, 0, 0, DeprecatedGUI::BAR_LEFTTORIGHT);
 	cHealthBar.SetLabelVisible(false);
+	cWeaponBar = DeprecatedGUI::CBar(LoadGameImage("data/frontend/worm_weapon.png", true), 0, 0, 0, 0, DeprecatedGUI::BAR_LEFTTORIGHT, 2, 2);
+	cWeaponBar.SetLabelVisible(false);
 
-	gusSkinVisble = true;
+	bAlreadyKilled = false;
 
+	fLastSimulationTime = tLX->currentTime;
+	fLastCarve = tLX->currentTime;
+	fLastShoot = tLX->currentTime;
+	
+	if(m_inputHandler) {
+		delete m_inputHandler;
+		m_inputHandler = NULL;
+	}
+	
 	cDamageReport.clear();
 
-	skinPreviewDrawer = skinPreviewDrawerP = new SkinDynDrawer(this);
+	iShotCount = 0;
 }
 
-CWorm::~CWorm() {
-	if(bPrepared) Unprepare();
+
+///////////////////
+// Initialize the worm
+void CWorm::Init()
+{
+	// TODO: is this needed?
+	// WARNING: this works only because it does not contain any classes
+	tState = worm_state_t();
+	bVisibleForWorm.clear();
+	fVisibilityChangeTime = 0;
+}
+
+
+///////////////////
+// Shutdown the worm
+void CWorm::Shutdown()
+{
+	Unprepare();
 	FreeGraphics();
-	
-	{
-		Mutex::ScopedLock lock(skinPreviewDrawerP->mutex);
-		skinPreviewDrawerP->worm = NULL;
-	}
 }
 
 
@@ -271,18 +230,6 @@ CWorm::~CWorm() {
 void CWorm::FreeGraphics()
 {
 	bmpGibs = NULL;
-
-#ifndef DEDICATED_ONLY
-	if(m_animator) {
-		delete m_animator;
-		m_animator = 0;
-	}
-	if(m_fireconeAnimator) {
-		delete m_fireconeAnimator;
-		m_fireconeAnimator = 0;
-	}
-	skin = skinMask = NULL;
-#endif
 }
 
 
@@ -290,152 +237,70 @@ void CWorm::FreeGraphics()
 
 ///////////////////
 // Prepare the worm for the game
-void CWorm::Prepare()
+void CWorm::Prepare(bool serverSide)
 {
-	if(game.gameScript() == NULL || !game.gameScript()->isLoaded()) {
-		errors << "CWorm::Prepare " << getID() << ":" << getName() << ": gamescript not loaded" << endl;
-		return;
+	assert(cGameScript);
+
+	if(bIsPrepared) {
+		warnings << "worm " << getID() << ":" << getName() << " was already prepared!" << endl;
 	}
-
-	if(bPrepared) {
-		errors << "CWorm::Prepare " << getID() << ":" << getName() << ": already prepared" << endl;
-		// It is safer to re-prepare the worm now because the earlier Prepare might have been the
-		// wrong one and some things might be update. Re-preparing should always be safe.
-		Unprepare();
-	}
-
-	tState = worm_state_t();
-	bVisibleForWorm.write().resize(0);
-
-	gusSkinVisble = true;
-	bCanRespawnNow = false;
-	bRespawnRequested = false;
-	fTimeofDeath = tLX->currentTime;
 	
+	bVisibleForWorm.clear();
+	fVisibilityChangeTime = 0;
+
 	setTeamkills(0);
 	setSuicides(0);
 	setDeaths(0);
 	
+	setSpeedFactor(1);
 	setCanUseNinja(true);
-	setSpeedFactor(cClient->getGameLobby()[FT_WormSpeedFactor]);
-	setDamageFactor(cClient->getGameLobby()[FT_WormDamageFactor]);
-	setShieldFactor(cClient->getGameLobby()[FT_WormShieldFactor]);
-	setCanAirJump(cClient->getGameLobby()[FT_InstantAirJump]);
+	setDamageFactor(1);
+	setShieldFactor(1);
+	setCanAirJump(false);
+	
+	// Setup the rope
+	cNinjaRope.Setup(cGameScript);
 
-	if(weOwnThis()) {
-		iCurrentWeapon = 0;
-		weaponSlots.write().resize((int)cClient->getGameLobby()[FT_WeaponSlotsNum]);
-		weaponSlots.write().reset();
-		GetRandomWeapons();
-		// weapons should be loaded properly in initWeaponSelection
-	}
+	iCurrentWeapon = 0;
 
 	if(m_inputHandler) {
 		warnings << "WARNING: worm " << getName() << " has already the following input handler set: "; warnings.flush();
 		warnings << m_inputHandler->name(); warnings << endl;
-		m_inputHandler->deleteThis();
+		delete m_inputHandler;
 		m_inputHandler = NULL;
 	}
 
-	m_lastHurt=(0);
-	animate=(false); changing=(false);
-
-#ifndef DEDICATED_ONLY
-	skin = skinMask = NULL;
-	m_animator = m_fireconeAnimator = NULL;
-	m_currentFirecone = NULL;
-	skin = spriteList.load("skin");
-	skinMask = spriteList.load("skin-mask");
-	m_animator = new AnimLoopRight(skin,35);
-
-	m_fireconeTime = 0;
-	m_currentFirecone = NULL;
-	m_fireconeAnimator = NULL;
-	m_fireconeDistance = 0;
-#endif
-
-	m_timeSinceDeath = 0;
-
-	aimRecoilSpeed = 0;
-
-	m_weapons.assign(gusGame.options.maxWeapons, 0 );
-
-	if(gusGame.weaponList.size() > 0)
-		for ( size_t i = 0; i < m_weapons.size(); ++i ) {
-			m_weapons[i] = new Weapon(gusGame.weaponList[rndInt(gusGame.weaponList.size())], this);
-		}
-
-	cNinjaRope.write().gusInit();
-	movingLeft = false;
-	movingRight = false;
-	jumping = false;
-	
-	if(game.isServer()) {
-		// register network worm-node
-		// as client, we do that in Net_cbNodeRequest_Dynamic
-		NetWorm_Init();
-	}
-		
-	if(game.needToCreateOwnWormInputHandlers()) {
-		if(bLocal) {
-			m_inputHandler = m_type->createInputHandler(this);
-			m_inputHandler->assignNetworkRole();
-		} else if(game.needProxyWormInputHandler()) {
-			m_inputHandler = new ProxyPlayer(this);
-		
-			Uint32 uniqueID = 0;
-			do {
-				uniqueID = rndgen();
-			} while(!uniqueID);
-			
-			m_inputHandler->uniqueID = uniqueID;
-			m_inputHandler->assignWorm(this);
-			m_inputHandler->assignNetworkRole();
-		}
+	if(!serverSide && bLocal) {
+		m_inputHandler = m_type->createInputHandler(this);
 	}
 	
-	bAlive = false; // the worm is dead at the beginning, spawn it to make it alive
-	posRecordings.clear();
-
-	bPrepared = true;
-
-	game.onPrepareWorm(this);
+	if(serverSide) {
+		setSpeedFactor(tLXOptions->tGameInfo.features[FT_WormSpeedFactor]);
+		setDamageFactor(tLXOptions->tGameInfo.features[FT_WormDamageFactor]);
+		setShieldFactor(tLXOptions->tGameInfo.features[FT_WormShieldFactor]);
+		setCanAirJump(tLXOptions->tGameInfo.features[FT_InstantAirJump]);
+	}
+	
+	bIsPrepared = true;
 }
 
 void CWorm::Unprepare() {
-	if(!bPrepared) {
-		errors << "CWorm::Unprepare " << getID() << ":" << getName() << ": not prepared" << endl;
-		return;
-	}
-
-	bAlive = false;
-	health = 0.f;
-	bWeaponsReady = false;
-	setLobbyReady( false );
-	
+	setGameReady(false);
 	setTagIT(false);
 	setTagTime(TimeDiff(0));
-
-	resetAngleAndDir();
-
-	bVisibleForWorm.write().resize(0);
+	bVisibleForWorm.clear();
+	fVisibilityChangeTime = 0;
 	
 	if(m_inputHandler) {
-		m_inputHandler->deleteThis();
+		if(!bLocal) {
+			warnings << "WARNING: the following input handler was set for the non-local worm " << getName() << ": "; warnings.flush();
+			warnings << m_inputHandler->name() << endl;
+		}
+		delete m_inputHandler;
 		m_inputHandler = NULL;
 	}
-	
-	for ( size_t i = 0; i < m_weapons.size(); ++i) {
-		luaDelete(m_weapons[i]);
-		m_weapons[i] = 0;
-	}
-
-	NetWorm_Shutdown();
-	FreeGraphics();
-
-	bPrepared = false;
-
-	game.onUnprepareWorm(this);
+		
+	bIsPrepared = false;
 }
 
 void CWorm::StartGame() {
@@ -460,110 +325,89 @@ WormType* WormType::fromInt(int type) {
 
 void CWorm::getInput() {
 	if(!bLocal) {
-		warnings << "CWorm::getInput: called getInput() on non-local worm " << getName() << endl;
+		warnings << "WARNING: called getInput() on non-local worm " << getName() << endl;
 		return;
 	}
 	
-	if(m_forceInput) {
-		// Test hook: apply the fixed input instead of running the handler.
-		worm_state_t& ws = tState.write();
-		ws.bMove = m_forcedMove;
-		ws.bShoot = m_forcedShoot;
-		ws.bJump = m_forcedJump;
-		ws.bCarve = m_forcedCarve;
-		return;
-	}
-
 	if(!m_inputHandler) {
-		warnings << "CWorm::getInput: input handler not set for worm " << getName() << ", cannot get input" << endl;
+		warnings << "WARNING: input handler not set for worm " << getName() << ", cannot get input" << endl;
 		return;
 	}
-
+	
 	m_inputHandler->getInput();
-}
-
-void CWorm::setForcedInput(bool move, bool shoot, bool jump, bool carve) {
-	m_forceInput = true;
-	m_forcedMove = move;
-	m_forcedShoot = shoot;
-	m_forcedJump = jump;
-	m_forcedCarve = carve;
 }
 
 void CWorm::clearInput() {
 	fLastInputTime = GetPhysicsTime();
 	
 	// Clear the state
-	tState.write().reset();
+	tState.bCarve = false;
+	tState.bMove  = false;
+	tState.bShoot = false;
+	tState.bJump  = false;
 	
 	if(bLocal && m_inputHandler)
 		m_inputHandler->clearInput();
 }
 
 void CWorm::initWeaponSelection() {
-	if(game.gameScript()->gusEngineUsed()) {
-		// Gus currently has it's own wpn selection.
-		// However, Gusanos (or its mods) don't really do wpn selection
-		// for bots. For now, just set us ready.
-		if(bLocal && getType() == PRF_COMPUTER)
-			this->bWeaponsReady = true;
-		return;
-	}
-
 	if(!bLocal) {
-		warnings << "CWorm::initWeaponSelection: called initWeaponSelection() on non-local worm " << getName() << endl;
+		warnings << "WARNING: called initWeaponSelection() on non-local worm " << getName() << endl;
 		return;
 	}
 	
 	if(!m_inputHandler) {
-		warnings << "CWorm::initWeaponSelection: input handler not set for worm " << getName() << ", cannot init weapon selection" << endl;
+		warnings << "WARNING: input handler not set for worm " << getName() << ", cannot init weapon selection" << endl;
 		return;
 	}
 	
 	if(this->shouldDoOwnWeaponSelection())
 		m_inputHandler->initWeaponSelection();
 
-	if(this->isFirstLocalHostWorm() && gameSettings[FT_SameWeaponsAsHostWorm] && gameSettings[FT_ForceRandomWeapons]) {
+	if(this->isFirstLocalHostWorm() && tLXOptions->tGameInfo.bSameWeaponsAsHostWorm && tLXOptions->tGameInfo.bForceRandomWeapons) {
 		this->GetRandomWeapons();
 		this->bWeaponsReady = true;
 	}
 
 	// bWeaponsReady could be true already for multiple reasons, e.g. in initWeaponSelection()
-	if(this->isFirstLocalHostWorm() && this->bWeaponsReady && gameSettings[FT_SameWeaponsAsHostWorm])
+	if(this->isFirstLocalHostWorm() && this->bWeaponsReady && tLXOptions->tGameInfo.bSameWeaponsAsHostWorm)
 		cServer->cloneWeaponsToAllWorms(this);
 }
 
 void CWorm::doWeaponSelectionFrame(SDL_Surface * bmpDest, CViewport *v) {
-	if(game.gameScript()->gusEngineUsed()) return; // Gus currently has it's own wpn selection
-
 	if(!bLocal) {
-		warnings << "CWorm::doWeaponSelectionFrame: called on non-local worm " << getName() << endl;
+		warnings << "WARNING: called doWeaponSelectionFrame() on non-local worm " << getName() << endl;
 		return;
 	}
 	
-	if(!m_inputHandler)
-		// Note: no warning here because this can happen since the merge with Gusanos net engine
+	if(!m_inputHandler) {
+		warnings << "WARNING: input handler not set for worm " << getName() << ", cannot do weapon selection" << endl;
 		return;
+	}
 	
 	if(bWeaponsReady) {
-		warnings << "CWorm::doWeaponSelectionFrame: weapons already selected" << endl;
+		warnings << "WARNING: doWeaponSelectionFrame: weapons already selected" << endl;
 		return;
 	}
 	
 	if(!this->shouldDoOwnWeaponSelection()) {
-		if( v && v->getUsed() ) {
-			int t = v->GetTop();
-			int centrex = v->GetLeft() + v->GetVirtW()/2;
-
-			tLX->cFont.DrawCentre(bmpDest, centrex, t+48, tLX->clWeaponSelectionTitle, "... Waiting for server selection ...");
+		int t = 0;
+		int centrex = 320; // TODO: hardcoded screen width here
+		
+		if( v ) {
+			if( v->getUsed() ) {
+				t = v->GetTop();
+				centrex = v->GetLeft() + v->GetVirtW()/2;
+			}
 		}
 		
+		tLX->cFont.DrawCentre(bmpDest, centrex, t+48, tLX->clWeaponSelectionTitle, "... Waiting for server selection ...");
 		return;
 	}
 	
 	m_inputHandler->doWeaponSelectionFrame(bmpDest, v);	
 		   
-	if(this->bWeaponsReady && this->isFirstLocalHostWorm() && gameSettings[FT_SameWeaponsAsHostWorm]) {
+	if(this->bWeaponsReady && this->isFirstLocalHostWorm() && tLXOptions->tGameInfo.bSameWeaponsAsHostWorm) {
 		cServer->cloneWeaponsToAllWorms(this);
 	}
 
@@ -580,8 +424,8 @@ void CWorm::setupLobby()
 
 
 void CWorm::resetAngleAndDir() {
-	fAngle = 0.f;
-	fAngleSpeed = 0.f;
+	fAngle = 0;
+	fAngleSpeed = 0;
 	iFaceDirectionSide = DIR_RIGHT;
 }
 
@@ -593,45 +437,37 @@ void CWorm::Spawn(CVec position) {
 	if (bSpectating)
 		return;
 
-	vPos = vDrawPos = vLastPos = vPreOldPosOfLastPaket = vOldPosOfLastPaket = position;
-	velocity() = CVec ( 0, 0 );
-#ifndef DEDICATED_ONLY
-	renderPos = pos();
-#endif
-
-	health = 100.0f;
+	bAlive = true;
+	bAlreadyKilled = false;
 	bSpawnedOnce = true;
-	bCanRespawnNow = false;
-	bRespawnRequested = false;
+	fVisibilityChangeTime = 0;
 	resetAngleAndDir();
 	fMoveSpeedX = 0;
+	health = 100.0f;
 	iMoveDirectionSide = DIR_RIGHT;
 	fLastInputTime = GetPhysicsTime();
+	vPos = vDrawPos = vLastPos = vPreOldPosOfLastPaket = vOldPosOfLastPaket = position;
 	vPreLastEstimatedVel = vLastEstimatedVel = vVelocity = CVec(0,0);
-	posRecordings.clear(vPos);
-	cNinjaRope.write().Clear();
+	cNinjaRope.Clear();
 	
 
 	fFrame = 0;
 	bDrawMuzzle = false;
+	bHooked = false;
 	bForceWeapon_Name = false;
 
 	bOnGround = false;
+	iNumWeaponSlots = 5;
 
 	// Reset the weapons
-	for(ushort n = 0; n < tWeapons.size(); n++) {
-		weaponSlots.write()[n].Charge = 1.f;
-		weaponSlots.write()[n].Reloading = false;
-		weaponSlots.write()[n].LastFire = 0.f;
+	for(ushort n = 0; n < iNumWeaponSlots; n++) {
+		tWeapons[n].Charge = 1;
+		tWeapons[n].Reloading = false;
+		tWeapons[n].SlotNum = n;
+		tWeapons[n].LastFire = 0;
 	}
 
-	m_lastHurt = NULL;
-	for ( size_t i = 0; i < m_weapons.size(); ++i ) {
-		if ( m_weapons[i] )
-			m_weapons[i]->reset();
-	}
-
-	fSpawnTime = fPreLastPosUpdate = fLastPosUpdate = GetPhysicsTime();
+	fSpawnTime = fPreLastPosUpdate = fLastPosUpdate = fLastSimulationTime = GetPhysicsTime();
 
 	if(bLocal) {
 		clearInput();
@@ -643,32 +479,42 @@ void CWorm::Spawn(CVec position) {
 	}
 
 	cDamageReport.clear();
-
-	game.gameMap()->CarveHole(SPAWN_HOLESIZE, pos(), cClient->getGameLobby()[FT_InfiniteMap]);
-
-	bAlive = true;
 }
 
 
 ///////////////////
 // Load the graphics
-bool CWorm::ChangeGraphics()
+bool CWorm::ChangeGraphics(int generalgametype)
 {
+	// TODO: create some good way to allow custom colors
+
+	bool team = false;
+
+	// Destroy any previous graphics
+	FreeGraphics();
+
+	Color colour = cSkin.getDefaultColor();
+	// If we are in a team game, use the team colours
+	if(generalgametype == GMT_TEAMS) {
+		team = true;
+		colour = tLX->clTeamColors[CLAMP(iTeam,0,3)];
+	}
+
 	// Use the colours set on the network
 	// Profile or team colours will override this
 
 	// Colourise the giblets
-	bmpGibs = ColorizeImage("data/gfx/giblets.png");
+	bmpGibs = ChangeGraphics("data/gfx/giblets.png", team);
 
 	// Colourise the skin
-	cSkin.write().Colorize(getGameColour());
+	cSkin.Colorize(colour);
 
 	return bmpGibs.get() != NULL;
 }
 
 ///////////////////
 // Change the graphics of an image
-SmartPointer<SDL_Surface> CWorm::ColorizeImage(const std::string& filename) const
+SmartPointer<SDL_Surface> CWorm::ChangeGraphics(const std::string& filename, bool team)
 {	
 	SmartPointer<SDL_Surface> img;
 	SmartPointer<SDL_Surface> loaded;
@@ -677,13 +523,13 @@ SmartPointer<SDL_Surface> CWorm::ColorizeImage(const std::string& filename) cons
 	loaded = LoadGameImage(filename);
 	if(loaded.get() == NULL) {
 		// Error: Couldn't load image
-		errors << "CWorm::ColorizeImage: Could not load image " << filename << endl;
+		errors << "CWorm::ChangeGraphics: Could not load image " << filename << endl;
 		return NULL;
 	}
 
 	img = gfxCreateSurface(loaded.get()->w,loaded.get()->h);
 	if (img.get() == NULL)  {
-		errors << "CWorm::ColorizeImage: Not enough of memory." << endl;
+		errors << "CWorm::ChangeGraphics: Not enough of memory." << endl;
 		return NULL;
 	}
 	DrawImage(img.get(),loaded,0,0); // Blit to the new surface
@@ -697,7 +543,9 @@ SmartPointer<SDL_Surface> CWorm::ColorizeImage(const std::string& filename) cons
 	int x,y;
 	Uint32 pixel;
 
-	Color colour = getGameColour();
+	Color colour = cSkin.getColor();
+	if (team)
+		colour = tLX->clTeamColors[iTeam];
 
 	int ColR = colour.r;
 	int ColG = colour.g;
@@ -758,69 +606,37 @@ SmartPointer<SDL_Surface> CWorm::ColorizeImage(const std::string& filename) cons
 
 
 
-void CWorm::onWeaponsReadyUpdate(BaseObject *obj, const AttrDesc *attrDesc, ScriptVar_t old) {
-	CWorm* w = dynamic_cast<CWorm*>(obj);
-	assert(w != NULL);
-
-	if(game.isServer() && cServer)
-		cServer->RecheckGame();
-
-	// re-init weapon selection if needed
-	if(game.state >= Game::S_Preparing && w->getLocal() && !w->bWeaponsReady) {
-		if(game.gameScript()->gusEngineUsed()) {
-			if(CWormHumanInputHandler* player = dynamic_cast<CWormHumanInputHandler*> (w->inputHandler()))
-				// this will restart the weapon selection in most mods
-				game.onNewHumanPlayer_Lua(player);
-			else
-				//notes << "SelectWeapons in Gusanos for bots not supported yet" << endl;
-				game.onNewPlayer_Lua(w->inputHandler());
-		} else {
-			cClient->setStatus(NET_CONNECTED); // well, that means that we are in weapon selection...
-			cClient->setReadySent(false);
-			w->initWeaponSelection();
-		}
-	}
-
-}
-
 ///////////////////
 // Randomize the weapons
 void CWorm::GetRandomWeapons()
 {
-	if(game.gameScript() && game.gameScript()->gusEngineUsed()) return; // this is LX-only for now...
-
-	if(game.weaponRestrictions() == NULL) {
+	if(cWeaponRest == NULL) {
 		errors << "CWorm::GetRandomWeapons: cWeaponRest == NULL" << endl;
 		// no break here, the function will anyway work and ignore the restrictions
 	}
-
-	if(game.gameScript() == NULL || game.gameScript()->GetNumWeapons() <= 0) {
-		errors << "CWorm::GetRandomWeapons: gamescript is not loaded" << endl;
-		return;
-	}
-
-	for(size_t i=0; i<tWeapons.size(); i++) {
-		int num = MAX(1, GetRandomInt(game.gameScript()->GetNumWeapons()-1)); // HINT: num must be >= 1 or else we'll loop forever in the ongoing loop
+	
+	for(short i=0; i<5; i++) {
+		int num = MAX(1, GetRandomInt(cGameScript->GetNumWeapons()-1)); // HINT: num must be >= 1 or else we'll loop forever in the ongoing loop
 
 		// Cycle through weapons starting from the random one until we get an enabled weapon
 		int n=num;
 		int lastenabled = -1;
 		while(true) {
 			// Wrap around
-			if(n >= game.gameScript()->GetNumWeapons())
+			if(n >= cGameScript->GetNumWeapons())
  			   n = 0;
 
 			// Have we already got this weapon?
 			bool bSelected = false;
-			for(size_t k=0; k<i; k++) {
-				if(tWeapons[k].weapon() && (game.gameScript()->GetWeapons()+n)->ID == tWeapons[k].weapon()->ID) {
+			for(int k=0; k<i; k++) {
+				if(tWeapons[k].Weapon && (cGameScript->GetWeapons()+n)->ID == tWeapons[k].Weapon->ID) {
 					bSelected = true;
 					break;
 				}
 			}
 
 			// If this weapon is enabled AND we have not selected it already, then exit the loop
-			if(!game.weaponRestrictions() || game.weaponRestrictions()->isEnabled( (game.gameScript()->GetWeapons()+n)->Name ))  {
+			if(!cWeaponRest || cWeaponRest->isEnabled( (cGameScript->GetWeapons()+n)->Name ))  {
 				if (!bSelected)
 					break;
 				lastenabled = n;
@@ -835,17 +651,21 @@ void CWorm::GetRandomWeapons()
 			}
 
 		}  // while
-		if(n >= 0 && n < game.gameScript()->GetNumWeapons())
-			weaponSlots.write()[i].WeaponId = n;
-		else
-			weaponSlots.write()[i].WeaponId = -1;
+		if(n >= 0 && n < cGameScript->GetNumWeapons()) {
+			tWeapons[i].Weapon = cGameScript->GetWeapons()+n;
+			tWeapons[i].Enabled = true;
+		}
+		else {
+			tWeapons[i].Weapon = NULL;
+			tWeapons[i].Enabled = false;
+		}
 	}
 
 }
 
 // the first host worm (there can only be one such worm in a game)
 bool CWorm::isFirstLocalHostWorm() {
-	if(game.isClient()) return false;
+	if(tLX->iGameType == GME_JOIN) return false;
 	if(!cServer || !cServer->isServerRunning()) return false;
 	
 	CServerConnection* localConn = cServer->localClientConnection();
@@ -853,11 +673,11 @@ bool CWorm::isFirstLocalHostWorm() {
 		errors << "CWorm::isFirstLocalHostWorm: localClient not found" << endl;
 		return false;
 	}
-	return game.wormsOfClient(localConn)->tryGet() == this;
+	return localConn->getNumWorms() > 0 && localConn->getWorm(0)->getID() == iID;
 }
 
 bool CWorm::isLocalHostWorm() {
-	if(game.isClient()) return false;
+	if(tLX->iGameType == GME_JOIN) return false;
 	if(!cServer || !cServer->isServerRunning()) return false;
 	
 	CServerConnection* localConn = cServer->localClientConnection();
@@ -866,28 +686,29 @@ bool CWorm::isLocalHostWorm() {
 		return false;
 	}
 	
-	for_each_iterator(CWorm*, w, game.wormsOfClient(localConn))
-		if(w->get() == this)
-			return true;
+	for(int i = 0; i < localConn->getNumWorms(); ++i) {
+		CWorm* w = localConn->getWorm(i);
+		if(w)
+			if(w->getID() == iID) return true;
+	}
 	
 	return false;
 }
 
 
 bool CWorm::shouldDoOwnWeaponSelection() {
-	if(!game.bServerChoosesWeapons) return true;
-	if(this->isFirstLocalHostWorm() && gameSettings[FT_SameWeaponsAsHostWorm]) return true;
-	return false;
+	return !cClient->serverChoosesWeapons() || (this->isFirstLocalHostWorm() && tLXOptions->tGameInfo.bSameWeaponsAsHostWorm);
 }
 
 void CWorm::CloneWeaponsFrom(CWorm* w) {
-	weaponSlots.write().resize( w->weaponSlots.get().size() );
-	for(size_t i = 0; i < w->weaponSlots.get().size(); ++i) {
-		weaponSlots.write()[i].WeaponId = w->getWeapon((int)i)->WeaponId;
+	for(int i = 0; i < 5; ++i) {
+		tWeapons[i].Weapon = w->getWeapon(i)->Weapon;
+		tWeapons[i].Enabled = w->getWeapon(i)->Enabled;
 		
-		weaponSlots.write()[i].Charge = 1.f;
-		weaponSlots.write()[i].Reloading = false;
-		weaponSlots.write()[i].LastFire = 0.f;
+		tWeapons[i].Charge = 1;
+		tWeapons[i].Reloading = false;
+		tWeapons[i].SlotNum = i;
+		tWeapons[i].LastFire = 0;
 	}
 }
 
@@ -918,7 +739,7 @@ void CWorm::UpdateDrawPos() {
 
 
 #ifdef _AI_DEBUG
-/*		SmartPointer<SDL_Surface> bmpDestDebug = game.gameMap()->GetDebugImage();
+/*		SmartPointer<SDL_Surface> bmpDestDebug = cClient->getMap()->GetDebugImage();
 		if (bmpDestDebug) {
 			int node_x = (int)vPos.x*2, node_y = (int)vPos.y*2;
 
@@ -938,25 +759,21 @@ void CWorm::UpdateDrawPos() {
 
 bool CWorm::isVisibleForWorm(int worm) const {
 	assert(worm >= 0);
-	if((size_t)worm >= bVisibleForWorm.get().size()) return true;
-	return bVisibleForWorm.get()[worm];
+	if((size_t)worm >= bVisibleForWorm.size()) return true;
+	return bVisibleForWorm[worm];
 }
 
 void CWorm::setVisibleForWorm(int worm, bool visibility) {
 	assert(worm >= 0);
-	if((size_t)worm >= bVisibleForWorm.get().size()) {
-		size_t oldSize = bVisibleForWorm.get().size();
-		bVisibleForWorm.write().resize(worm + 1);
-		for(size_t i = oldSize; i < (size_t)worm; ++i)
-			bVisibleForWorm.write()[i] = true;
+	if((size_t)worm >= bVisibleForWorm.size()) {
+		bVisibleForWorm.resize(worm + 1, true);
 	}
-	bVisibleForWorm.write()[worm] = visibility;
+	bVisibleForWorm[worm] = visibility;
 }
 
 bool CWorm::isVisibleForEverybody() const {
-	for(size_t i = 0; i < bVisibleForWorm.get().size(); ++i) {
-		if(!bVisibleForWorm.get()[i])
-			return false;
+	for(std::vector<bool>::const_iterator i = bVisibleForWorm.begin(); i != bVisibleForWorm.end(); ++i) {
+		if(!*i) return false;
 	}
 	return true;
 }
@@ -970,46 +787,50 @@ bool CWorm::isVisible(const CViewport* v) const {
 	return isVisible(v->getTarget());
 }
 
-static INLINE bool _isWormVisible(CWorm* w, CViewport* v) {
+static inline bool isWormVisible(CWorm* w, CViewport* v) {
 	return w->isVisible(v);
 }
 
-// Draw a crosshair sprite at the given aim angle (fAngle convention; the facing
-// side carries the left/right sign) at the crosshair distance from the worm.
-// spriteX selects the frame (0 = normal, 6 = green/target).
-static void drawAimCrosshair(SDL_Surface* bmpDest, const VectorD2<int>& wormPos, float angle, int faceSide, int spriteX) {
-	int a = (int)angle;
-	if(faceSide == DIR_LEFT)
-		a = 180 - a;
+static int drawHealthBar(SDL_Surface * bmpDest, int hx, int hy, int health, DeprecatedGUI::CBar* cHealthBar, int barState, Color BorderColor, const Uint8 HealthColors[15])
+{
+	int WormNameY = 0;
+	if (cHealthBar && cHealthBar->IsProperlyLoaded())  {
 
-	CVec forw;
-	GetVecsFromAngle((float)a, &forw, NULL);
-	forw *= tLXOptions->fCrosshairDistance;
+		cHealthBar->SetCurrentForeState(barState);
+		cHealthBar->SetCurrentBgState(barState);
+		cHealthBar->SetX(hx - cHealthBar->GetWidth() / 2);
+		cHealthBar->SetY(hy - cHealthBar->GetHeight() - 1);
+		cHealthBar->Draw( bmpDest );
+		cHealthBar->SetPosition( health );
+		WormNameY += cHealthBar->GetHeight()+2; // Leave some space
 
-	VectorD2<int> cp = wormPos;
-	cp.x += (int)forw.x;
-	cp.y += (int)forw.y;
+	} else {  // Old style healthbar
+		hy -= 7;
 
-	DrawImageAdv(bmpDest, DeprecatedGUI::gfxGame.bmpCrosshair, spriteX, 0, cp.x - 2, cp.y - 2, 6, 6);
+		// Draw the "grid"
+		{
+			DrawRect(bmpDest, hx-10,hy-1,hx+15,hy+5,BorderColor);
+			DrawVLine(bmpDest, hy, hy+4, hx-5,BorderColor);
+			DrawVLine(bmpDest, hy, hy+4, hx,BorderColor);
+			DrawVLine(bmpDest, hy, hy+4, hx+5,BorderColor);
+			DrawVLine(bmpDest, hy, hy+4, hx+10,BorderColor);
+		}
+
+		// Clamp it
+		int iShowHealth = Round((float)((health+15)/20));
+		if (iShowHealth > 5)
+			iShowHealth = 5;
+
+		for (short i=0; i<iShowHealth; i++) {
+			Color CurColor = Color(HealthColors[i*3],HealthColors[i*3+1],HealthColors[i*3+2]);
+			DrawRectFill(bmpDest,hx-10+(i*5+1),hy,hx-10+(i*5+1)+4,hy+5,CurColor);
+		}
+
+		WormNameY += 7;
+	}
+
+	return WormNameY;
 }
-
-Color CWorm::renderColorAt(/* relative game coordinates */ int x, int y) const {
-	if(!bAlive)
-		return Color(0,0,0,SDL_ALPHA_TRANSPARENT);
-		
-	// BAD HACK: visibility depends on first local worm
-	if(!isVisible( game.localWorms()->tryGet() ))
-		return Color(0,0,0,SDL_ALPHA_TRANSPARENT);
-	
-	// Find the right pic
-	int f = ((int)fFrame*7);
-	int ang = MIN( (int)( (fAngle+90)/151 * 7 ), 6 ); // clamp the value because LX skins don't have the very bottom aim
-	f += ang;
-			
-	// multiplied by 2 because skin have double res
-	return cSkin.get().renderColorAt(x*2 + cSkin.get().getSkinWidth()/2, y*2 + cSkin.get().getSkinHeight()/2, f, iFaceDirectionSide == DIR_LEFT);
-}
-
 
 ///////////////////
 // Draw the worm
@@ -1021,31 +842,16 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 	int l = v->GetLeft();
 	int t = v->GetTop();
 
-	CMap* map = game.gameMap();
-	VectorD2<int> p = v->physicToReal(vDrawPos, cClient->getGameLobby()[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
+	CMap* map = cClient->getMap();
+	VectorD2<int> p = v->physicToReal(vDrawPos, cClient->getGameLobby()->features[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
 
 	int x = p.x - l;
 	int y = p.y - t;
 
-	bool isWormVisible = _isWormVisible(this, v);
-	bool drawExtras = isWormVisible; // such as name, crossair, etc.
-	if(drawExtras && game.isLevelDarkMode() && bAlive) {
-		if(v->getTarget() &&
-				game.gameMap()->trace(
-					(long)vDrawPos.x, (long)vDrawPos.y,
-					(long)v->getTarget()->vDrawPos.x, (long)v->getTarget()->vDrawPos.y,
-					CMap::LightBlockPredicate())) {
-			// the viewport worm cannot directly see the target.
-			// avoid drawing name etc which might be visible because it overlaps rock material.
-			drawExtras = false;
-		}
-	}
-
-
 	// Draw the ninja rope
 	// HINT: draw it before the clipping check because the rope might be visible even if the worm is not
-	if (isWormVisible && bAlive)
-		cNinjaRope.get().Draw(bmpDest,v,vDrawPos, drawExtras);
+	if (isWormVisible(this, v) && bAlive)
+		cNinjaRope.Draw(bmpDest,v,vDrawPos);
 
 	// Are we inside the viewport?
 	if(x+l+10 < l || x-10 > v->GetVirtW()
@@ -1063,7 +869,7 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 
 	// Draw the damage amount that worm received
 	// Even the worm is dead draw damage for some time anyway (looks pretty)
-	if( tLXOptions->bDamagePopups && drawExtras )
+	if( tLXOptions->bDamagePopups && isWormVisible(this, v) )
 	{
 		// Sort them first
 		std::map< AbsTime, int > DamageReportDrawOrder;
@@ -1086,11 +892,13 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 			for( it = DamageReportDrawOrder.begin(); it != DamageReportDrawOrder.end(); it++ )
 			{
 				int id = it->second;
+				//if( !cClient->getRemoteWorms()[id].isUsed() )
+				//	continue;
 				if( tLXOptions->bColorizeDamageByWorm )
 				{
 					damageSum = cDamageReport[id].damage;
-					if( CWorm* w = game.wormById(id, false) )
-						damageColor = w->getGameColour();
+					if( id >= 0 && id < MAX_WORMS )
+						damageColor = cClient->getRemoteWorms()[id].getGameColour();
 				}
 				std::string damageStr = itoa( Round(damageSum) );
 				if( damageSum < 0 )
@@ -1131,93 +939,71 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 	if( !getAlive() )
 		return;
 
-	
-	if (tLXOptions->bShowHealth && drawExtras)  {
-		if (!bLocal || m_type != PRF_HUMAN)  {
-			int hx = x + l;
-			int hy = y + t - 9; // -8 = worm height/2
-
-			if (cHealthBar.IsProperlyLoaded())  {
-
-				cHealthBar.SetX(hx - cHealthBar.GetWidth() / 2);
-				cHealthBar.SetY(hy - cHealthBar.GetHeight() - 1);
-				cHealthBar.Draw( bmpDest );
-				cHealthBar.SetPosition((int)getHealth());
-				WormNameY += cHealthBar.GetHeight()+2; // Leave some space
-
-			} else {  // Old style healthbar
-				hy -= 7;
-
-				// Draw the "grid"
-				{
-					Color BorderColor = Color(0x49,0x50,0x65);
-					DrawRect(bmpDest, hx-10,hy-1,hx+15,hy+5,BorderColor);
-					DrawVLine(bmpDest, hy, hy+4, hx-5,BorderColor);
-					DrawVLine(bmpDest, hy, hy+4, hx,BorderColor);
-					DrawVLine(bmpDest, hy, hy+4, hx+5,BorderColor);
-					DrawVLine(bmpDest, hy, hy+4, hx+10,BorderColor);
-				}
+	static const Color HealthBorderColor = Color(0x49,0x50,0x65);
 											// Red			Orange				Yellow		   Light Green		  Green
-				static const Uint8 HealthColors[15] = {0xE3,0x04,0x04,  0xFE,0x85,0x03,  0xFE,0xE9,0x03,  0xA8,0xFE,0x03,  0x21,0xFE,0x03};
+	static const Uint8 HealthColors[15] = {0xE3,0x04,0x04,  0xFE,0x85,0x03,  0xFE,0xE9,0x03,  0xA8,0xFE,0x03,  0x21,0xFE,0x03};
+											// Dark blue		Blue			Blue			Light blue		Lighter blue
+	static const Uint8 WeaponColors[15] = {0x00,0x00,0x60,  0x00,0x00,0x90,  0x00,0x00,0xC0,  0x00,0x20,0xFE,  0x20,0x40,0xFE};
+	static const Uint8 WeaponDisabledColors[15] = {0x00,0x00,0x30,  0x00,0x00,0x40,  0x00,0x00,0x50,  0x00,0x10,0x60,  0x10,0x20,0x70};
 
-				// Clamp it
-				int iShowHealth = Round((float)((getHealth()+15)/20));
-				if (iShowHealth > 5)
-					iShowHealth = 5;
-
-				for (short i=0; i<iShowHealth; i++) {
-					Color CurColor = Color(HealthColors[i*3],HealthColors[i*3+1],HealthColors[i*3+2]);
-					DrawRectFill(bmpDest,hx-10+(i*5+1),hy,hx-10+(i*5+1)+4,hy+5,CurColor);
-				}
-
-				WormNameY += 7;
-
-			}
-
+	if (tLXOptions->bShowHealth && isWormVisible(this, v))  {
+		if (!bLocal || m_type != PRF_HUMAN)  {
+			// int hy =  -8 = worm height/2
+			WormNameY += drawHealthBar(bmpDest, x + l, y + t - 9, (int)getHealth(), &cHealthBar, 0, HealthBorderColor, HealthColors);
 		}
 	}
 
+	if (GetTouchscreenControlsShown() && isWormVisible(this, v) && bLocal && m_type == PRF_HUMAN) {
+		// Touchscreen controls cover the health and weapon bars, so draw them below the worm, so they won't cover the crosshair
+		int yOffset = drawHealthBar(bmpDest, x + l, y + t + 20, (int)getHealth(), &cHealthBar, 0, HealthBorderColor, HealthColors);
+		yOffset -= 4;
+
+		if(getCurWeapon()->Weapon) {
+			if(getCurWeapon()->Reloading || !getCurWeapon()->Enabled)  {
+				drawHealthBar(bmpDest, x + l, y + t + 20 + yOffset, (int) (getCurWeapon()->Charge * 100.0f), &cWeaponBar, 1, HealthBorderColor, WeaponDisabledColors);
+			} else {
+				drawHealthBar(bmpDest, x + l, y + t + 20 + yOffset, (int) (getCurWeapon()->Charge * 100.0f), &cWeaponBar, 0, HealthBorderColor, WeaponColors);
+			}
+		} else { // no weapon
+			drawHealthBar(bmpDest, x + l, y + t + 20 + yOffset, 0, &cWeaponBar, 0, HealthBorderColor, WeaponColors);
+		}
+
+		// Draw current weapon index, just a colored dot
+		if (bForceWeapon_Name || ((CWormHumanInputHandler*)m_inputHandler)->getInputWeapon().isDown()) {
+			yOffset -= 1;
+			for (int i = 0; i < iNumWeaponSlots; i++) {
+				Color CurColor;
+				if (i == iCurrentWeapon)
+					CurColor = Color(HealthColors[12],HealthColors[13],HealthColors[14]);
+				else if (tWeapons[i].Reloading || !tWeapons[i].Enabled || !tWeapons[i].Weapon)
+					CurColor = Color(WeaponDisabledColors[0],WeaponDisabledColors[1],WeaponDisabledColors[2]);
+				else
+					CurColor = Color(WeaponColors[12],WeaponColors[13],WeaponColors[14]);
+				DrawRectFill(bmpDest, x + l - 11 + (i*5), y + t + 20 + yOffset, x + l - 11 + (i*5) + 2, y + t + 20 + yOffset + 2, CurColor);
+			}
+		}
+	}
 
 	//
 	// Draw the crosshair
 	//
-	if(!game.gameScript()->gusEngineUsed() && drawExtras && bLocal) {
-		CVec forw;
-		GetVecsFromAngle((float)a, &forw, NULL);
-		forw *= tLXOptions->fCrosshairDistance;
+	CVec forw;
+	GetVecsFromAngle((float)a, &forw, NULL);
+	forw *= tLXOptions->fCrosshairDistance;
 
-		VectorD2<int> cp = p;
-		cp.x += (int)forw.x;
-		cp.y += (int)forw.y;
+	VectorD2<int> cp = p;
+	cp.x += (int)forw.x;
+	cp.y += (int)forw.y;
 
-		// Show a green crosshair if we have a target
-		x = 0;
-		if (bGotTarget) {
-			x = 6;
-			bGotTarget = false;
-		}
+	// Show a green crosshair if we have a target
+	x = 0;
+	if (bGotTarget) {
+		x = 6;
+		bGotTarget = false;
+	}
 
+	if(bLocal && isWormVisible(this, v))
 		DrawImageAdv(bmpDest, DeprecatedGUI::gfxGame.bmpCrosshair, x, 0, cp.x - 2, cp.y - 2, 6, 6);
-	}
-
-	//
-	// Draw the gamepad aim cursors
-	//
-	// The worm's actual aim rotates toward the stick at keyboard speed, so it
-	// lags the stick. Two cursors are drawn (regardless of engine — the gamepad
-	// feature runs on the gus engine, which skips the classic crosshair above):
-	//  1. a green helper cursor at the direction the stick currently points
-	//     (fAimCursorAngle), giving instant feedback of the intended aim, and
-	//  2. on top of it, a normal cursor at the worm's *actual* current aim
-	//     (fAngle), so the player can see the real aim catching up to the helper.
-	// The worm aim cursor is drawn last so it stays visible above the helper.
-	if(bAimCursorActive && drawExtras && bLocal) {
-		// 1. Joystick aim helper cursor (green) at the stick's target direction,
-		//    then 2. the worm's actual aim (normal) on top, so the worm aim cursor
-		//    stays visible above the helper as the real aim catches up.
-		drawAimCrosshair(bmpDest, p, fAimCursorAngle, iFaceDirectionSide, 6);
-		drawAimCrosshair(bmpDest, p, fAngle, iFaceDirectionSide, 0);
-	}
 
 	//
 	// Draw the worm
@@ -1227,9 +1013,6 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 
 	// Find the right pic
 	int f = ((int)fFrame*7);
-#ifndef DEDICATED_ONLY
-	if(game.gameScript()->gusEngineUsed()) f = (m_animator->getFrame() % 3) * 7;
-#endif
 	int ang = MIN( (int)( (fAngle+90)/151 * 7 ), 6 ); // clamp the value because LX skins don't have the very bottom aim
 	f += ang;
 
@@ -1240,8 +1023,8 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 
 
 	// Draw the worm
-	if (isWormVisible) {
-		cSkin.get().Draw(bmpDest, x - cSkin.get().getSkinWidth()/2, y - cSkin.get().getSkinHeight()/2, f, false, iFaceDirectionSide == DIR_LEFT);
+	if (isWormVisible(this, v)) {
+		cSkin.Draw(bmpDest, x - cSkin.getSkinWidth()/2, y - cSkin.getSkinHeight()/2, f, false, iFaceDirectionSide == DIR_LEFT);
 		cSparkles.Process();
 	}
 	
@@ -1272,7 +1055,7 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 	//
 	// Draw the muzzle flash
 	//
-	if (bDrawMuzzle && isWormVisible)  {
+	if (bDrawMuzzle && isWormVisible(this, v))  {
 		switch(iFaceDirectionSide) {
 
 		case DIR_RIGHT:
@@ -1298,16 +1081,20 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 	} // if
 	bDrawMuzzle = false;
 
-	if(isWormVisible)
+	if(isWormVisible(this, v))
 		cClient->flagInfo()->drawWormAttachedFlag(this, bmpDest, v);
 
-	const wpnslot_t *Slot = getCurWeapon();
+	wpnslot_t *Slot = &tWeapons[iCurrentWeapon];
 
 	// Draw the weapon name
-	if(!game.gameScript()->gusEngineUsed() && bLocal && m_type == PRF_HUMAN && drawExtras) {
-		if(isChangingWpn()) {
-			if(Slot->weapon())
-				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-30,tLX->clPlayerName,Slot->weapon()->Name);
+	if(bLocal && m_type == PRF_HUMAN && isWormVisible(this, v)) {
+		if(bForceWeapon_Name || ((CWormHumanInputHandler*)m_inputHandler)->getInputWeapon().isDown()) {
+			if(Slot->Weapon && Slot->Weapon->Name != "")
+				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-30,tLX->clPlayerName,Slot->Weapon->Name);
+			else
+				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-30,tLX->clPlayerName,
+												(iCurrentWeapon == 0) ? "-" : (iCurrentWeapon == 1) ? "--" :
+												(iCurrentWeapon == 2) ? "---" : (iCurrentWeapon == 3) ? "----" : "-----");
 
 			if( tLX->currentTime > fForceWeapon_Time )
 				bForceWeapon_Name = false;
@@ -1315,18 +1102,18 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 	}
 
 	// Draw the worm's name
-	if (!game.gameScript()->gusEngineUsed() && drawExtras)  {
+	if (isWormVisible(this, v))  {
 		std::string WormName = sName;
-		if( sAFKMessage.get() != "" )
-			WormName += " " + sAFKMessage.get();
+		if( sAFKMessage != "" )
+			WormName += " " + sAFKMessage;
 		if(!bLocal || (bLocal && m_type != PRF_HUMAN)) {
-			if (cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->generalGameType == GMT_TEAMS && tLXOptions->bColorizeNicks)
+			if (cClient->getGameLobby()->iGeneralGameType == GMT_TEAMS && tLXOptions->bColorizeNicks)
 				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-WormNameY,tLX->clTeamColors[iTeam],WormName);
 			else
 				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-WormNameY,tLX->clPlayerName,WormName);
 		} else { // local human worm
 			if(iAFK != AFK_BACK_ONLINE) {
-				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-WormNameY,tLX->clPlayerName,".. " + sAFKMessage.get() + " ..");
+				tLX->cOutlineFont.DrawCentre(bmpDest,x,y-WormNameY,tLX->clPlayerName,".. " + sAFKMessage + " ..");
 			}
 		}
 	}
@@ -1337,13 +1124,10 @@ void CWorm::Draw(SDL_Surface * bmpDest, CViewport *v)
 // Draw the worm's shadow
 void CWorm::DrawShadow(SDL_Surface * bmpDest, CViewport *v)
 {
-	if( tLXOptions->bShadows && v && _isWormVisible(this, v) )  {
+	if( tLXOptions->bShadows && v && isWormVisible(this, v) )  {
 		// Copied from ::Draw
 		// TODO: a separate function for this
 		int f = ((int)fFrame*7);
-#ifndef DEDICATED_ONLY
-		if(game.gameScript()->gusEngineUsed()) f = (m_animator->getFrame() % 3) * 7;
-#endif
 		int ang = MIN( (int)( (fAngle+90)/151 * 7 ), 6 ); // clamp the value because LX skins don't have the very bottom aim
 		f += ang;
 
@@ -1353,7 +1137,7 @@ void CWorm::DrawShadow(SDL_Surface * bmpDest, CViewport *v)
 		// Later we should render the world layer by layer so this trouble will be gone
 		// The CMap::DrawObjectShadow function is slow and also logically incorrect - why should a map know about other
 		// objects?
-		cSkin.get().DrawShadowOnMap(game.gameMap(), v, bmpDest, (int)vPos.get().x, (int)vPos.get().y, f, iFaceDirectionSide == DIR_LEFT);
+		cSkin.DrawShadowOnMap(cClient->getMap(), v, bmpDest, (int)vPos.x, (int)vPos.y, f, iFaceDirectionSide == DIR_LEFT);
 	}
 }
 
@@ -1362,16 +1146,16 @@ void CWorm::DrawShadow(SDL_Surface * bmpDest, CViewport *v)
 // Quickly check if we are on the ground
 bool CWorm::CheckOnGround()
 {
-	int px = (int)vPos.get().x;
-	int py = (int)vPos.get().y;
-	bool wrapAround = cClient->getGameLobby()[FT_InfiniteMap];
+	int px = (int)vPos.x;
+	int py = (int)vPos.y;
+	bool wrapAround = cClient->getGameLobby()->features[FT_InfiniteMap];
 
 	for(short y = 6; y > 0; y--) {
 
 		// Optimize: pixelflag + Width
-		if(!(game.gameMap()->GetPixelFlag(px - 2, py + y, wrapAround) & PX_EMPTY))
+		if(!(cClient->getMap()->GetPixelFlag(px - 2, py + y, wrapAround) & PX_EMPTY))
 			return true;
-		if(!(game.gameMap()->GetPixelFlag(px + 2, py + y, wrapAround) & PX_EMPTY))
+		if(!(cClient->getMap()->GetPixelFlag(px + 2, py + y, wrapAround) & PX_EMPTY))
 			return true;
 	}
 
@@ -1382,8 +1166,8 @@ void CWorm::incrementDirtCount(int d) {
 	if(d != 0) {
 		iDirtCount += d;
 		
-		if( game.isServer() ) {
-			game.gameMode()->Carve(this, d);
+		if( tLX->iGameType != GME_JOIN ) {
+			cServer->getGameMode()->Carve(this, d);
 		}
 	}
 }
@@ -1396,32 +1180,32 @@ void CWorm::incrementDirtCount(int d) {
 ///////////////////
 // Kill me
 // Returns true if we are out of the game
-void CWorm::Kill(bool serverside)
+bool CWorm::Kill()
 {
+//	notes << "our worm " << iID << " died" << endl;
+
 	bAlive = false;
 	fTimeofDeath = GetPhysicsTime();
-	bCanRespawnNow = false;
-	bRespawnRequested = false;
+	addDeath();
 
-	// score handling only serverside - client will get update via scoreupdate package
-	if(serverside) {
-		addDeath();
+	// -2 means there is no lives starting value
+	if(iLives == WRM_UNLIM)
+		return false;
 
-		if(iLives != WRM_UNLIM)
-			iLives = (int)iLives - 1;
-	}
+	iLives--;
+	return iLives == WRM_OUT;
 }
 
 int CWorm::getScore() const
 {
 	int score = getKills();
-	if( (float)cClient->getGameLobby()[FT_DeathDecreasesScore] > 0.0f )
-		score -= (int)( getDeaths() * (float)cClient->getGameLobby()[FT_DeathDecreasesScore] + 0.01f ); // + 0.01f to counter possible inprecise truncation
-	if( cClient->getGameLobby()[FT_SuicideDecreasesScore] )
+	if( (float)tLXOptions->tGameInfo.features[FT_DeathDecreasesScore] > 0.0f )
+		score -= (int)( getDeaths() * (float)tLXOptions->tGameInfo.features[FT_DeathDecreasesScore] + 0.01f ); // + 0.01f to counter possible inprecise truncation
+	if( tLXOptions->tGameInfo.features[FT_SuicideDecreasesScore] )
 		score -= getSuicides();
-	if( cClient->getGameLobby()[FT_TeamkillDecreasesScore] )
+	if( tLXOptions->tGameInfo.features[FT_TeamkillDecreasesScore] )
 		score -= getTeamkills();
-	if( cClient->getGameLobby()[FT_CountTeamkills] )
+	if( tLXOptions->tGameInfo.features[FT_CountTeamkills] )
 		score += getTeamkills();
 
 	return score; // May be negative
@@ -1429,21 +1213,21 @@ int CWorm::getScore() const
 
 void CWorm::addDeath()
 {
-	if( !cClient->getGameLobby()[FT_AllowNegativeScore] && getScore() <= 0 )
+	if( !tLXOptions->tGameInfo.features[FT_AllowNegativeScore] && getScore() <= 0 && (float)tLXOptions->tGameInfo.features[FT_DeathDecreasesScore] > 0.0f )
 		return;
 	iDeaths++;
 }
 
 void CWorm::addSuicide()
 {
-	if( !cClient->getGameLobby()[FT_AllowNegativeScore] && getScore() <= 0 )
+	if( !tLXOptions->tGameInfo.features[FT_AllowNegativeScore] && getScore() <= 0 && tLXOptions->tGameInfo.features[FT_SuicideDecreasesScore] )
 		return;
 	iSuicides++;
 }
 
 void CWorm::addTeamkill()
 {
-	if( !cClient->getGameLobby()[FT_AllowNegativeScore] && getScore() <= 0 )
+	if( !tLXOptions->tGameInfo.features[FT_AllowNegativeScore] && getScore() <= 0 && tLXOptions->tGameInfo.features[FT_TeamkillDecreasesScore] )
 		return;
 	iTeamkills++;
 }
@@ -1464,16 +1248,21 @@ bool CWorm::CheckBonusCollision(CBonus *b)
 // Returns true if we picked it up
 bool CWorm::GiveBonus(CBonus *b)
 {
-	if(weaponSlots.get().size() == 0) return false;
-
 	// Weapon
 	if(b->getType() == BNS_WEAPON) {
 
 		// Replace our current weapon
-		if(b->getWeapon() >= 0 && b->getWeapon() < game.gameScript()->GetNumWeapons()) {
-			writeCurWeapon()->WeaponId = b->getWeapon();
-			writeCurWeapon()->Charge = 1.f;
-			writeCurWeapon()->Reloading = false;
+		if(b->getWeapon() >= 0 && b->getWeapon() < cGameScript->GetNumWeapons()) {
+			tWeapons[iCurrentWeapon].Weapon = cGameScript->GetWeapons() + b->getWeapon();
+			tWeapons[iCurrentWeapon].Charge = 1;
+			tWeapons[iCurrentWeapon].Reloading = false;
+			tWeapons[iCurrentWeapon].Enabled = true;
+
+			if (getLocal()) {
+				// Let the weapon name show up for a short moment
+				bForceWeapon_Name = true;
+				fForceWeapon_Time = tLX->currentTime + 0.75f;
+			}
 		}
 		else {
 			warnings << "selected bonus has invalid weapon " << b->getWeapon() << endl;
@@ -1507,16 +1296,24 @@ bool CWorm::GiveBonus(CBonus *b)
 
 ///////////////////
 // Hide the worm, if immediate is set, no animation will be shown
-void CWorm::Hide(int forworm)
+void CWorm::Hide(int forworm, bool immediate)
 {
 	setVisibleForWorm(forworm, false);
+	if (!immediate)
+		fVisibilityChangeTime = tLX->currentTime;
+	else
+		fVisibilityChangeTime = 0;
 }
 
 //////////////////
 // Show the worm, if immediate is set, no animation will be shown
-void CWorm::Show(int forworm)
+void CWorm::Show(int forworm, bool immediate)
 {
 	setVisibleForWorm(forworm, true);
+	if (!immediate)
+		fVisibilityChangeTime = tLX->currentTime;
+	else
+		fVisibilityChangeTime = 0;
 }
 
 ///////////////////
@@ -1548,26 +1345,35 @@ bool CWorm::CanType()
 bool CWormHumanInputHandler::canType() {
 	keyboard_t* kb = GetKeyboard();
 	for (int i = 0; i < kb->queueLength; i++)  {
-		const int sym = kb->keyQueue[i].sym;
-		if (cUp.usesKeyboardKey(sym) ||
-			cDown.usesKeyboardKey(sym) ||
-			cLeft.usesKeyboardKey(sym) ||
-			cRight.usesKeyboardKey(sym) ||
-			cShoot.usesKeyboardKey(sym) ||
-			cJump.usesKeyboardKey(sym) ||
-			cSelWeapon.usesKeyboardKey(sym) ||
-			cInpRope.usesKeyboardKey(sym) ||
-			cStrafe.usesKeyboardKey(sym) ||
-			cWeapons[0].usesKeyboardKey(sym) ||
-			cWeapons[1].usesKeyboardKey(sym) ||
-			cWeapons[2].usesKeyboardKey(sym) ||
-			cWeapons[3].usesKeyboardKey(sym) ||
-			cWeapons[4].usesKeyboardKey(sym))
+		if (cUp.getData() == kb->keyQueue[i].sym ||
+			cDown.getData() == kb->keyQueue[i].sym ||
+			cLeft.getData() == kb->keyQueue[i].sym ||
+			cRight.getData() == kb->keyQueue[i].sym ||
+			cShoot.getData() == kb->keyQueue[i].sym ||
+			cJump.getData() == kb->keyQueue[i].sym ||
+			cSelWeapon.getData() == kb->keyQueue[i].sym ||
+			cInpRope.getData() == kb->keyQueue[i].sym ||
+			cStrafe.getData() == kb->keyQueue[i].sym ||
+			cDig.getData() == kb->keyQueue[i].sym ||
+			cWeapons[0].getData() == kb->keyQueue[i].sym ||
+			cWeapons[1].getData() == kb->keyQueue[i].sym ||
+			cWeapons[2].getData() == kb->keyQueue[i].sym ||
+			cWeapons[3].getData() == kb->keyQueue[i].sym ||
+			cWeapons[4].getData() == kb->keyQueue[i].sym)
 			return false;
 	}
 	return true;
 }
 	
+
+void CWorm::setUsed(bool _u)
+{ 
+	bUsed = _u; 
+	if( ! _u ) 
+		return;
+	fLastSimulationTime = GetPhysicsTime(); 
+	iTotalWins = iTotalLosses =	iTotalKills = iTotalDeaths = iTotalSuicides = 0;
+}
 
 void CWorm::setAFK(AFK_TYPE afkType, const std::string & msg)
 {
@@ -1580,68 +1386,46 @@ void CWorm::setTagIT(bool _t)
 	bTagIT = _t; 
 }
 
-Color CWorm::getGameColour() const
+Color CWorm::getGameColour()
 {
-	switch(cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->generalGameType) {
+	switch(cClient->getGameLobby()->iGeneralGameType) {
 		case GMT_TEAMS:
 			return tLX->clTeamColors[iTeam];
 		default:
-			return cSkin.get().getDefaultColor();
+			return cSkin.getDefaultColor();
 	}
-	return Color(128,128,128);
 }
 
-void CWorm::setColour(Color c) {
-	writeSkin().setDefaultColor(c);
-	ChangeGraphics();
-}
-
-template<typename SettingsType>
-static void CWorm_addDamage(CWorm* This, float damage, CWorm* victim, const SettingsType& settings, const GameModeInfo* gameModeInfo)
+void CWorm::addDamage(float damage, CWorm* victim, const GameOptions::GameInfo & settings)
 {
 	if( damage < 0 )	// Do not count when we heal ourselves or someone else, only damage counts
 		return;
 
-	if( This->getID() == victim->getID() )
+	if( getID() == victim->getID() )
 	{
-		if( settings[FT_SuicideDecreasesScore] )
-			This->setDamage( This->getDamage() - damage );	// Decrease damage from score if injured yourself
+		if( settings.features[FT_SuicideDecreasesScore] )
+			setDamage( getDamage() - damage );	// Decrease damage from score if injured yourself
 	}
-	else if( gameModeInfo->generalGameType == GMT_TEAMS && This->getTeam() == victim->getTeam() ) 
+	else if( settings.iGeneralGameType == GMT_TEAMS && getTeam() == victim->getTeam() ) 
 	{
-		if( settings[FT_TeamkillDecreasesScore] )
-			This->setDamage( This->getDamage() - damage );	// Decrease damage from score if injured teammate
-		if( settings[FT_CountTeamkills] )
-			This->setDamage( This->getDamage() + damage );	// Count team damage along with teamkills
+		if( settings.features[FT_TeamkillDecreasesScore] )
+			setDamage( getDamage() - damage );	// Decrease damage from score if injured teammate
+		if( settings.features[FT_CountTeamkills] )
+			setDamage( getDamage() + damage );	// Count team damage along with teamkills
 	}
 	else
-		This->setDamage( This->getDamage() + damage );
+		setDamage( getDamage() + damage );
 }
-
-void CWorm::addDamage(float damage, CWorm* victim, bool serverside) {
-	if(serverside)
-		CWorm_addDamage(this, damage, victim, gameSettings, gameSettings[FT_GameMode].as<GameModeInfo>());
-	else
-		CWorm_addDamage(this, damage, victim, cClient->getGameLobby(), cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>());		
-}
-
 
 void CWorm::reinitInputHandler() {
-	warnings << "CWorm::reinitInputHandler not implemented right now" << endl;
-	return;
-	// TODO: why are we doing this here?
-	// WARNING: this code is wrong, we cannot recreate the input handler because we must keep the network node
-	// also, it shouldn't be needed to recreate it
-	
 	if(!bLocal) {
 		warnings << "reinitInputHandler called for non-local worm " << getID() << endl;
 		return;
 	}
 	
-	if(m_inputHandler) {
-		m_inputHandler->deleteThis();
-		m_inputHandler = NULL;
-	} else
+	if(m_inputHandler)
+		delete m_inputHandler;
+	else
 		warnings << "reinitInputHandler: inputhandler was unset for worm " << getID() << endl;
 	m_inputHandler = m_type->createInputHandler(this);
 	
@@ -1649,146 +1433,15 @@ void CWorm::reinitInputHandler() {
 	// we need to reset the inputs
 	// code from CClient::SetupGameInputs()
 	int humanWormNum = 0;
-	for_each_iterator(CWorm*, w, game.localWorms()) {
-		CWormHumanInputHandler* handler = dynamic_cast<CWormHumanInputHandler*> (w->get()->inputHandler());
+	for(int i = 0; i < cClient->getNumWorms(); i++) {
+		CWormHumanInputHandler* handler = dynamic_cast<CWormHumanInputHandler*> (cClient->getWorm(i)->inputHandler());
 		if(handler) {
 			// TODO: Later, let the handler save a rev to his sPlayerControls. This would give
 			// more flexibility to the player and he can have multiple player control sets.
 			// Then, we would call a reloadInputs() here.
-			if(w->get() == this)
-				handler->setupInputs( tLXOptions->sPlayerControls[humanWormNum], humanWormNum );
+			if(cClient->getWorm(i) == this)
+				handler->setupInputs( tLXOptions->sPlayerControls[humanWormNum] );
 			humanWormNum++;
 		}
 	}	
 }
-
-const SmartPointer<profile_t>& CWorm::getProfile() const {
-	return tProfile;
-}
-
-void CWorm::setProfile(const SmartPointer<profile_t>& p) {
-	tProfile = p;
-}
-
-// Note that this function becomes obsolete once we merge wpnslot_t and Weapon.
-std::string CWorm::getCurWeaponName() const {
-	if(iCurrentWeapon < 0) return "";
-	if(iCurrentWeapon >= getWeaponSlotsCount()) return "";
-	if(!game.gameScript() || !game.gameScript()->gusEngineUsed()) {
-		const wpnslot_t* slot = getCurWeapon();
-		if(slot->weapon())
-			return slot->weapon()->Name;
-		return "";
-	}
-	else { // Gusanos
-		Weapon* slot = m_weapons[iCurrentWeapon];
-		if(!slot) return "";
-		if(slot->getType() == NULL) return "";
-		return slot->getType()->name;
-	}
-}
-
-// The only reason this returns `int` is that we avoid
-// problems with `MOD`-usage (as in `MOD(iCurrentWeapon, getWeaponSlotsCount())`).
-// Note that this function becomes obsolete once we merge wpnslot_t and Weapon.
-int CWorm::getWeaponSlotsCount() const {
-	if(!game.gameScript() || !game.gameScript()->gusEngineUsed())
-		return (int)tWeapons.size();
-	else
-		return (int)m_weapons.size();
-}
-
-const Version& CWorm::getClientVersion() {
-	if(game.isServer())
-		return cOwner->getClientVersion();
-	return cClientVersion;
-}
-
-void CWorm::setClientVersion(const Version & v) {
-	cClientVersion = v;
-}
-
-bool CWorm::weOwnThis() const {
-	return getLocal();
-}
-
-CServerConnection* CWorm::ownerClient() const {
-	if(game.state <= Game::S_Inactive) return NULL;
-	if(game.isClient()) return NULL;
-	assert(cServer != NULL);
-	assert(cServer->isServerRunning());
-	assert(getClient() != NULL);
-	assert(getClient()->OwnsWorm(getID()));
-	return getClient();
-}
-
-Result CWorm::getAttrib(const ScriptVar_t& key, ScriptVar_t& value) const {
-	Result r = CGameObject::getAttrib(key, value);
-	if(r) return true;
-
-	if(key == "isLocal") { value = ScriptVar_t(bLocal); return true; }
-	if(key == "isHuman") { value = ScriptVar_t(getType() == PRF_HUMAN); return true; }
-	if(key == "isBot") { value = ScriptVar_t(getType() == PRF_COMPUTER); return true; }
-
-	return r;
-}
-
-Result wpnslot_t::getAttrib(const ScriptVar_t& key, ScriptVar_t& value) const {
-	Result r = CustomVar::getAttrib(key, value);
-	if(r) return true;
-
-	if(key == "weaponName") {
-		if(const weapon_t* w = weapon())
-			value = ScriptVar_t(w->Name);
-		else
-			value = ScriptVar_t("");
-		return true;
-	}
-
-	return r;
-}
-
-Result wpnslot_t::setAttrib(const ScriptVar_t& key, const ScriptVar_t& value) {
-	Result r = CustomVar::setAttrib(key, value);
-	if(r) return true;
-
-	if(key == "weaponName") {
-		const weapon_t* w = game.gameScript()->FindWeapon(value);
-		if(!w)
-			return "didn't find weapon '" + value.toString() + "'";
-		if(!game.weaponRestrictions()->isEnabled(value.toString()))
-			return "weapon '" + value.toString() + "' is not enabled";
-		WeaponId = w->ID;
-		return true;
-	}
-
-	return r;
-}
-
-Result worm_state_t::getAttrib(const ScriptVar_t& key, ScriptVar_t& value) const {
-	Result r = CustomVar::getAttrib(key, value);
-	if(r) return r;
-
-	if(key == "shoot") { value = ScriptVar_t(bShoot); return true; }
-	if(key == "carve") { value = ScriptVar_t(bCarve); return true; }
-	if(key == "move") { value = ScriptVar_t(bMove); return true; }
-	if(key == "jump") { value = ScriptVar_t(bJump); return true; }
-
-	return r;
-}
-
-Result worm_state_t::setAttrib(const ScriptVar_t& key, const ScriptVar_t& value) {
-	Result r = CustomVar::setAttrib(key, value);
-	if(r) return r;
-
-	if(key == "shoot") { bShoot = value.toBool(); return true; }
-	if(key == "carve") { bCarve = value.toBool(); return true; }
-	if(key == "move") { bMove = value.toBool(); return true; }
-	if(key == "jump") { bJump = value.toBool(); return true; }
-
-	return r;
-}
-
-REGISTER_CLASS(CWorm, LuaID<CGameObject>::value)
-REGISTER_CLASS(worm_state_t, LuaID<CustomVar>::value)
-REGISTER_CLASS(wpnslot_t, LuaID<CustomVar>::value)

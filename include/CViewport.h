@@ -24,9 +24,6 @@
 #include "Options.h" // for control_t
 #include "SmartPointer.h"
 
-#include "CVec.h"
-#include "gusanos/luaapi/types.h"
-#include "util/BaseObject.h"
 
 // Viewport types
 // !!! Don't change the order !!!
@@ -39,16 +36,15 @@ enum {
 
 
 class CWorm;
-struct Listener;
-struct ALLEGRO_BITMAP;
-class CWormInputHandler;
 
 
-class CViewport : BaseObject {
-private:
-	void _init() {
+class CViewport {
+public:
+	// Constructor
+	CViewport() {
+
 		bUsed = false;
-		nID = 0;
+        nID = 0;
 		Left = Top = 0;
 		Width = 320;
 		Height = 280;
@@ -59,21 +55,11 @@ private:
 		bShaking = false;
 		iShakeAmount = 0;
 
-		m_origTargetWorm = pcTargetWorm = NULL;
-		nType = VW_FOLLOW;
-		fTimer = AbsTime();
-		bSmooth = false;
-		m_listener = NULL;
-
-		gusInit();
+        pcTargetWorm = NULL;
+        nType = VW_FOLLOW;
+        fTimer = AbsTime();
+		bSmooth = false;		
 	}
-
-public:
-	CViewport() { _init(); }
-	~CViewport() { gusReset(); }
-	
-	CViewport(const CViewport& o) { _init(); operator=(o); }
-	CViewport& operator=(const CViewport& o);
 
 private:
 	// Attributes
@@ -96,8 +82,6 @@ private:
     int     nType;
     CWorm   *pcTargetWorm;
 
-	CWorm*	m_origTargetWorm;
-	
     AbsTime   fTimer;
 
 	// HINT: we have to use pointers here as we have CViewport in a global variable
@@ -105,14 +89,14 @@ private:
 	
 	bool	bSmooth;
 	CVec	cSmoothVel, cSmoothAccel;
-	
-	
+
+
 public:
 	// Methods
 
 	void	Setup(int l, int t, int vw, int vh, int type);
 
-	void	Process(CViewport *pcViewList, int MWidth, int MHeight, int iGameMode);
+	void	Process(CWorm *pcWormList, CViewport *pcViewList, int MWidth, int MHeight, int iGameMode);
 	void	Clamp(int MWidth, int MHeight);
 
 	bool	inView(CVec pos);	
@@ -122,7 +106,7 @@ public:
 
     void    reset();
 
-    CWorm   *findTarget(CViewport *pcViewList, bool bAlive);
+    CWorm   *findTarget(CWorm *pcWormList, CViewport *pcViewList, bool bAlive);
 
 	SDL_Rect getRect();
 	
@@ -148,10 +132,8 @@ public:
 	void	SetWorldY(int _y)	{ WorldY = _y; }
 
 	bool	getUsed() const	{ return bUsed; }
-	void	shutdown();
+	void	setUsed(bool _u)	{ bUsed = _u; }
 
-	void	setOrigTarget(CWorm* w) { m_origTargetWorm = w; }
-	CWorm	*getOrigTarget() { return m_origTargetWorm; }
     void    setTarget(CWorm *w) { pcTargetWorm = w; }
     CWorm   *getTarget() const { return pcTargetWorm; }
 
@@ -191,42 +173,6 @@ public:
 		return posInside(physicToReal(p, wrapAround, mapW, mapH));
 	}
 	
-	
-	
-	// ---------------------------------------------------
-	// ---------------- Gusanos --------------------------
-	
-	void gusInit();
-	void gusReset();
-	
-	void setDestination(int w, int h);
-	void gusRender(const SmartPointer<SDL_Surface>& bmpDest);
-		
-	void drawLight(IVec const& v); // TEMP
-	
-	IVec getPos()
-	{
-		return IVec(WorldX,WorldY);
-	}
-	
-	IVec convertCoords( IVec const & coord )
-	{
-		return (coord - IVec(WorldX,WorldY)) * 2 /* doubleRes */;
-	}
-	
-	Vec convertCoordsPrec( Vec const & coord )
-	{
-		return (coord - Vec((float)WorldX,(float)WorldY)) * 2 /* doubleRes */;
-	}
-			
-	ALLEGRO_BITMAP* dest;
-	ALLEGRO_BITMAP* fadeBuffer;
-
-	static LuaReference metaTable;
-	virtual LuaReference getMetaTable() const { return metaTable; }
-
-private:
-	Listener* m_listener;
 };
 
 

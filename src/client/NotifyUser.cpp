@@ -18,16 +18,13 @@ void ClearUserNotify() {}
 #else
 
 #if defined(__APPLE__)
-	extern "C" void mac__NotifyUserOnEvent();
-	extern "C" void mac__ClearUserNotify();
+	#include <Carbon/Carbon.h>
 #elif defined(WIN32)
 	#include <windows.h>
 	#include <SDL.h>
 	#include <SDL_syswm.h>
-#elif 0 // defined(X11) // TODO SDL2 support ...
-	#define Font Font_Xlib // Hack to prevent name clash in precompiled header and system libs
+#elif defined(X11)
 	#include <X11/Xlib.h>
-	#undef Font
 	#include <SDL.h>
 	#include <SDL_syswm.h>
 
@@ -68,7 +65,7 @@ void x11_SetDemandsAttention( bool v ) {
 
 
 #include "InputEvents.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "AuxLib.h"
 #include "LieroX.h"
 
@@ -76,6 +73,10 @@ void x11_SetDemandsAttention( bool v ) {
 #include <windows.h>
 #endif
 
+#ifdef __APPLE__
+static NMRec notifyData;
+static NMRecPtr notePtr = &notifyData;
+#endif
 
 // Make the sound, and blink the game window (platform-dependent)
 void NotifyUserOnEvent()
@@ -87,14 +88,24 @@ void NotifyUserOnEvent()
 
 	PlaySoundSample(sfxGeneral.smpNotify);
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && 0 // Deprecated
 	
-	mac__NotifyUserOnEvent();
+	OSErr		err;
+
+	notePtr->qType = nmType; // standard queue type for NM
+	notePtr->nmMark = 1;
+	notePtr->nmIcon = NULL;
+	notePtr->nmSound = NULL;  //(Handle) -1L; // use system alert snd
+	notePtr->nmStr = NULL; // (StringPtr) NewPtr ( sizeof ( Str255 ) ); BlockMoveData( notice, notePtr->nmStr, notice[0] + 1 );
+	notePtr->nmResp = NULL; // NewNMProc( MyResponse );
+	notePtr->nmRefCon = 0; // fFatal;
+
+	err = NMInstall( notePtr );
 	
 #elif defined(WIN32) || defined(__MINGW32_VERSION)
 	FLASHWINFO flash;
 	flash.cbSize = sizeof(flash);
-	flash.hwnd = (HWND)GetWindowHandle();
+	flash.hwnd = GetWindowHandle();
 	if (!flash.hwnd)
 		return;
 
@@ -103,14 +114,14 @@ void NotifyUserOnEvent()
 	flash.dwTimeout = 0;
 	FlashWindowEx( &flash );
 
-#elif 0 // defined(X11) // TODO
+#elif defined(X11)
 
 	struct SetDemandsAttentionAction: public Action
 	{
-		Result handle()
+		int handle()
 		{
 			x11_SetDemandsAttention(true);
-			return true;
+			return 0;
 		} 
 	};
 	doActionInMainThread( new SetDemandsAttentionAction );
@@ -125,16 +136,16 @@ void NotifyUserOnEvent()
 
 void ClearUserNotify() {
 	if(bDedicated) return;
-#if defined(__APPLE__)
-	mac__ClearUserNotify();
+#if defined(__APPLE__) && 0
+	NMRemove( notePtr ); // Deprecated
 #elif defined(WIN32)
-#elif 0 // defined(X11) // TODO
+#elif defined(X11)
 	struct ClearDemandsAttentionAction: public Action
 	{
-		Result handle()
+		int handle()
 		{
 			x11_SetDemandsAttention(false);
-			return true;
+			return 0;
 		} 
 	};
 	doActionInMainThread( new ClearDemandsAttentionAction );

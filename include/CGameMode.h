@@ -12,7 +12,7 @@
 
 #include <string>
 #include "CVec.h"
-#include "Iter.h"
+#include "Iterator.h"
 #include "Consts.h"
 #include "Options.h"
 #include "Version.h"
@@ -40,7 +40,7 @@ public:
 	virtual void BeginMatch() {}
 	virtual void PrepareWorm(CWorm* worm) {}
 	// If Spawn returns false then no spawn packet will be sent
-	virtual bool Spawn(CWorm* worm, CVec& pos);
+	virtual bool Spawn(CWorm* worm, CVec pos);
 	virtual void Kill(CWorm* victim, CWorm* killer);
 	// If Shoot returns false then no shot will be fired (used both server&client side)
 	virtual bool Shoot(CWorm* worm) { return true; }
@@ -48,10 +48,9 @@ public:
 	virtual void hitFlagSpawnPoint(CWorm* worm, Flag* flag) {}
 	virtual void Drop(CWorm* worm);
 	virtual void Carve(CWorm* worm, int d) {}
-	virtual void Simulate();
+	virtual void Simulate() {}
 	virtual bool CheckGameOver();
 	virtual bool NeedUpdate(CServerConnection* cl, CWorm* worm) { return true; }
-	virtual void GameOver() {}
 	
 	virtual int CompareWormsScore(CWorm* w1, CWorm* w2);
 	virtual int CompareTeamsScore(int t1, int t2);
@@ -65,9 +64,6 @@ public:
 	virtual float FlagPointRadius() { return 6.0f; }
 	virtual float FlagRadius() { return 6.0f; }
 	
-	virtual bool HaveTargetPos(CWorm* w) { return false; }
-	virtual CVec TargetPos(CWorm* w) { return CVec(); }
-
 	// helper functions
 	int WormsAliveInTeam(int t);
 	int TeamKills(int t);
@@ -79,15 +75,13 @@ protected:
 	bool bFirstBlood;
 	int	iKillsInRow[MAX_WORMS];
 	int	iDeathsInRow[MAX_WORMS];
-	int lastTimeLimitReport;
-	int lastFragsLeftReport;
 };
 
 void InitGameModes();
 CGameMode* GameMode(GameModeIndex i); // GM_* is parameter
 CGameMode* GameMode(const std::string& name);
-GameModeIndex GetGameModeIndex(CGameMode* gameMode, GameModeIndex fallback = GM_DEATHMATCH);
-Iterator<CGameMode*>::Ref GameModeIterator();
+GameModeIndex GetGameModeIndex(CGameMode* gameMode);
+Iterator<CGameMode* const&>::Ref GameModeIterator();
 std::string guessGeneralGameTypeName(int iGeneralGameType);
 
 #endif

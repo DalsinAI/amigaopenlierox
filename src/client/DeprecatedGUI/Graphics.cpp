@@ -39,6 +39,22 @@ static SmartPointer<SDL_Surface> getAlternativeCommandButtonGfx() {
 	return gfx;
 }
 
+static SmartPointer<SDL_Surface> getAlternativeProgressGfx() {
+	int w = 360;
+	int h = 20;
+
+	SmartPointer<SDL_Surface> gfx = gfxCreateSurface(w, 2 * h);
+	if(!gfx.get()) return NULL;
+
+	DrawRectFill(gfx.get(), 0, 0, w - 1, h - 1, tLX->clProgress);
+	DrawRect(gfx.get(), 0, 0, w - 1, h - 2, tLX->clBoxDark);
+
+	DrawRect(gfx.get(), 0, h - 1, w - 1, 2 * h - 2, tLX->clBoxDark);
+
+	return gfx;
+}
+
+	
 static SmartPointer<SDL_Surface> getAlternativeClockGfx() {
 	SmartPointer<SDL_Surface> gfx = gfxCreateSurface(12, 12);
 	if(!gfx.get()) return NULL;
@@ -62,6 +78,7 @@ bool LoadGraphics()
 	LOAD_IMAGE(gfxGUI.bmpScrollbar,"data/frontend/scrollbar.png");
 	LOAD_IMAGE(gfxGUI.bmpSliderBut,"data/frontend/sliderbut.png");
 	LOAD_IMAGE_WITHALPHA__OR(gfxGUI.bmpCommandBtn, "data/frontend/commandbtn.png", getAlternativeCommandButtonGfx());
+	LOAD_IMAGE_WITHALPHA__OR(gfxGUI.bmpSpeedTestProgress, "data/frontend/speedtest.png", getAlternativeProgressGfx());
 
 	Load_Image_WithAlpha(gfxGame.bmpCrosshair, "data/gfx/crosshair.png");
 	if (gfxGame.bmpCrosshair.get() == NULL)
@@ -333,11 +350,6 @@ bool LoadFonts()  {
 	if(!tLX->cOutlineFont.Load("data/gfx/out_font.png",true))
 		return false;
 
-	// Overlay font: a second copy for the main-thread overlay (see LieroX.h).
-	tLX->cOverlayFont.SetVSpacing(0);
-	if(!tLX->cOverlayFont.Load("data/gfx/font.png",true))
-		return false;
-
 	return true;
 }
 
@@ -350,7 +362,6 @@ void ShutdownGraphics()
 	if (tLX)  {
 		tLX->cFont.Shutdown();
 		tLX->cOutlineFont.Shutdown();
-		tLX->cOverlayFont.Shutdown();
 	}
 }
 

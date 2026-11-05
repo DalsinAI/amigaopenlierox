@@ -19,18 +19,16 @@
 
 enum SDLUserEvent {
 	UE_CustomEventHandler = 0,
-	UE_QuitEventThread,
-	UE_DoVideoFrame,
-	UE_DoSetVideoMode,
-	UE_DoActionInMainThread,
-	UE_NopWakeup
+	UE_QuitEventThread = 1,
+	UE_DoVideoFrame = 2,
+	UE_DoSetVideoMode = 3,
+	UE_DoActionInMainThread = 4
 };
 
 
 // bDedicated must be set before we can call this
 void InitEventQueue();
 void ShutdownEventQueue();
-void ProcessPendingQuitSignal();
 
 
 
@@ -42,7 +40,7 @@ template< typename _Data > class Event;
 
 class CustomEventHandler : public Action {
 public:
-	virtual Result handle() = 0;
+	virtual int handle() = 0;
 	virtual const _Event* owner() const = 0;
 	virtual CustomEventHandler* copy(_Event* newOwner = NULL) const = 0;
 	virtual ~CustomEventHandler() {}
@@ -54,9 +52,9 @@ public:
 	Event<_Data>* m_event;
 	_Data m_data;
 	EventThrower(Event<_Data>* e, _Data d) : m_event(e), m_data(d) {}
-	virtual Result handle() {
+	virtual int handle() {
 		m_event->occurred( m_data );
-		return true;
+		return 0;
 	}
 	virtual const _Event* owner() const { return m_event; }
 	virtual CustomEventHandler* copy(_Event* newOwner) const {
@@ -76,8 +74,6 @@ public:
 	EventQueue();
 	~EventQueue();
 	
-	bool hasItems();
-
 	// Polls for currently pending events.
 	bool poll(EventItem& e);
 	

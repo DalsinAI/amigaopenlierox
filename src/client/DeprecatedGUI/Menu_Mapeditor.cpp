@@ -14,7 +14,6 @@
 // Jason Boettcher
 
 
-#include "CodeAttributes.h"
 #include "LieroX.h"
 #include "AuxLib.h"
 #include "DeprecatedGUI/Graphics.h"
@@ -24,10 +23,9 @@
 #include "StringUtils.h"
 #include "DeprecatedGUI/CButton.h"
 #include "DeprecatedGUI/CTextbox.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "EndianSwap.h"
 #include "FileUtils.h"
-#include "game/CMap.h"
 
 
 namespace DeprecatedGUI {
@@ -96,8 +94,8 @@ bool Menu_MapEdInitialize()
 	grabbed = false;
 
 	// Add the controls
-	cMaped.Add( new CButton(BUT_NEW, tMenu->bmpButtons),	map_new,	 320,110, 50,15);
-	//cMaped.Add( new CButton(BUT_RANDOM, tMenu->bmpButtons), map_random,  300,110, 80,15);
+	cMaped.Add( new CButton(BUT_NEW, tMenu->bmpButtons),	map_new,	 230,110, 50,15);
+	cMaped.Add( new CButton(BUT_RANDOM, tMenu->bmpButtons), map_random,  300,110, 80,15);
 	cMaped.Add( new CButton(BUT_LOAD, tMenu->bmpButtons),   map_load,	 400,110, 50,15);
 	cMaped.Add( new CButton(BUT_SAVE, tMenu->bmpButtons),   map_save,	 480,110, 50,15);
 	cMaped.Add( new CButton(BUT_QUIT, tMenu->bmpButtons),   map_quit,	 550,110, 50,15);
@@ -361,7 +359,7 @@ void Menu_MapEdFrame(SDL_Surface * bmpDest, int process)
 
 			// Random
 			case map_random:
-				//if(ev->iEventMsg == BTN_CLICKED)
+				if(ev->iEventMsg == BTN_CLICKED)
 					//cMap->ApplyRandom();
 				break;
 
@@ -395,15 +393,16 @@ void Menu_MapEdFrame(SDL_Surface * bmpDest, int process)
 
 
 	// Keyboard arrows
+	keyboard_t *kb = GetKeyboard();
 	int Scroll = 250 * (int)tLX->fDeltaTime.seconds();
 	// TODO: make this event-based (don't check GetKeyboard() directly)
-	if(WasKeyboardEventHappening(SDLK_UP))
+	if(kb->keys[SDLK_UP])
 		cMapedView->SetWorldY( cMapedView->GetWorldY() - Scroll );
-	if(WasKeyboardEventHappening(SDLK_DOWN))
+	if(kb->keys[SDLK_DOWN])
 		cMapedView->SetWorldY( cMapedView->GetWorldY() + Scroll );
-	if(WasKeyboardEventHappening(SDLK_LEFT))
+	if(kb->keys[SDLK_LEFT])
 		cMapedView->SetWorldX( cMapedView->GetWorldX() - Scroll );
-	if(WasKeyboardEventHappening(SDLK_RIGHT))
+	if(kb->keys[SDLK_RIGHT])
 		cMapedView->SetWorldX( cMapedView->GetWorldX() + Scroll );
 
     // Grab the level & drag it
@@ -459,12 +458,12 @@ void Menu_MapEdFrame(SDL_Surface * bmpDest, int process)
 		int w = MouseImg.get()->w;
 		int h = MouseImg.get()->h;
 		//if(tMenu->iEditMode == 0 || tMenu->iEditMode == 3)
-		DrawImageStretchKey(VideoPostProcessor::videoSurface().get(),MouseImg, Mouse->X-w, Mouse->Y-h);
+		DrawImageStretchKey(VideoPostProcessor::videoSurface(),MouseImg, Mouse->X-w, Mouse->Y-h);
 		//else
 		//	DrawImageStretchKey(VideoPostProcessor::videoSurface(),MouseImg, Mouse->X-w, Mouse->Y-h, tLX->clPink);
 	}
 	else
-		DrawCursor(VideoPostProcessor::videoSurface().get());
+		DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 
@@ -486,12 +485,12 @@ enum {
 		int i;
 		int* dirtindex;
 		ComboboxFiller(CGuiLayout* g, int c, int* d) : gui(g), comboindex(c), i(0), dirtindex(d) {}
-		INLINE bool operator() (const std::string& dir) {
+		inline bool operator() (const std::string& dir) {
 			if (!IsFileAvailable(dir+"/theme.txt"))
 				return true;
 			size_t p = findLastPathSep(dir);
 			std::string f = dir.substr(p+1);
-			if (((CCombobox *)gui->getWidget(comboindex))->getItem(f).get() != NULL)
+			if (((CCombobox *)gui->getWidget(comboindex))->getItem(f) != NULL)
 				return true;
 
 			gui->SendMessage(comboindex,CBS_ADDITEM,f,i);
@@ -551,23 +550,23 @@ void Menu_MapEd_New()
 	t1->setText(itoa(cMap->GetWidth(),10));
 	t2->setText(itoa(cMap->GetHeight(),10));
 
-	DrawImage(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 0,0);
+	DrawImage(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 0,0);
 	doVideoFrameInMainThread();
-	DrawImage(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 0,0);
+	DrawImage(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 0,0);
 
 	ProcessEvents();
 	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && !quitloop) {
 		Menu_RedrawMouse(false);
 
-		DrawImageAdv(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 210,170, 210,170, 222, 262);
+		DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 210,170, 210,170, 222, 262);
 
-		tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), 320, 175, tLX->clNormalLabel, "Level details");
-		tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 220, 202, tLX->clNormalLabel, "Width");
-		tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 220, 232, tLX->clNormalLabel, "Height");
-		tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 220, 262, tLX->clNormalLabel, "Theme");
+		tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), 320, 175, tLX->clNormalLabel, "Level details");
+		tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 220, 202, tLX->clNormalLabel, "Width");
+		tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 220, 232, tLX->clNormalLabel, "Height");
+		tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 220, 262, tLX->clNormalLabel, "Theme");
 
 		ev = cg.Process();
-		cg.Draw(VideoPostProcessor::videoSurface().get());
+		cg.Draw(VideoPostProcessor::videoSurface());
 
 		// Process the widgets
 		if(ev) {
@@ -590,9 +589,9 @@ void Menu_MapEd_New()
 						int h = from_string<int>(t2->getText());
 						std::string theme;
 						theme = "dirt";
-						GuiListItem::Pt it = ((CCombobox*)cg.getWidget(4))->getSelectedItem();
-						if(it.get())
-							theme = it->caption();
+						cb_item_t *it = (cb_item_t *)cg.SendMessage(4,CBM_GETCURITEM,(DWORD)0,0); // TODO: 64bit unsafe (pointer cast)
+						if(it)
+							theme = it->sName;
 
 
 						// Check for min & max sizes
@@ -608,14 +607,14 @@ void Menu_MapEd_New()
 		}
 
 		// Game close
-		if (game.state == Game::S_Quit)
+		if (tLX->bQuitGame || !tMenu->bMenuRunning)
 			break;
 
 
-		DrawCursor(VideoPostProcessor::videoSurface().get());
+		DrawCursor(VideoPostProcessor::videoSurface());
 		doVideoFrameInMainThread();
 		CapFPS();
-		ProcessEvents();
+		WaitForNextEvent();
 	}
 
 	// Redraw back to normal
@@ -685,7 +684,7 @@ void Menu_MapEd_LoadSave(int save)
 	cg.Add( new CListview(),                            2, 180,170, 280,110);
 	cg.Add( new CTextbox(),                             3, 260,285, 200,tLX->cFont.GetHeight());
 
-	cg.SendMessage(2,		LVM_SETOLDSTYLE, (uintptr_t)0, 0);
+	cg.SendMessage(2,		LVM_SETOLDSTYLE, (DWORD)0, 0);
 
 	t = (CTextbox *)cg.getWidget(3);
 
@@ -697,21 +696,21 @@ void Menu_MapEd_LoadSave(int save)
 	FindFiles(filler, "levels", false, FM_REG);
 	lv->SortBy( 0, true );
 
-	DrawImage(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 0,0);
+	DrawImage(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 0,0);
 	doVideoFrameInMainThread();
-	DrawImage(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 0,0);
+	DrawImage(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 0,0);
 
 	ProcessEvents();
-	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && !quitloop && game.state != Game::S_Quit) {
+	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && !quitloop && tMenu->bMenuRunning) {
 		Menu_RedrawMouse(false);
 
-		DrawImageAdv(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 170,150, 170,150, 302, 182);
+		DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 170,150, 170,150, 302, 182);
 
-		tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), 320, 155, tLX->clNormalLabel, save ? "Save" : "Load");
-		tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 180,288,tLX->clNormalLabel, "Level name");
+		tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), 320, 155, tLX->clNormalLabel, save ? "Save" : "Load");
+		tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 180,288,tLX->clNormalLabel, "Level name");
 
 		ev = cg.Process();
-		cg.Draw(VideoPostProcessor::videoSurface().get());
+		cg.Draw(VideoPostProcessor::videoSurface());
 
 		// Process the widgets
 		if(ev) {
@@ -768,10 +767,10 @@ void Menu_MapEd_LoadSave(int save)
 		}
 
 
-		DrawCursor(VideoPostProcessor::videoSurface().get());
+		DrawCursor(VideoPostProcessor::videoSurface());
 		doVideoFrameInMainThread();
 		CapFPS();
-		ProcessEvents();
+		WaitForNextEvent();
 	}
 
 	// Redraw back to normal

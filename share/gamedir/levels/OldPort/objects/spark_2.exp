@@ -1,6 +1,0 @@
-blender = add
-alpha = 200
-dest_alpha = 0
-timeout = 11
-colour = [100,100,255]
-wu_pixels = 1

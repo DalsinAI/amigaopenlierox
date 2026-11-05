@@ -7,76 +7,32 @@
  *
  */
 
-#include <thread>
-#include <mutex>
-#include <condition_variable>
+#include <SDL_thread.h>
 #include "ThreadPool.h"
 #include "Debug.h"
 #include "AuxLib.h"
-#include "OLXCommand.h"
-#include "util/macros.h"
+#include "ReadWriteLock.h" // for ScopedLock
+#include "Command.h"
 
 
-static bool isThreadIdValid(ThreadId id) {
-	if(id == 0) return false;
-	if(id == (ThreadId)-1) return false;
-	return true;
-}
 
-ThreadId mainThreadId = -1;
-
-bool isMainThread() {
-	return mainThreadId == getCurrentThreadId();
-}
-
-ThreadId gameloopThreadId = -1;
-
-bool isGameloopThread() {
-	if(gameloopThreadId == (ThreadId)-1) {
-		errors << "isGameloopThread: Gameloop thread is not running" << endl;
-		return false;
-	}
-	return gameloopThreadId == getCurrentThreadId();
-}
-
-bool isGameloopThreadRunning() {
-	return gameloopThreadId != (ThreadId)-1;
-}
-
-void getAllThreads(std::set<ThreadId>& ids) {
-	if(isThreadIdValid(mainThreadId))
-		ids.insert(mainThreadId);
-	if(isThreadIdValid(gameloopThreadId))
-		ids.insert(gameloopThreadId);
-
-	if(threadPool) {
-		std::map<ThreadId, std::string> threads;
-		threadPool->getAllWorkingThreads(threads);
-		foreach(t, threads) {
-			ids.insert(t->first);
-		}
-	}
-}
-
-
-// The reused worker thread.
-// The task it currently runs is a separate, reference-counted ThreadPoolItem handle,
-// so the caller never sees or holds the worker
-// and there is no lifetime coupling between the two.
-struct ThreadWorker {
-	ThreadPool* pool;
-	std::thread thread;
-	ThreadId nativeThreadId;
-	SmartPointer<ThreadPoolItem> task; // current task, or null when idle
-	Action* action;                    // current action, or null when idle
-	ThreadWorker() : pool(NULL), nativeThreadId(0), action(NULL) {}
-};
-
+#ifdef __amigaos__
+// OpenGPU's SDL_WaitThread (under sdl12-compat) never came back for one of
+// the pool's threads at quit. The pool counts its threads itself (under its
+// mutex) and ~ThreadPool waits for the count instead (see there).
+extern "C" void amiga_wait_tick(void);
+static int amigaLiveThreads = 0;
+#endif
 
 ThreadPool::ThreadPool(unsigned int size) {
-	nextAction = NULL;
-	quitting = false;
-
+	nextAction = NULL; nextIsHeadless = false; nextData = NULL;
+	quitting = false;	
+	mutex = SDL_CreateMutex();
+	awakeThread = SDL_CreateCond();
+	threadStartedWork = SDL_CreateCond();
+	threadStatusChanged = SDL_CreateCond();
+	startMutex = SDL_CreateMutex();
+	
 	notes << "ThreadPool: creating " << size << " threads ..." << endl;
 	while(availableThreads.size() < size)
 		prepareNewThread();
@@ -85,150 +41,199 @@ ThreadPool::ThreadPool(unsigned int size) {
 ThreadPool::~ThreadPool() {
 	waitAll();
 
-	// All workers are idle now. Tell them to quit, then join each one.
-	{
-		std::lock_guard<std::mutex> lock(mutex);
-		nextAction = NULL;
-		quitting = true;
-		awakeThread.notify_all();
+	// this is the hint for all available threads to break
+	SDL_mutexP(mutex); // lock to be sure that every thread is outside that region, we could get crashes otherwise
+	nextAction = NULL;
+	quitting = true;
+	SDL_CondBroadcast(awakeThread);
+#ifdef __amigaos__
+	// every thread sees quitting within a tick; wait 10 s at most
+	for(int ticks = 0; amigaLiveThreads > 0 && ticks < 500; ticks++) {
+		SDL_mutexV(mutex);
+		amiga_wait_tick();
+		SDL_mutexP(mutex);
 	}
-
-	// std::thread::join() is a real join: it returns only once the worker
-	// has fully returned from threadWrapper, so no worker can still touch
-	// the mutex/conds afterwards. No separate alive-count is needed
-	// (unlike SDL_WaitThread, which could return before the thread finished).
-	for(std::set<ThreadWorker*>::iterator i = availableThreads.begin(); i != availableThreads.end(); ++i) {
-		(*i)->thread.join();
+	if(amigaLiveThreads > 0)
+		errors << "ThreadPool: " << amigaLiveThreads << " threads did not end" << endl;
+	SDL_mutexV(mutex);
+	for(int ticks = 0; ticks < 5; ticks++) amiga_wait_tick(); // let them leave SDL's thread code
+	SDL_mutexP(mutex);
+#endif
+	for(std::set<ThreadPoolItem*>::iterator i = availableThreads.begin(); i != availableThreads.end(); ++i) {
+		SDL_mutexV(mutex);
+#ifndef __amigaos__
+		SDL_WaitThread((*i)->thread, NULL);
+#endif
+		SDL_mutexP(mutex);
+		SDL_DestroyCond((*i)->finishedSignal);
+		SDL_DestroyCond((*i)->readyForNewWork);
 		delete *i;
 	}
 	availableThreads.clear();
+	SDL_mutexV(mutex);
+	
+	SDL_DestroyMutex(startMutex);
+	SDL_DestroyCond(threadStartedWork);
+	SDL_DestroyCond(threadStatusChanged);
+	SDL_DestroyCond(awakeThread);
+	SDL_DestroyMutex(mutex);
 }
 
 void ThreadPool::prepareNewThread() {
-	ThreadWorker* w = new ThreadWorker();
-	w->pool = this;
-	availableThreads.insert(w);
-	w->thread = std::thread(threadWrapper, w);
+	ThreadPoolItem* t = new ThreadPoolItem();
+	t->pool = this;
+	t->finishedSignal = SDL_CreateCond();
+	t->readyForNewWork = SDL_CreateCond();
+	t->finished = false;
+	t->working = false;
+	availableThreads.insert(t);
+	t->thread = SDL_CreateThread(threadWrapper, t);
 }
 
-void ThreadPool::threadWrapper(ThreadWorker* w) {
-	setCurThreadName("ThreadPool worker");
-	w->nativeThreadId = getCurrentThreadId();
-	ThreadPool* pool = w->pool;
-
-	std::unique_lock<std::mutex> lock(pool->mutex);
+int ThreadPool::threadWrapper(void* param) {
+	ThreadPoolItem* data = (ThreadPoolItem*)param;
+	
+	SDL_mutexP(data->pool->mutex);
+#ifdef __amigaos__
+	amigaLiveThreads++;
+#endif
 	while(true) {
-		while(pool->nextAction == NULL && !pool->quitting)
-			pool->awakeThread.wait(lock);
-		if(pool->quitting) break;
-
-		// Take the pending task.
-		w->action = pool->nextAction; pool->nextAction = NULL;
-		w->task = pool->nextTask; pool->nextTask = NULL;
-		pool->availableThreads.erase(w);
-		pool->usedThreads.insert(w);
-		pool->threadStartedWork.notify_one(); // let start() know we took it
-		lock.unlock();
-
-		setCurThreadName(w->task->name);
-		int ret = w->action->handle();
-		delete w->action; w->action = NULL;
-		setCurThreadName(w->task->name + " [finished]");
-
-		lock.lock();
-		w->task->ret = ret;
-		w->task->finished = true;
-		w->task = NULL; // drop the worker's reference; the handle keeps the result
-		// The worker goes idle immediately: the result lives in the handle,
-		// so there is nothing to wait for a caller to "collect".
-		pool->usedThreads.erase(w);
-		pool->availableThreads.insert(w);
-		pool->taskFinished.notify_all();        // wake any wait() on this task
-		pool->threadStatusChanged.notify_one(); // wake waitAll()
+		while(data->pool->nextAction == NULL && !data->pool->quitting)
+			SDL_CondWait(data->pool->awakeThread, data->pool->mutex);
+		if(data->pool->quitting) break;
+		data->pool->usedThreads.insert(data);
+		data->pool->availableThreads.erase(data);
+		
+		Action* act = data->pool->nextAction; data->pool->nextAction = NULL;
+		data->headless = data->pool->nextIsHeadless;
+		data->name = data->pool->nextName;
+		data->finished = false;
+		data->working = true;
+		data->pool->nextData = data;
+		SDL_mutexV(data->pool->mutex);
+		
+		SDL_CondSignal(data->pool->threadStartedWork);
+		setCurThreadName(data->name);
+		data->ret = act->handle();
+		delete act;
+		setCurThreadName(data->name + " [finished]");
+		SDL_mutexP(data->pool->mutex);
+		data->finished = true;
+		SDL_CondSignal(data->pool->threadStatusChanged);
+		
+		if(!data->headless) { // headless means that we just can clean it up right now without waiting
+			SDL_CondSignal(data->finishedSignal);
+			while(data->working) SDL_CondWait(data->readyForNewWork, data->pool->mutex);
+		} else
+			data->working = false;
+		data->pool->usedThreads.erase(data);
+		data->pool->availableThreads.insert(data);
+		SDL_CondSignal(data->pool->threadStatusChanged);
 		setCurThreadName("");
 	}
 
-	// Woken by ~ThreadPool: just return. The destructor joins us after this.
+#ifdef __amigaos__
+	amigaLiveThreads--;
+#endif
+	SDL_mutexV(data->pool->mutex);
+		
+	return 0;
 }
 
-SmartPointer<ThreadPoolItem> ThreadPool::start(Action* act, const std::string& name) {
-	std::lock_guard<std::mutex> startLock(startMutex); // serialize start() so nextAction/nextTask are not clobbered
-	std::unique_lock<std::mutex> lock(mutex);
+ThreadPoolItem* ThreadPool::start(Action* act, const std::string& name, bool headless) {
+	SDL_mutexP(startMutex); // If start() method will be called from different threads without mutex, hard-to-find crashes will occur
+	SDL_mutexP(mutex);
 	if(availableThreads.size() == 0) {
-#ifndef SINGLETHREADED
 		warnings << "no available thread in ThreadPool for " << name << ", creating new one..." << endl;
-#endif
 		prepareNewThread();
 	}
 	assert(nextAction == NULL);
-	SmartPointer<ThreadPoolItem> task = new ThreadPoolItem();
-	task->name = name;
+	assert(nextData == NULL);
 	nextAction = act;
-	nextTask = task;
-
-	awakeThread.notify_one();
-	while(nextAction != NULL) threadStartedWork.wait(lock); // wait until a worker took it
-	nextTask = NULL;
-	return task;
+	nextIsHeadless = headless;
+	nextName = name;
+	
+	SDL_CondSignal(awakeThread);
+	while(nextData == NULL) SDL_CondWait(threadStartedWork, mutex);
+	ThreadPoolItem* data = nextData; nextData = NULL;
+	SDL_mutexV(mutex);
+		
+	SDL_mutexV(startMutex);
+	return data;
 }
 
-SmartPointer<ThreadPoolItem> ThreadPool::start(ThreadFunc fct, void* param, const std::string& name) {
+ThreadPoolItem* ThreadPool::start(ThreadFunc fct, void* param, const std::string& name) {
 	struct StaticAction : Action {
 		ThreadFunc fct; void* param;
-		Result handle() { return (*fct) (param); }
+		int handle() { return (*fct) (param); }
 	};
 	StaticAction* act = new StaticAction();
 	act->fct = fct;
 	act->param = param;
-	return start(act, name);
+	ThreadPoolItem* item = start(act, name);
+	if(item) return item;
+	delete act;
+	return NULL;
 }
 
-SmartPointer<ThreadPoolItem> ThreadPool::start(boost::function<Result()> fct, const std::string& name) {
-	struct FctPtrAction : Action {
-		boost::function<Result()> fct;
-		Result handle() { return fct(); }
-	};
-	FctPtrAction* act = new FctPtrAction();
-	act->fct = fct;
-	return start(act, name);
-}
-
-bool ThreadPool::wait(const SmartPointer<ThreadPoolItem>& item, int* status) {
-	if(!item.get()) return false;
-	std::unique_lock<std::mutex> lock(mutex);
-	while(!item->finished) taskFinished.wait(lock);
-	if(status) *status = item->ret;
+bool ThreadPool::wait(ThreadPoolItem* thread, int* status) {
+	if(!thread) return false;
+	SDL_mutexP(mutex);
+	if(!thread->working) {
+		warnings << "given thread " << thread->name << " is not working anymore" << endl;
+		SDL_mutexV(mutex);
+		return false;
+	}
+	while(!thread->finished) SDL_CondWait(thread->finishedSignal, mutex);
+	if(status) *status = thread->ret;
+	thread->working = false;
+	SDL_mutexV(mutex);
+	
+	SDL_CondSignal(thread->readyForNewWork);
 	return true;
 }
 
 bool ThreadPool::waitAll() {
-	std::unique_lock<std::mutex> lock(mutex);
-	while(usedThreads.size() > 0) {
-		warnings << "ThreadPool: waiting for " << usedThreads.size() << " task(s) to finish:" << endl;
-		for(std::set<ThreadWorker*>::iterator i = usedThreads.begin(); i != usedThreads.end(); ++i) {
-			SmartPointer<ThreadPoolItem> t = (*i)->task;
-			warnings << "  task " << (t.get() ? t->name : std::string("?")) << " is still working" << endl;
+	SDL_mutexP(mutex);
+	size_t lastReported = 0; // the Amiga port's waits poll: report changes only
+	while(usedThreads.size() > 0) {		
+		if(usedThreads.size() == lastReported) { SDL_CondWait(threadStatusChanged, mutex); continue; }
+		lastReported = usedThreads.size();
+		warnings << "ThreadPool: waiting for " << usedThreads.size() << " threads to finish:" << endl;
+		for(std::set<ThreadPoolItem*>::iterator i = usedThreads.begin(); i != usedThreads.end(); ++i) {
+			if((*i)->working && (*i)->finished) {
+				warnings << "  thread " << (*i)->name << " is ready but was not cleaned up" << endl;
+				(*i)->working = false;
+				SDL_CondSignal((*i)->readyForNewWork);
+			}
+			else if((*i)->working && !(*i)->finished) {
+				warnings << "  thread " << (*i)->name << " is still working" << endl;
+			}
+			else if(!(*i)->working && !(*i)->headless && (*i)->finished) {
+				warnings << "  thread " << (*i)->name << " is cleaning itself up right now" << endl;
+			}
+			else {
+				warnings << "  thread " << (*i)->name << " is in an invalid state" << endl;
+			}
 		}
-		threadStatusChanged.wait(lock);
+		SDL_CondWait(threadStatusChanged, mutex);
 	}
-
+	SDL_mutexV(mutex);
+	
 	return true;
 }
 
 void ThreadPool::dumpState(CmdLineIntf& cli) const {
-	std::lock_guard<std::mutex> lock(mutex);
-	for(std::set<ThreadWorker*>::const_iterator i = usedThreads.begin(); i != usedThreads.end(); ++i) {
-		SmartPointer<ThreadPoolItem> t = (*i)->task;
-		cli.writeMsg("task '" + (t.get() ? t->name : std::string("?")) + "': working");
-	}
-}
-
-void ThreadPool::getAllWorkingThreads(std::map<ThreadId, std::string>& threads) {
-	std::lock_guard<std::mutex> lock(mutex);
-	for(std::set<ThreadWorker*>::const_iterator i = usedThreads.begin(); i != usedThreads.end(); ++i) {
-		SmartPointer<ThreadPoolItem> t = (*i)->task;
-		if(t.get())
-			threads[(*i)->nativeThreadId] = t->name;
+	ScopedLock lock(mutex);
+	for(std::set<ThreadPoolItem*>::const_iterator i = usedThreads.begin(); i != usedThreads.end(); ++i) {
+		if((*i)->working && (*i)->finished)
+			cli.writeMsg("thread '" + (*i)->name + "': ready but was not cleaned up");
+		else if((*i)->working && !(*i)->finished)
+			cli.writeMsg("thread '" + (*i)->name + "': working");
+		else if(!(*i)->working && !(*i)->headless && (*i)->finished)
+			cli.writeMsg("thread '" + (*i)->name + "': cleanup");
+		else
+			cli.writeMsg("thread '" + (*i)->name + "': invalid");
 	}
 }
 
@@ -236,9 +241,6 @@ void ThreadPool::getAllWorkingThreads(std::map<ThreadId, std::string>& threads) 
 ThreadPool* threadPool = NULL;
 
 void InitThreadPool(unsigned int size) {
-#ifdef SINGLETHREADED
-	size = 0;
-#endif
 	if(!threadPool)
 		threadPool = new ThreadPool(size);
 	else
@@ -252,3 +254,5 @@ void UnInitThreadPool() {
 	} else
 		errors << "ThreadPool already uninited" << endl;
 }
+
+

@@ -31,28 +31,7 @@
 #include "ProjectileDesc.h"
 #include "WeaponDesc.h"
 #include "IniReader.h"
-#include "game/Mod.h"
-#include "gusanos/gusanos.h"
-#include "sound/SoundsBase.h"
 
-
-
-
-// Worm structure
-// WARNING: never change this!
-// it's used in CGameScript.cpp and it represents
-// the original file format
-struct gs_worm_t {
-	float	AngleSpeed; // was always ignored
-	
-	float	GroundSpeed;  // -> FT_WormGroundSpeed
-	float	AirSpeed;  // -> FT_WormAirSpeed
-	float	Gravity; // -> FT_WormGravity
-	float	JumpForce; // -> FT_WormJumpForce
-	float	AirFriction; // -> FT_WormAirFriction
-	
-	float	GroundFriction; // was always ignored
-};
 
 
 void CGameScript::initNewWeapons(int num) {
@@ -197,19 +176,12 @@ int CGameScript::Save(const std::string& filename)
 
 
 	// Ninja Rope
-	fwrite_endian_compat((int)gameSettings[FT_RopeMaxLength],sizeof(int),1,fp);
-	fwrite_endian_compat((int)gameSettings[FT_RopeRestLength],sizeof(int),1,fp);
-	fwrite_endian_compat((float)gameSettings[FT_RopeStrength],sizeof(float),1,fp);
+	fwrite_endian_compat((RopeLength),sizeof(int),1,fp);
+	fwrite_endian_compat((RestLength),sizeof(int),1,fp);
+	fwrite_endian_compat((Strength),sizeof(float),1,fp);
 
 	// Worm
-	gs_worm_t tmpworm;
-	tmpworm.AngleSpeed = 100;
-	tmpworm.GroundSpeed = gameSettings[FT_WormGroundSpeed];
-	tmpworm.AirSpeed = gameSettings[FT_WormAirSpeed];
-	tmpworm.Gravity = gameSettings[FT_WormGravity];
-	tmpworm.JumpForce = gameSettings[FT_WormJumpForce];
-	tmpworm.AirFriction = gameSettings[FT_WormAirFriction];
-	tmpworm.GroundFriction = 0;
+	gs_worm_t tmpworm = Worm;
 	EndianSwap(tmpworm.AngleSpeed);
 	EndianSwap(tmpworm.GroundSpeed);
 	EndianSwap(tmpworm.AirSpeed);
@@ -262,6 +234,12 @@ bool CGameScript::SaveProjectile(proj_t *proj, FILE *fp)
 	fwrite_endian_compat((proj->Dampening),	sizeof(int), 1, fp);
 
 	if(Header.Version > GS_LX56_VERSION) {
+		fwrite_endian<int>(fp, proj->AttractiveForce);
+		fwrite_endian<int>(fp, proj->AttractiveForceType);
+		fwrite_endian<int>(fp, proj->AttractiveForceObjects);
+		fwrite_endian<int>(fp, proj->AttractiveForceClasses);
+		fwrite_endian<int>(fp, proj->AttractiveForceRadius);
+		fwrite_endian<bool>(fp, proj->AttractiveForceThroughWalls);
 		fwrite_endian<int>(fp, proj->Width);
 		fwrite_endian<int>(fp, proj->Height);
 	}
@@ -468,119 +446,13 @@ bool CGameScript::SaveProjectile(proj_t *proj, FILE *fp)
 }
 
 
-
-static bool checkLXBinMod(const std::string& dir, bool abs_filename, ModInfo& info) {
-	// Open it
-	FILE *fp = NULL;
-	if(abs_filename) {
-		fp = OpenAbsFile(dir + "/script.lgs", "rb");
-	} else
-		fp = OpenGameFile(dir + "/script.lgs", "rb");
-	
-	if(!fp) return false;
-	
-	// Header
-	gs_header_t head = {};
-	fread_compat(head,sizeof(gs_header_t),1,fp);
-	fclose(fp);
-	
-	EndianSwap(head.Version);
-	// for security
-	fix_markend(head.ID);
-	fix_markend(head.ModName);
-	
-	// Check ID
-	if(strcmp(head.ID,"Liero Game Script") != 0) {
-		warnings << "GS:CheckFile: WARNING: " << dir << "/script.lgs is not a Liero game script";
-		warnings << " (but \"" << head.ID << "\" instead)" << endl;
-		return false;
-	}
-	
-	// Check version
-	if(head.Version < GS_FIRST_SUPPORTED_VERSION || head.Version > GS_VERSION) {
-		warnings << "GS:CheckFile: WARNING: " << dir << "/script.lgs has the wrong version";
-		warnings << " (" << (unsigned)head.Version << ", required is in the range ";
-		warnings << "[" << GS_FIRST_SUPPORTED_VERSION << "," << GS_VERSION << "])" << endl;
-		return false;
-	}
-	
-	info.valid = true;
-	info.name = head.ModName;
-	info.path = GetBaseFilename(dir);
-	info.type = "LieroX mod";
-	info.typeShort = "LX";
-	
-	return true;
-}
-
-static bool checkLXSourceMod(const std::string& dir, bool abs_filename, ModInfo& info) {
-	// try source gamescript
-	
-	std::string filename = dir + "/main.txt";
-	if(abs_filename) {
-		if(!GetExactFileName(dir + "/main.txt", filename))
-			return false;
-	} else {
-		if(!IsFileAvailable(filename))
-			return false;
-	}
-	
-	info.valid = true;
-	ReadString(filename,"General","ModName", info.name.write(),"untitled", abs_filename);
-	info.path = GetBaseFilename(dir);
-	info.type = "LieroX mod source";
-	info.typeShort = "LX src";
-	
-	return true;	
-}
-
-static bool checkGusMod(const std::string& dir, bool abs_filename, ModInfo& info) {
-	std::string basefn = GetBaseFilename(dir);
-
-	// Skip hidden dirs like .git, whose objects/ subdir would match below.
-	if(!basefn.empty() && basefn[0] == '.')
-		return false;
-
-	// TODO: absfn
-	// there is no better way to check that
-	if(IsDirectory(basefn + "/objects")) {
-		info.valid = true;
-		info.name = basefn;
-		info.path = basefn;
-		info.type = "Gusanos mod";
-		info.typeShort = "Gus";
-		
-		return true;
-	}
-	
-	return false;
-}
-
-///////////////////
-// Check if a file is a valid LX game script
-bool CGameScript::CheckFile(const std::string& dir, std::string& name, bool abs_filename, ModInfo* _i)
-{
-	ModInfo __modInfo;
-	ModInfo& info = _i ? *_i : __modInfo;
-	
-	info = ModInfo();
-	name = "";
-	
-	if(!IsDirectory(dir, abs_filename)) return false;
-	if(checkLXBinMod(dir, abs_filename, info)) goto CheckFileEnd;
-	if(checkLXSourceMod(dir, abs_filename, info)) goto CheckFileEnd;
-	if(checkGusMod(dir, abs_filename, info)) goto CheckFileEnd;
-	
-CheckFileEnd:
-	name = info.name;
-	return info.valid;
-}
-
-
 ///////////////////
 // Load the game script from a file (game)
-int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
-{	
+int CGameScript::Load(const std::string& dir)
+{
+	// TODO: remove that as soon as we do the gamescript loading in a seperate thread
+	ScopedBackgroundLoadingAni backgroundLoadingAni(320, 280, 50, 50, Color(128,128,128), Color(64,64,64));
+	
 	// Already cached externally
 	/*
 	// Try cache first
@@ -607,24 +479,6 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 				warnings << "GameScript::Load(): could not compile source gamescript '" << dir << "'" << endl;
 				return GSE_BAD;
 			}
-		}
-		
-		ModInfo info;
-		if(checkGusMod(dir, false, info)) {
-			// Note: In case of Gusanos, this will not actually load the mod.
-			// The actuall loading happens mostly when we finish the map loading,
-			// indirectly in game.loadMap(), and also in gusGame.runInitScripts().
-			// See Game::prepareGameloop().
-			// Note that this behavior might change!
-			if(gusInit(info.path)) {
-				m_gusEngineUsed = true;
-				loaded = true;
-				modname = info.name;				
-				return GSE_OK;
-			}
-			
-			warnings << "CGameScript::Load(): Could not load Gusanos mod " << filename << endl;
-			return GSE_BAD;
 		}
 		
 		warnings << "CGameScript::Load(): Could not load file " << filename << endl;
@@ -655,8 +509,6 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 		return GSE_VERSION;
 	}
 
-	modname = Header.ModName;
-	
     // Clear an old mod file
     modLog("Loading game mod file " + filename);
 	//modLog("  ID = %s", Header.ID);
@@ -665,15 +517,6 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 	fread_compat(NumWeapons,sizeof(int),1,fp);
 	EndianSwap(NumWeapons);
 	//modLog("  NumWeapons = %i", NumWeapons);
-
-	// NumWeapons comes straight from the (possibly downloaded) mod file.
-	// Reject implausible values so we never do a negative or huge new[]
-	// (which would throw bad_array_new_length / bad_alloc and abort).
-	// 4096 is far above any real mod and keeps the allocation bounded.
-	if(NumWeapons < 0 || NumWeapons > 4096) {
-		SetError("CGameScript::Load(): implausible weapon count in mod");
-		return GSE_BAD;
-	}
 
 	// Do Allocations
 	Weapons = new weapon_t[NumWeapons];
@@ -752,7 +595,7 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 				if(wpn->UseSound)
 					wpn->SndFilename = readString(fp);
 
-				wpn->Proj.Proj = LoadProjectile(fp, loadImagesAndSounds);
+				wpn->Proj.Proj = LoadProjectile(fp);
 			}
 			else { // newer GS versions
 				fread_endian<char>(fp, wpn->LaserSight);
@@ -764,7 +607,7 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 				wpn->Proj.read(this, fp);
 			}
 
-			if(!bDedicated && wpn->UseSound && loadImagesAndSounds) {
+			if(!bDedicated && wpn->UseSound) {
 				// Load the sample
 				wpn->smpSample = LoadGSSample(dir,wpn->SndFilename);
 
@@ -785,22 +628,14 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 
 
 	// Ninja Rope
-	int RopeLength = 0;
 	fread_compat(RopeLength,sizeof(int),1,fp);
 	EndianSwap(RopeLength);
-	int RestLength = 0;
 	fread_compat(RestLength,sizeof(int),1,fp);
 	EndianSwap(RestLength);
-	float Strength = 0;
 	fread_compat(Strength,sizeof(float),1,fp);
 	EndianSwap(Strength);
 
-	lx56modSettings.set(FT_RopeMaxLength) = RopeLength;
-	lx56modSettings.set(FT_RopeRestLength) = RestLength;
-	lx56modSettings.set(FT_RopeStrength) = Strength;
-	
 	// Worm
-	gs_worm_t Worm;
 	fread_compat(Worm, sizeof(gs_worm_t), 1, fp);
 	EndianSwap(Worm.AngleSpeed);
 	EndianSwap(Worm.GroundSpeed);
@@ -810,11 +645,6 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 	EndianSwap(Worm.AirFriction);
 	EndianSwap(Worm.GroundFriction);
 
-	lx56modSettings.set(FT_WormGroundSpeed) = Worm.GroundSpeed;
-	lx56modSettings.set(FT_WormAirSpeed) = Worm.AirSpeed;
-	lx56modSettings.set(FT_WormGravity) = Worm.Gravity;
-	lx56modSettings.set(FT_WormJumpForce) = Worm.JumpForce;
-	lx56modSettings.set(FT_WormAirFriction) = Worm.AirFriction;
 
 	fclose(fp);
 
@@ -830,13 +660,8 @@ int CGameScript::Load(const std::string& dir, bool loadImagesAndSounds)
 
 ///////////////////
 // Load a projectile
-proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int depth)
+proj_t *CGameScript::LoadProjectile(FILE *fp)
 {
-	// Guard against a crafted mod nesting projectiles arbitrarily deep;
-	// the recursion below would otherwise overflow the stack. No real mod
-	// nests anywhere near this deep (LX56 has no cycle guard at all).
-	if(depth > 128)
-		return NULL;
 	int projIndex = -1;
 	if(Header.Version > GS_LX56_VERSION) {
 		fread_endian<int>(fp, projIndex);
@@ -870,10 +695,24 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 	EndianSwap(proj->Dampening);
 
 	if(Header.Version > GS_LX56_VERSION) {
+		fread_endian<int>(fp, proj->AttractiveForce);
+		fread_endian<int>(fp, proj->AttractiveForceType);
+		fread_endian<int>(fp, proj->AttractiveForceObjects);
+		fread_endian<int>(fp, proj->AttractiveForceClasses);
+		fread_endian<int>(fp, proj->AttractiveForceRadius);
+		fread_endian<bool>(fp, proj->AttractiveForceThroughWalls);
+
 		fread_endian<int>(fp, proj->Width);
 		fread_endian<int>(fp, proj->Height);
 	}
 	else {
+		proj->AttractiveForce = 0;
+		proj->AttractiveForceType = ATT_GRAVITY;
+		proj->AttractiveForceObjects = ATO_NONE;
+		proj->AttractiveForceClasses = 0;
+		proj->AttractiveForceRadius = 0;
+		proj->AttractiveForceThroughWalls = true;
+
 		if(proj->Type == PRJ_PIXEL)
 			proj->Width = proj->Height = 2;
 		else
@@ -895,7 +734,6 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 			proj->polygon.clear();
 			Uint32 NumPoints = 0;
 			fread_endian<Uint32>(fp, NumPoints);
-			if(NumPoints > 4096) NumPoints = 4096;  // clamp a malicious count before the read loop
 			proj->polygon.startPointAdding();
 			for(Uint32 i = 0; i < NumPoints; ++i) {
 				VectorD2<int> p;
@@ -912,7 +750,6 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 		{
 			Uint32 NumColours = 0;
 			fread_endian<int>(fp, NumColours);
-			if(NumColours > 4096) NumColours = 4096;  // clamp a malicious count before resize
 			proj->Colour.resize(NumColours);
 			
 			for(size_t i = 0; i < NumColours; ++i) {
@@ -934,7 +771,7 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 		case PRJ_IMAGE:
 			proj->ImgFilename = readString(fp);
 		
-			if(!bDedicated && loadImagesAndSounds) {
+			if(!bDedicated) {
 				proj->bmpImage = LoadGSImage(sDirectory, proj->ImgFilename);
 				if(!proj->bmpImage)
 					modLog("Could not open image '" + proj->ImgFilename + "'");
@@ -1002,7 +839,7 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 			EndianSwap(proj->Hit.Damage);
 		}
 
-		if(!bDedicated && proj->Hit.UseSound && loadImagesAndSounds) {
+		if(!bDedicated && proj->Hit.UseSound) {
 			// Load the sample
 			proj->Hit.Sound = LoadGSSample(sDirectory,proj->Hit.SndFilename);
 			
@@ -1097,7 +934,6 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 	if(Header.Version > GS_LX56_VERSION) {
 		Uint32 projHitC = 0;
 		fread_endian<Uint32>(fp, projHitC);
-		if(projHitC > 4096) projHitC = 4096;  // clamp a malicious count before resize
 		proj->actions.resize(projHitC);
 		for(Uint32 i = 0; i < projHitC; ++i) {
 			proj->actions[i].read(this, fp);
@@ -1105,7 +941,7 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 	}
 	
 	if(Header.Version > GS_LX56_VERSION) {
-		proj->GeneralSpawnInfo.read(this, fp);
+		proj->GeneralSpawnInfo.read(this, fp);		
 	}
 	else if(proj->Timer.Projectiles || proj->Hit.Projectiles || proj->PlyHit.Projectiles || proj->Exp.Projectiles ||
        proj->Tch.Projectiles) {
@@ -1121,7 +957,7 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 		fread_compat(proj->GeneralSpawnInfo.SpeedVar,	sizeof(float),	1, fp);
 		EndianSwap(proj->GeneralSpawnInfo.SpeedVar);
 
-		proj->GeneralSpawnInfo.Proj = LoadProjectile(fp, loadImagesAndSounds, depth + 1);
+		proj->GeneralSpawnInfo.Proj = LoadProjectile(fp);
 	}
 
 
@@ -1143,7 +979,7 @@ proj_t *CGameScript::LoadProjectile(FILE *fp, bool loadImagesAndSounds, int dept
 			fread_compat(proj->Trail.Proj.Spread,			sizeof(float),	1, fp);
 			EndianSwap(proj->Trail.Proj.Spread);
 
-			proj->Trail.Proj.Proj = LoadProjectile(fp, loadImagesAndSounds, depth + 1);
+			proj->Trail.Proj.Proj = LoadProjectile(fp);
 		}
 		else { // new GS versions
 			proj->Trail.Proj.read(this, fp);
@@ -1224,12 +1060,6 @@ const weapon_t *CGameScript::FindWeapon(const std::string& name)
 	return NULL;
 }
 
-int32_t CGameScript::FindWeaponId(const std::string &name) {
-	const weapon_t* wpn = FindWeapon(name);
-	if(wpn) return wpn->ID;
-	return -1;
-}
-
 
 ///////////////////
 // Returns true if the weapon is in the game script
@@ -1285,8 +1115,6 @@ size_t CGameScript::GetMemorySize()
 void CGameScript::Shutdown()
 {
 	loaded = false;
-	modname = "";
-	m_gusEngineUsed = false;
 	needCollisionInfo = false;
 	
     // Close the log file
@@ -1305,8 +1133,6 @@ void CGameScript::Shutdown()
 	if(Weapons)
 		delete[] Weapons;
 	Weapons = NULL;
-	
-	lx56modSettings.makeSet(false);
 }
 
 
@@ -1317,6 +1143,69 @@ void CGameScript::ShutdownProjectile(proj_t *prj)
 	if(prj) {
 		delete prj;
 	}
+}
+
+
+///////////////////
+// Check if a file is a valid liero game script
+bool CGameScript::CheckFile(const std::string& dir, std::string& name, bool abs_filename)
+{
+	name = "";
+
+	// Open it
+	FILE *fp = NULL;
+	if(abs_filename) {
+		std::string filename;
+		// we still need to add "/script.lgs" and then do an exact filename search
+		if(GetExactFileName(dir + "/script.lgs", filename))
+	 		fp = fopen(Utf8ToSystemNative(filename).c_str(), "rb");
+	} else
+		fp = OpenGameFile(dir + "/script.lgs", "rb");
+	
+	if(fp == NULL) {
+		// try source gamescript
+		
+		std::string filename = dir + "/main.txt";
+		if(abs_filename) {
+			if(!GetExactFileName(dir + "/main.txt", filename))
+				return false;
+		} else {
+			if(!IsFileAvailable(filename))
+				return false;
+		}
+		
+		ReadString(filename,"General","ModName", name,"untitled", abs_filename);
+		return true;
+	}
+
+	// Header
+	gs_header_t head;
+	memset(&head,0,sizeof(gs_header_t));
+	fread_compat(head,sizeof(gs_header_t),1,fp);
+	fclose(fp);
+
+	EndianSwap(head.Version);
+	// for security
+	fix_markend(head.ID);
+	fix_markend(head.ModName);
+
+	// Check ID
+	if(strcmp(head.ID,"Liero Game Script") != 0) {
+		warnings << "GS:CheckFile: WARNING: " << dir << "/script.lgs is not a Liero game script";
+		warnings << " (but \"" << head.ID << "\" instead)" << endl;
+		return false;
+	}
+
+	// Check version
+	if(head.Version < GS_FIRST_SUPPORTED_VERSION || head.Version > GS_VERSION) {
+		warnings << "GS:CheckFile: WARNING: " << dir << "/script.lgs has the wrong version";
+		warnings << " (" << (unsigned)head.Version << ", required is in the range ";
+		warnings << "[" << GS_FIRST_SUPPORTED_VERSION << "," << GS_VERSION << "])" << endl;
+		return false;
+	}
+
+	name = head.ModName;
+	return true;
 }
 
 
@@ -1515,6 +1404,7 @@ bool CGameScript::Compile(const std::string& dir)
 	
 	int num,n;
 
+	std::string modname;
 	ini.ReadString("General","ModName", modname,"untitled");
 	fix_strncpy(Header.ModName, modname.c_str());
 
@@ -1696,6 +1586,13 @@ proj_t *CGameScript::CompileProjectile(const std::string& dir, const std::string
 	proj->Animating = false;
 	proj->UseCustomGravity = false;
 
+	proj->AttractiveForce = 0;
+	proj->AttractiveForceType = ATT_GRAVITY;
+	proj->AttractiveForceObjects = ATO_NONE;
+	proj->AttractiveForceClasses = 0;
+	proj->AttractiveForceRadius = 0;
+	proj->AttractiveForceThroughWalls = true;
+
 	if (!ini.Parse())  {
 		warnings << "projectile file " << pfile << " could not be parsed, using defaults..." << endl;
 		return proj;
@@ -1705,6 +1602,13 @@ proj_t *CGameScript::CompileProjectile(const std::string& dir, const std::string
 	ini.ReadFloat("General","Timer",&proj->Timer.Time,0);
 	ini.ReadFloat("General", "TimerVar", &proj->Timer.TimeVar, 0);
 	ini.ReadKeyword("General","Trail",(int*)&proj->Trail.Type,TRL_NONE);
+
+	ini.ReadInteger("General","AttractiveForce", &proj->AttractiveForce, 0);
+	ini.ReadInteger("General","AttractiveForceRadius", &proj->AttractiveForceRadius, 0);
+	ini.ReadKeyword("General","AttractiveForceType",(int*)&proj->AttractiveForceType,ATT_GRAVITY);
+	ini.ReadKeywordList("General","AttractiveForceObjects",&proj->AttractiveForceObjects,0);
+	ini.ReadKeywordList("General","AttractiveForceClasses",&proj->AttractiveForceClasses,0);
+	ini.ReadKeyword("General","AttractiveForceThroughWalls",&proj->AttractiveForceThroughWalls,true);
 	
 	if (ini.ReadInteger("General","Gravity",&proj->Gravity, 0))
 		proj->UseCustomGravity = true;
@@ -1926,28 +1830,26 @@ bool CGameScript::CompileExtra(const IniReader& ini)
 	ini.ReadInteger("NinjaRope","RestLength",&restl,0);
 	ini.ReadFloat("NinjaRope","Strength",&strength,0);
 
-	Game->lx56modSettings.set(FT_RopeMaxLength) = ropel;
-	Game->lx56modSettings.set(FT_RopeRestLength) = restl;
-	Game->lx56modSettings.set(FT_RopeStrength) = strength;
+	Game->SetRopeLength(ropel);
+	Game->SetRestLength(restl);
+	Game->SetStrength(strength);
 
 
 	// Worm
 	notes << "  Compiling Worm" << endl;
-	gs_worm_t wrm;
+	gs_worm_t *wrm = &Game->Worm;
 
-	ini.ReadFloat( "Worm", "AngleSpeed",		&wrm.AngleSpeed, 150);
-	ini.ReadFloat( "Worm", "GroundSpeed",		&wrm.GroundSpeed, 8);
-	ini.ReadFloat( "Worm", "AirSpeed",		&wrm.AirSpeed, 1);
-	ini.ReadFloat( "Worm", "Gravity",			&wrm.Gravity, 175);
-	ini.ReadFloat( "Worm", "JumpForce",		&wrm.JumpForce, -140);
-	ini.ReadFloat( "Worm", "AirFriction",		&wrm.AirFriction, 0);
-	ini.ReadFloat( "Worm", "GroundFriction",	&wrm.GroundFriction, 0.6f);
+	ini.ReadFloat( "Worm", "AngleSpeed",		&wrm->AngleSpeed, 150);
+	ini.ReadFloat( "Worm", "GroundSpeed",		&wrm->GroundSpeed, 8);
+	ini.ReadFloat( "Worm", "AirSpeed",		&wrm->AirSpeed, 1);
+	ini.ReadFloat( "Worm", "Gravity",			&wrm->Gravity, 175);
+	ini.ReadFloat( "Worm", "JumpForce",		&wrm->JumpForce, -140);
+	ini.ReadFloat( "Worm", "AirFriction",		&wrm->AirFriction, 0);
+	ini.ReadFloat( "Worm", "GroundFriction",	&wrm->GroundFriction, 0.6f);
 
-	Game->lx56modSettings.set(FT_WormGroundSpeed) = wrm.GroundSpeed;
-	Game->lx56modSettings.set(FT_WormAirSpeed) = wrm.AirSpeed;
-	Game->lx56modSettings.set(FT_WormGravity) = wrm.Gravity;
-	Game->lx56modSettings.set(FT_WormJumpForce) = wrm.JumpForce;
-	Game->lx56modSettings.set(FT_WormAirFriction) = wrm.AirFriction;
+
+
+
 
 	return true;
 }
@@ -2496,72 +2398,4 @@ bool Proj_TerrainHitEvent::write(CGameScript* gs, FILE* fp) {
 	fwrite_endian<char>(fp, Dirt);
 	fwrite_endian<char>(fp, Rock);
 	return true;
-}
-
-std::vector<std::string> CGameScript::LoadWeaponList(const std::string dir)
-{
-	std::vector<std::string> ret;
-	ModInfo info;
-	std::string name;
-	if( !CheckFile(dir, name, false, &info) )
-		return ret;
-	
-	if( info.typeShort == "LX src" )
-	{
-		// Read only weapons
-		//InitDefaultCompilerKeywords();
-		IniReader ini(dir + "/Main.txt", compilerKeywords);
-
-		if (!ini.Parse())
-		{
-			errors << "Error while parsing the gamescript " << dir << endl;
-			return ret;
-		}
-
-		int numWeapons = 0;
-		ini.ReadInteger("Weapons","NumWeapons", &numWeapons,0);
-		for(int i = 0; i < numWeapons; i++) 
-		{
-			std::string wpn = "Weapon" + itoa(i+1);
-			std::string weap;
-			ini.ReadString("Weapons", wpn, weap, "");
-			if( weap != "" )
-			{
-				IniReader ini2(dir + "/" + weap, compilerKeywords);
-				if (!ini2.Parse())
-				{
-					errors << "Error while parsing the gamescript " << dir << endl;
-					return ret;
-				}
-				ini2.ReadString("General", "Name", weap, "");
-				if( weap != "" )
-					ret.push_back( weap );
-			}
-		}
-		return ret;
-	}
-	
-	if( info.typeShort == "LX" )
-	{
-		// Too complicated to parse here
-		CGameScript loader;
-		if( loader.Load(dir, false) != GSE_OK )
-			return ret;
-		for( int i = 0; i < loader.NumWeapons; i++ )
-			ret.push_back( loader.Weapons[i].Name );
-		return ret;
-	}
-	
-	// TODO: Gusanos does not support weapon restrictions
-	return ret;
-}
-
-std::vector<std::string> CGameScript::GetWeaponList() const
-{
-	std::vector<std::string> ret;
-	if( ! loaded )
-		return ret;
-	for( int i = 0; i < NumWeapons; i++ )
-		ret.push_back( Weapons[i].Name );
-	return ret;
 }

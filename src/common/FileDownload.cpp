@@ -64,18 +64,6 @@ void CHttpDownloader::Start(const std::string& filename, const std::string& dest
 		return;
 	}
 
-	// filename can come straight from the server
-	// (e.g. the mod path from ParseUpdateLobbyGame)
-	// and is used below to build the local destination path.
-	// Reject anything that could escape the download directory
-	// (".." , absolute paths, and so on),
-	// the same validation the UDP downloader already applies.
-	if (!CUdpFileDownloader::isPathValid(filename))  {
-		Unlock();
-		SetDlError(FILEDL_ERROR_NO_FILE);
-		return;
-	}
-
 	if (dest_dir.size() == 0)  {
 		Unlock();
 		SetDlError(FILEDL_ERROR_NO_DEST);
@@ -248,7 +236,7 @@ void CHttpDownloader::SetHttpError(HttpError err)
 	Lock();
 
 	tError.iError = FILEDL_ERROR_HTTP;
-	tError.sErrorMsg = "HTTP Error: " + tHttp.GetUrl() + " : " + err.sErrorMsg;
+	tError.sErrorMsg = "HTTP Error: " + err.sErrorMsg;
 	tError.tHttpError.iError = err.iError;
 	tError.tHttpError.sErrorMsg = err.sErrorMsg;
 
@@ -317,7 +305,7 @@ DownloadError CHttpDownloader::GetError()
 
 /////////////
 // The main function for the threaded downloading
-Result ManagerMain(void *param)
+int ManagerMain(void *param)
 {
 	CHttpDownloadManager *_this = (CHttpDownloadManager *)param;
 
@@ -330,7 +318,7 @@ Result ManagerMain(void *param)
 			SDL_Delay(50);
 	}
 
-	return true;
+	return 0;
 }
 
 /////////////////
@@ -372,7 +360,16 @@ CHttpDownloadManager::~CHttpDownloadManager()
 	bBreakThread = true;
 	threadPool->wait(tThread, NULL);
 
-	RemoveAllDownloads();
+	Lock();
+
+	// Stop the downloads
+	for (std::list<CHttpDownloader *>::iterator i = tDownloads.begin(); i != tDownloads.end(); i++)  {
+		(*i)->Stop();
+		delete (*i);
+	}
+	iActiveDownloads = 0;
+
+	Unlock();
 
 	SDL_DestroyMutex(tMutex);
 }
@@ -425,20 +422,6 @@ void CHttpDownloadManager::RemoveFileDownload(const std::string &filename)
 				break;
 			}
 		}
-
-	Unlock();
-}
-
-void CHttpDownloadManager::RemoveAllDownloads() {
-	Lock();
-
-	// Stop the downloads
-	for (std::list<CHttpDownloader *>::iterator i = tDownloads.begin(); i != tDownloads.end(); i++)  {
-		(*i)->Stop();
-		delete (*i);
-	}
-	tDownloads.clear();
-	iActiveDownloads = 0;
 
 	Unlock();
 }

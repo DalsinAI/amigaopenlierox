@@ -10,46 +10,41 @@
 #ifndef __MUTEX_H__
 #define __MUTEX_H__
 
-#include <mutex>
-#ifdef DEBUG
-#include <thread>
-#endif
-#include "CodeAttributes.h"
+#include <SDL_mutex.h>
+
+#define INVALID_THREAD_ID (Uint32)-1
+
+class Condition;
 
 // Mutex wrapper class with some extra debugging checks
-class Mutex : DontCopyTag {
+class Mutex  {
+	friend class Condition;
 private:
-	std::mutex m_mutex;
+	SDL_mutex *m_mutex;
 
 #ifdef DEBUG
-	std::thread::id m_lockedThread;  // thread that holds the lock, or default-constructed if none
-
-	void _lock_pre();
-	void _lock_post();
-	void _unlock_pre();
-	void _unlock_post();
+	volatile Uint32 m_lockedThread;  // Thread that keeps the lock
 #endif
 
 public:
-#ifdef DEBUG
+/*#ifdef DEBUG
+	Mutex();
 	~Mutex();
 	void lock();
 	void unlock();
-#else
-	void lock()		{ m_mutex.lock(); }
-	void unlock()	{ m_mutex.unlock(); }
-#endif
 
-	struct ScopedLock : DontCopyTag {
+	static void test();
+#else */
+	Mutex()			{ m_mutex = SDL_CreateMutex(); }
+	~Mutex()		{ SDL_DestroyMutex(m_mutex); }
+	void lock()		{ SDL_LockMutex(m_mutex); }
+	void unlock()	{ SDL_UnlockMutex(m_mutex); }
+//#endif
+	
+	struct ScopedLock {
 		Mutex& mutex;
 		ScopedLock(Mutex& m) : mutex(m) { mutex.lock(); }
 		~ScopedLock() { mutex.unlock(); }
-	};
-
-	struct ScopedUnlock : DontCopyTag {
-		Mutex& mutex;
-		ScopedUnlock(Mutex& m) : mutex(m) { mutex.unlock(); }
-		~ScopedUnlock() { mutex.lock(); }
 	};
 };
 

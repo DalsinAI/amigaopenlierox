@@ -21,8 +21,6 @@
 #include "GfxPrimitives.h"
 #include "Cursor.h"
 #include "Menu.h"
-#include "DeprecatedGUI/CWidget.h"
-
 
 namespace DeprecatedGUI {
 
@@ -48,55 +46,44 @@ public:
 	// Constructor
 	CButton() {
 		bMouseOver = false;
-		bSelected = false;
 		bMouseDown = false;
 		bUseFallback = false;
 		iType = wid_Button;
         iGoodWidth = iWidth = 250;
 		iButtonType = BUT_MENU;
 		iHeight = 18;
-		bVisible = true;
 	}
 
 	CButton(int imgid, SmartPointer<SDL_Surface> image) {
 		iImageID = imgid;
 		bmpImage = image;
 		bMouseOver = false;
-		bSelected = false;
 		bMouseDown = false;
 		bUseFallback = false;
 		iType = wid_Button;
         iGoodWidth = iWidth = 250;
 		iButtonType = BUT_MENU;
 		iHeight = image.get()->h;
-		bVisible = true;
 	}
 
 	CButton(const std::string& path) {
 		iImageID = 0;
 		bmpImage = LoadGameImage(path);
 		bMouseOver = false;
-		bSelected = false;
 		bMouseDown = false;
 		bUseFallback = false;
 		iType = wid_Button;
         iGoodWidth = iWidth = 250;
 		iButtonType = BUT_TWOSTATES;
 		iHeight = bmpImage.get()->h;
-		bVisible = true;
 	}
 
-	bool		bVisible;
-
-	// Draw the button highlighted, as if the mouse was over it
-	void		setSelected(bool selected)	{ bSelected = selected; }
 
 private:
 	// Attributes
 
 	bool		bMouseOver;
 	bool		bMouseDown;
-	bool		bSelected;
 	SmartPointer<SDL_Surface> bmpImage;
 	int			iImageID;
     int         iGoodWidth;
@@ -127,9 +114,9 @@ public:
 	int		KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate);
 	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate)	{ return BTN_NONE; }
 
-	uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)	{ return 0; }
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param) { return 0; }
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param)  { return 0; }
+	DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2)	{ return 0; }
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param) { return 0; }
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param)  { return 0; }
 
 	// Draw the button
 	void	Draw(SDL_Surface * bmpDest);

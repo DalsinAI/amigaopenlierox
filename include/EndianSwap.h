@@ -93,18 +93,6 @@ static size_t fread_endian(FILE* stream, _D& d) {
 	return ret;
 }
 
-template <typename T, typename PtrT>
-static T pread_endian(PtrT& p, PtrT end) {
-	static_assert(sizeof(*(PtrT())) == 1, "PtrT_of_8bit");
-	T data = T();
-	if(p + sizeof(T) <= end) {
-		data = *(T*)p;
-		EndianSwap(data);
-	}
-	p += sizeof(T);
-	return data;
-}
-
 
 template<typename T1, typename T2>
 static size_t fread_endian_M(FILE* stream, MatrixD2<T2>& d) {

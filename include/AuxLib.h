@@ -22,24 +22,28 @@
 #include <SDL.h>
 #include <string>
 
+#ifdef WIN32
+#include <windows.h>
+#endif
 
 #include "SmartPointer.h"
-#include "ThreadPool.h" // for Action
 
 
 // Routines
-bool		InitializeAuxLib();
+int			InitializeAuxLib(const std::string& config, int bpp, int vidflags);
 void		ShutdownAuxLib();
 bool		SetVideoMode(); // only call from main thread; use doSetVideoModeInMainThread elsewhere
 
 #ifdef WIN32
-void		*GetWindowHandle();
+HWND		GetWindowHandle();
 #endif
 
 void        FlipScreen();
 void		CapFPS();
 
 char*		GetAppPath();
+
+std::string GetConfigFile();
 
 
 void		PushScreenshot(const std::string& dir, const std::string& data);
@@ -57,7 +61,7 @@ std::string	GetDateTimeFilename(); // Returns time for use in filename, so newer
 #ifdef DEBUG
 bool		HandleDebugCommand(const std::string& cmd);
 #else
-#define		HandleDebugCommand(cmd) (false)
+inline bool	HandleDebugCommand(const std::string& cmd) { return false; }
 #endif
 
 
@@ -66,113 +70,45 @@ void doSetVideoModeInMainThread();
 void doActionInMainThread(Action* act);
 void doVppOperation(Action* act);
 
+void flipRealVideo();
 
 // Asynchronously enable/disable mouse cursor in window manager, may be called from any thread
 // Use this function instead of SDL_ShowCursor()
 void EnableSystemMouseCursor(bool enable = true);
 
-// Apply the wanted OS cursor visibility (set via EnableSystemMouseCursor).
-// Most platforms just hide it through SDL;
-// macOS drives the hardware cursor directly,
-// so it must be re-applied from the main thread whenever a gate input changes:
-// the mouse enters or leaves the window, or the window focus flips.
-void EnforceSystemMouseCursor();
-
 class VideoPostProcessor {
 protected:
-	SmartPointer<SDL_Window> m_window;
-	SmartPointer<SDL_Renderer> m_renderer;
-	SmartPointer<SDL_Texture> m_videoTexture;         // GPU texture: the drawn band, uploaded each frame
-	// Double-buffered across the thread boundary:
-	// the gameloop draws one while the main thread presents the other (flipBuffers).
-	SmartPointer<SDL_Surface> m_videoSurface;         // draw target (front)
-	SmartPointer<SDL_Surface> m_videoBufferSurface;   // committed frame (back)
-	SmartPointer<SDL_Surface> m_leftGap, m_rightGap;  // precomputed side-gap fills (buildSideGaps)
-	SmartPointer<SDL_Texture> m_leftGapTex, m_rightGapTex; // the gaps as GPU textures
-	Uint32 m_sideGapKey = 0;    // change key: rebuild the gap surfaces only when it changes
-	Uint32 m_sideGapTexKey = 0; // last key uploaded to the gap textures
-	int m_screenWidth = 640;
-	// Width the current frame is laid out for: screenWidth() (local),
-	// or menuWidth (menus/net, composed centered). Set per-frame.
-	int m_displayScreenWidth = 640;
-	// Snapshot of m_displayScreenWidth taken when a drawn frame is committed
-	// (flipBuffers, under the video mutex) and handed to render() via process(),
-	// so each frame is presented with the layout width it was actually drawn for.
-	// render() runs on the main thread,
-	// while the game thread keeps updating m_displayScreenWidth for the next frame,
-	// so reading it live in render() races
-	// and can center a frame with the wrong offset at menu/game transitions.
-	int m_committedDisplayScreenWidth = 640; // flipBuffers writes, process reads (both under mutex)
-	int m_renderDisplayScreenWidth = 640;    // main-thread only: process writes, render reads
-	static VideoPostProcessor instance;
-
-	// Upload the gap surfaces to the gap textures when they changed. Main thread.
-	void updateSideGapTextures();
-
+	static SDL_Surface* m_videoSurface;
+	static SDL_Surface* m_videoBufferSurface;
+	static VideoPostProcessor* instance;
+	
 public:
-	// IMPORTANT: Don't call this while anyone else calls/accesses anything else here.
-	static void flipBuffers();
-
 	// IMPORTANT: only call these from the main thread
+	static void flipBuffers() { SDL_Surface* tmp = m_videoSurface; m_videoSurface = m_videoBufferSurface; m_videoBufferSurface = tmp; }
 	static void process();
-	static void render();
 	static void cloneBuffer();
-
+	
 public:
-	static VideoPostProcessor* get() { return &instance; }
+	virtual ~VideoPostProcessor() {}
+	static VideoPostProcessor* get() { return instance; }
+	static void init();
 	static void uninit();
 
-	SDL_Window* sdl_window() const { return m_window.get(); }
-	SDL_Renderer* sdl_renderer() const { return m_renderer.get(); }
+	virtual void resetVideo() { m_videoSurface = m_videoBufferSurface = SDL_GetVideoSurface(); } // this dummy just uses the real video surface directly; it is called from SetVideoMode
+	virtual void processToScreen() {} // should process m_videoSurface to real video surface; this is run within an own thread
+	virtual int screenWidth() { return 640; }
+	virtual int screenHeight() { return 480; }
 
-	bool initWindow();
-	bool resetVideo(); // this is called from SetVideoMode
-
-	// Precompute the side-gap fills from a menuWidth-wide theme background.
-	void buildSideGaps(const SmartPointer<SDL_Surface>& bg);
-
-	// Hook to draw screen-space overlays (task bar, FPS) on top of the frame.
-	// Runs on the main thread from render() (see cOverlayFont).
-	typedef void (*ScreenOverlayFn)(SDL_Renderer* renderer);
-	static void setScreenOverlay(ScreenOverlayFn fn) { screenOverlay = fn; }
-private:
-	static ScreenOverlayFn screenOverlay;
-public:
+	static SDL_Surface* videoSurface() { return m_videoSurface; };
+	static SDL_Surface* videoBufferSurface() { return m_videoBufferSurface; };
 	
-	int screenWidth() const { return m_screenWidth; }
-	int screenHeight() const { return 480; }
-
-	// The base view width: what menus are authored for, and the width network
-	// games are constrained to. The actual screen may be wider (computed from
-	// the desktop aspect ratio); such content stays this wide and is centered.
-	// Height always matches screenHeight().
-	static const int menuWidth = 640;
-
-	// The effective layout width for the current frame (see m_displayScreenWidth).
-	// All screen-width-dependent logic (viewport setup, centering, mouse) should
-	// use this instead of screenWidth() so local vs network games behave right.
-	void setDisplayScreenWidth(int w) { m_displayScreenWidth = w; }
-	int displayScreenWidth() const { return m_displayScreenWidth; }
-
-	// Horizontal offset that centers a displayScreenWidth()-wide view on the
-	// screen. Zero when the view already fills the screen (local game, or 4:3).
-	int displayScreenOffsetX() const { int o = (m_screenWidth - m_displayScreenWidth) / 2; return o > 0 ? o : 0; }
-
-	// Horizontal offset to center a menuWidth-wide popup (the in-game Esc menu,
-	// in-game options, ...) within the current view, so it overlays the
-	// unchanged game centered. Zero for a network game (the whole view is
-	// already presented centered); (screenWidth-menuWidth)/2 for a full-width
-	// local game.
-	int popupCenterOffsetX() const { int o = (m_displayScreenWidth - menuWidth) / 2; return o > 0 ? o : 0; }
-
-	static const SmartPointer<SDL_Surface>& videoSurface() { return get()->m_videoSurface; }
-	static const SmartPointer<SDL_Surface>& videoBufferSurface() { return get()->m_videoBufferSurface; }
-	
+	static void transformCoordinates_ScreenToVideo( int& x, int& y );
 };
 
 
 // Subclass
 #ifdef WIN32
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void		SubclassWindow();
 void		UnSubclassWindow();
 #endif

@@ -20,7 +20,7 @@
 
 #include "Debug.h"
 #include "LieroX.h"
-#include "OLXConsole.h"
+#include "console.h"
 #include "EndianSwap.h"
 #include "AuxLib.h"
 #include "Error.h"
@@ -32,7 +32,7 @@
 #include "GfxPrimitives.h"
 #include "FindFile.h"
 #include "StringUtils.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Cursor.h"
 #include "DeprecatedGUI/CButton.h"
 #include "DedicatedControl.h"
@@ -40,16 +40,11 @@
 #include "Timer.h"
 #include "IRC.h"
 #include "FileUtils.h"
-#include "OLXCommand.h"
+#include "Command.h"
 #include "HTTP.h"
 #include "Version.h"
 #include "CrashHandler.h"
-#include "game/Level.h"
-#ifndef DEDICATED_ONLY
-#include "sound/sfx.h"
-#endif
-#include "TaskManager.h"
-#include "game/ServerList.h"
+#include "Touchscreen.h"
 
 
 // TODO: move this out here
@@ -64,61 +59,19 @@ namespace DeprecatedGUI {
 menu_t	*tMenu = NULL;
 
 
-bool		bSkipStart = false;
-
-// Last cursor position set by Menu_WarpMouse, in window-logical coordinates
-static int Menu_MouseWarpedX = 0;
-static int Menu_MouseWarpedY = 0;
+bool		*bGame = NULL;
+int			iSkipStart = false;
 CWidgetList	LayoutWidgets[LAYOUT_COUNT];
 
-static bool Menu_InitSockets() {
-	for (size_t i = 0; i < sizeof(tMenu->tSocket)/sizeof(tMenu->tSocket[0]); ++i)
-		tMenu->tSocket[i] = new NetworkSocket();
-
-	// HACK: open an unreliable foo socket
-	// Some routers simply ignore first open socket and don't let any data through, this is a workaround
-	tMenu->tSocket[SCK_FOO]->OpenUnreliable(0);
-	// Open a socket for broadcasting over a LAN (UDP)
-	tMenu->tSocket[SCK_LAN]->OpenBroadcast(0);
-	// Open a socket for communicating over the net (UDP)
-	tMenu->tSocket[SCK_NET]->OpenUnreliable(0);	
-	
-	if(!tMenu->tSocket[SCK_LAN]->isOpen() || !tMenu->tSocket[SCK_NET]->isOpen()) {
-#if defined(__EMSCRIPTEN__)
-		// Browsers can't open raw UDP sockets — sockets() returns
-		// SOCK_DGRAM = -1 in Emscripten. The single-player menu still
-		// works without them; just skip the abort and continue with
-		// closed sockets. The server browser / master server query
-		// paths will be no-ops at runtime.
-		warnings << "Menu_InitSockets: UDP sockets unavailable on Emscripten — "
-		            "continuing without networking" << endl;
-#else
-		SystemError("Error: Failed to open a socket for networking");
-		return false;
-#endif
-	}
-
-	// Send some random data to some random IP
-	if (tMenu->tSocket[SCK_FOO]->isOpen())  {
-		NetworkAddr a; StringToNetAddr("1.2.3.4:5678", a);
-		// For example, if no network is connected, you likely only have 127.* in your routing table.
-		if(IsNetAddrAvailable(a)) {
-			tMenu->tSocket[SCK_FOO]->setRemoteAddress(a);
-			tMenu->tSocket[SCK_FOO]->Write("foo");
-		}
-	}
-
-	return true;
-}
-
-menu_t::menu_t() : cSkin(CGameSkin::WormSkin(), true) {}
-
-static void Menu_DrawScreenOverlay(SDL_Renderer* renderer); // registered in Menu_Initialize
+static int Menu_MouseWarpedX = 0;
+static int Menu_MouseWarpedY = 0;
 
 ///////////////////
 // Initialize the menu system
-bool Menu_Initialize()
+bool Menu_Initialize(bool *game)
 {
+	bGame = game;
+	*bGame = false;
 	bJoin_Update = true;
 	bHost_Update = true;
 
@@ -129,8 +82,6 @@ bool Menu_Initialize()
 		return false;
     }
 
-	if(!Menu_InitSockets()) return false;
-
 	if(bDedicated) return true;
 	
 	// Load the frontend info
@@ -138,6 +89,17 @@ bool Menu_Initialize()
 
 	tMenu->iReturnTo = net_internet;
 	tMenu->bForbidConsole = false;
+	tMenu->iListItemHeight = tLX->cFont.GetHeight();
+	tMenu->bFingerDrag = false;
+#ifdef __ANDROID__
+	if (!getenv("ANDROID_TV"))
+#else
+	if (getenv("TEST_TOUCH_UI"))
+#endif
+	{
+		tMenu->bFingerDrag = true;
+		tMenu->iListItemHeight = tLX->cFont.GetHeight() * 2;
+	}
 
 	// Load the images
 	//LOAD_IMAGE(tMenu->bmpMainBack,"data/frontend/background.png");
@@ -148,9 +110,6 @@ bool Menu_Initialize()
 	tMenu->bmpMainBack_common = LoadGameImage("data/frontend/background_common.png");
 	if (!tMenu->bmpMainBack_common.get())
 		tMenu->bmpMainBack_common = tMenu->bmpMainBack_wob;
-
-	// Draw the task-status bar and FPS in screen space (full display width).
-	VideoPostProcessor::setScreenOverlay(&Menu_DrawScreenOverlay);
 
 
 	tMenu->bmpBuffer = gfxCreateSurface(640,480);
@@ -209,6 +168,32 @@ bool Menu_Initialize()
 	CopySurface(tMenu->bmpLobbyNotReady.get(), lobby_state, 0, 12, 0, 0, lobby_state.get()->w, 12);
 
 
+	for (size_t i = 0; i < sizeof(tMenu->tSocket)/sizeof(tMenu->tSocket[0]); ++i)
+		tMenu->tSocket[i] = new NetworkSocket();
+
+	// HACK: open an unreliable foo socket
+	// Some routers simply ignore first open socket and don't let any data through, this is a workaround
+	tMenu->tSocket[SCK_FOO]->OpenUnreliable(0);
+	// Open a socket for broadcasting over a LAN (UDP)
+	tMenu->tSocket[SCK_LAN]->OpenBroadcast(0);
+	// Open a socket for communicating over the net (UDP)
+	tMenu->tSocket[SCK_NET]->OpenUnreliable(0);	
+	
+	if(!tMenu->tSocket[SCK_LAN]->isOpen() || !tMenu->tSocket[SCK_NET]->isOpen()) {
+		SystemError("Error: Failed to open a socket for networking");
+		return false;
+	}
+
+	// Send some random data to some random IP
+	if (tMenu->tSocket[SCK_FOO]->isOpen())  {
+		NetworkAddr a; StringToNetAddr("1.2.3.4:5678", a);
+		// For example, if no network is connected, you likely only have 127.* in your routing table.
+		if(IsNetAddrAvailable(a)) {
+			tMenu->tSocket[SCK_FOO]->setRemoteAddress(a);
+			tMenu->tSocket[SCK_FOO]->Write("foo");
+		}
+	}
+
 	// Add default widget IDs to the widget list
 	//Menu_AddDefaultWidgets();
 
@@ -251,108 +236,48 @@ void Menu_Shutdown()
 	// Shutdown the layouts
 	//for (int i=0; i<LAYOUT_COUNT; i++)
 	//	LayoutWidgets[i].Shutdown();
+
+	Menu_SvrList_Shutdown();
 }
 
+
+///////////////////
+// Start the menu
+void Menu_Start()
+{
+	tMenu->bMenuRunning = true;
+
+	if(!bDedicated) {
+		if(!iSkipStart) {
+			notes << "Loading main menu" << endl;
+			tMenu->iMenuType = MNU_MAIN;
+			Menu_MainInitialize();
+		} else
+			Menu_RedrawMouse(true);
+	}
+
+	iSkipStart = false;
+	Menu_Loop();
+}
 
 
 ///////////////////
 // Set the skip start bit
 void Menu_SetSkipStart(int s)
 {
-    bSkipStart = s;
-}
-	
-// --- GPU overlay primitives -----------------------------------------------
-// Immediate-mode helpers for the screen overlay, main thread only:
-// a blended fill rect, and content-sized surfaces blitted as textures.
-
-static void overlayFillRect(SDL_Renderer* r, int x, int y, int w, int h, Color c) {
-	SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-	SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
-	SDL_Rect rect = { x, y, w, h };
-	SDL_RenderFillRect(r, &rect);
-}
-
-// Blit an alpha (transparent-background) surface as a texture at (x,y).
-// Raw upload into a matching-format texture (like the main video texture),
-// not CreateTextureFromSurface -- its conversion mis-renders on Metal (magenta text).
-static void overlayBlit(SDL_Renderer* r, const SmartPointer<SDL_Surface>& s, int x, int y) {
-	if(!s.get()) return;
-	SmartPointer<SDL_Texture> tex = SDL_CreateTexture(r, s->format->format,
-		SDL_TEXTUREACCESS_STREAMING, s->w, s->h);
-	if(!tex.get()) return;
-	SDL_SetTextureBlendMode(tex.get(), SDL_BLENDMODE_BLEND);
-	SDL_UpdateTexture(tex.get(), NULL, s->pixels, s->pitch);
-	SDL_Rect dst = { x, y, s->w, s->h };
-	SDL_RenderCopy(r, tex.get(), NULL, &dst);
-}
-
-// Fresh alpha surface cleared to the content colour at alpha 0,
-// not transparent black -- else AA edges blend their RGB toward black
-// and the text looks muddy.
-static SmartPointer<SDL_Surface> overlayScratch(int w, int h, Color col) {
-	SmartPointer<SDL_Surface> s = gfxCreateSurfaceAlpha(w, h);
-	if(s.get())
-		SDL_FillRect(s.get(), NULL, SDL_MapRGBA(s->format, col.r, col.g, col.b, 0));
-	return s;
-}
-
-static void overlayDrawText(SDL_Renderer* r, CFont& font, int x, int y, Color col, const std::string& text) {
-	if(text.empty()) return;
-	const int w = font.GetWidth(text), h = font.GetHeight();
-	if(w <= 0 || h <= 0) return;
-	SmartPointer<SDL_Surface> s = overlayScratch(w, h, col);
-	if(!s.get()) return;
-	font.Draw(s.get(), 0, 0, col, text);
-	overlayBlit(r, s, x, y);
-}
-
-// Draw the running-tasks loading ani centered at (cx,cy), radius rx/ry.
-static void overlayDrawLoadingAni(SDL_Renderer* r, int cx, int cy, int rx, int ry, Color fg, Color bg) {
-	SmartPointer<SDL_Surface> s = overlayScratch(2*rx + 2, 2*ry + 2, fg);
-	if(!s.get()) return;
-	DrawLoadingAni(s.get(), rx, ry, rx, ry, fg, bg, LAT_CIRCLES);
-	overlayBlit(r, s, cx - rx, cy - ry);
-}
-
-// Draw the task-status bar and FPS full width,
-// on the main thread (the VideoPostProcessor screen overlay).
-// Uses cOverlayFont, not cFont,
-// so it doesn't race the gameloop's font drawing (CFont is not thread-safe).
-static void Menu_DrawScreenOverlay(SDL_Renderer* renderer) {
-	if(!renderer || !tLX) return;
-	if(game.state >= Game::S_Preparing) return; // menus only, as before
-
-	if(taskManager)
-		taskManager->renderTasksStatus(renderer, tLX->cOverlayFont);
-
-#ifdef DEBUG
-	if(tLX->fDeltaTime != TimeDiff())
-		overlayDrawText(renderer, tLX->cOverlayFont, 0, 0, tLX->clWhite,
-			"FPS: " + itoa((int)(1.0f/tLX->fDeltaTime.seconds())));
-#endif
+    iSkipStart = s;
 }
 
 void Menu_Frame() {
+	HandlePendingCommands();
+	
 	if(bDedicated) {
-		ServerList::get()->process();
+		DedicatedControl::Get()->Menu_Frame();
 		return;
 	}
 
-#ifndef DEDICATED_ONLY
-	sfx.think();
-#endif
-
-	if(game.state >= Game::S_Preparing) return; // could be already quitted
-
-	// Menus are authored for menuWidth and presented centered on the screen.
-	// (Overwritten by the gameplay draw, see CClient::Draw.)
-	VideoPostProcessor::get()->setDisplayScreenWidth(VideoPostProcessor::menuWidth);
-
-	// Keep the side bars in sync with this menu's background.
-	// (buildSideGaps only rebuilds when the edges change; a game keeps the last.)
-	VideoPostProcessor::get()->buildSideGaps(tMenu->bmpBuffer);
-
+	if(!tMenu->bMenuRunning) return; // could be already quitted
+	
 	// Check if user pressed screenshot key
 	if (tLX->cTakeScreenshot.isDownOnce())  {
 		PushScreenshot("scrshots", "");
@@ -377,7 +302,7 @@ void Menu_Frame() {
 			Menu_LocalFrame();
 			break;
 
-		// Network
+		// News
 		case MNU_NETWORK:
 			Menu_NetFrame();
 			break;
@@ -389,7 +314,7 @@ void Menu_Frame() {
 
 		// Map editor
 		case MNU_MAPED:
-			Menu_MapEdFrame(VideoPostProcessor::videoSurface().get(),true);
+			Menu_MapEdFrame(VideoPostProcessor::videoSurface(),true);
 			break;
 
 		// Options
@@ -398,26 +323,78 @@ void Menu_Frame() {
 			break;
 	}
 
-	// In network menu, we do the update anyway.
-	// But we also want to have it everywhere else.
-	if(tMenu->iMenuType != MNU_NETWORK)
-		ServerList::get()->process();
-	
-	// Task-status bar and FPS are drawn full width by Menu_DrawScreenOverlay, not here.
+	// DEBUG: show FPS
+#ifdef DEBUG
+	if(tLX->fDeltaTime != TimeDiff()) {
+		Menu_redrawBufferRect(0, 0, 100, 20);
+		tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 0, 0, tLX->clWhite, "FPS: " + itoa((int)(1.0f/tLX->fDeltaTime.seconds())));
+	}
+#endif
 
 	if (!tMenu->bForbidConsole)  {
 		Con_Process(tLX->fDeltaTime);
-		Con_Draw(VideoPostProcessor::videoSurface().get());
+		Con_Draw(VideoPostProcessor::videoSurface());
 	}
 	tMenu->bForbidConsole = false; // Reset it here, it might get recovered next frame
 
 	// we need to clone the screen buffer because of the current way we are drawing the menu
 	struct CopyScreenBuffer : Action {
-		Result handle() { VideoPostProcessor::cloneBuffer(); return true; }
+		int handle() { VideoPostProcessor::cloneBuffer(); return 0; }
 	};
 	doVppOperation(new CopyScreenBuffer());
+	
+	// now do the actual flip&draw
+	doVideoFrameInMainThread();
+
+	SetTouchscreenControlsShown(false);
 }
 
+
+///////////////////
+// Main menu loop
+void Menu_Loop()
+{	
+	AbsTime menuStartTime = tLX->currentTime = GetTime();
+		
+	bool last_frame_was_because_of_an_event = false;
+	last_frame_was_because_of_an_event = ProcessEvents();
+	
+	while(tMenu->bMenuRunning) {
+		AbsTime oldtime = tLX->currentTime;
+
+		Menu_Frame();
+		if(!tMenu->bMenuRunning) break;
+		CapFPS();
+		SetCrashHandlerReturnPoint("Menu_Loop");
+		
+		if(last_frame_was_because_of_an_event || bDedicated) {
+			// Use ProcessEvents() here to handle other processes in queue.
+			// There aren't probably any but it has also the effect that
+			// we run the loop another time after an event which is sometimes
+			// because of the current code needed. Sometimes after an event,
+			// some new menu elements got initialised but not drawn.
+			last_frame_was_because_of_an_event = ProcessEvents();
+		} else {
+			last_frame_was_because_of_an_event = WaitForNextEvent();
+		}
+		
+		ProcessIRC();
+
+		tLX->currentTime = GetTime();
+		tLX->fDeltaTime = tLX->currentTime - oldtime;
+		tLX->fRealDeltaTime = tLX->fDeltaTime;
+		
+		// If we have run fine for >=5 seconds, it is probably safe & make sense
+		// to restart the game in case of a crash.
+		if(tLX->currentTime - menuStartTime >= TimeDiff(5.0f))
+			CrashHandler::restartAfterCrash = true;			
+	}
+	
+	// If we go out of the menu, it means the user has selected something.
+	// This indicates that everything is fine, so we should restart in case of a crash.
+	// Note that we will set this again to false later on in case the user quitted.
+	CrashHandler::restartAfterCrash = true;
+}
 
 
 ///////////////////
@@ -426,7 +403,7 @@ void Menu_Frame() {
 void Menu_RedrawMouse(bool total)
 {
 	if(total) {
-		SDL_BlitSurface(tMenu->bmpBuffer.get(),NULL,VideoPostProcessor::videoSurface().get(),NULL);
+		SDL_BlitSurface(tMenu->bmpBuffer.get(),NULL,VideoPostProcessor::videoSurface(),NULL);
 		return;
 	}
 
@@ -434,7 +411,7 @@ void Menu_RedrawMouse(bool total)
 	int hh = GetMaxCursorHeight() / 2 - 1;
 
 	mouse_t *m = GetMouse();
-	DrawImageAdv(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer,
+	DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer,
 				m->X - hw - m->deltaX,
 				m->Y - hh - m->deltaY,
 
@@ -448,9 +425,7 @@ void Menu_RedrawMouse(bool total)
 // Draw a sub title
 void Menu_DrawSubTitle(SDL_Surface * bmpDest, int id)
 {
-	// Center within the menu canvas (menuWidth), not the full screen: the
-	// whole menu is presented centered, so menu-local coordinates are used.
-	int x = VideoPostProcessor::menuWidth/2;
+	int x = VideoPostProcessor::videoSurface()->w/2;
 	x -= tMenu->bmpSubTitles.get()->w/2;
 
 	DrawImageAdv(bmpDest,tMenu->bmpSubTitles, 0, id*70, x,30, tMenu->bmpSubTitles.get()->w, 65);
@@ -461,9 +436,7 @@ void Menu_DrawSubTitle(SDL_Surface * bmpDest, int id)
 // Draw a sub title advanced
 void Menu_DrawSubTitleAdv(SDL_Surface * bmpDest, int id, int y)
 {
-	// Center within the menu canvas (menuWidth), not the full screen: the
-	// whole menu is presented centered, so menu-local coordinates are used.
-	int x = VideoPostProcessor::menuWidth/2;
+	int x = VideoPostProcessor::videoSurface()->w/2;
 	x -= tMenu->bmpSubTitles.get()->w/2;
 
 	DrawImageAdv(bmpDest,tMenu->bmpSubTitles, 0, id*70, x,y, tMenu->bmpSubTitles.get()->w, 65);
@@ -597,6 +570,7 @@ void Menu_DrawWinButton(SDL_Surface * bmpDest, int x, int y, int w, int h, bool 
 // Show a message box
 MessageBoxReturnType Menu_MessageBox(const std::string& sTitle, const std::string& sText, MessageBoxType type)
 {
+	SetTouchscreenControlsShown(false);
 	if(bDedicated) {
 		hints << "Menu_MessageBox: " << sTitle << ": " << sText << endl;
 		switch(type) {
@@ -630,8 +604,7 @@ MessageBoxReturnType Menu_MessageBox(const std::string& sTitle, const std::strin
 			longest_line = tw;
 	}
 	w = CLAMP(longest_line + 40, minw, maxw);
-	// Center within the menu canvas (menuWidth); the menu itself is centered.
-	x = (VideoPostProcessor::menuWidth - w) / 2;
+	x = (VideoPostProcessor::get()->screenWidth() - w) / 2;
 
 	// Handle multiline messages
 	lines = splitstring(sText, (size_t)-1, w - 2, tLX->cFont);
@@ -691,16 +664,17 @@ MessageBoxReturnType Menu_MessageBox(const std::string& sTitle, const std::strin
 	ProcessEvents();
 
 	
+	// TODO: make this event-based (don't check GetKeyboard() directly)
 	while(true) {
 		Menu_RedrawMouse(true);
 
 		SetGameCursor(CURSOR_ARROW);
 
-		DrawImageAdv(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, x,y, x,y, w, h);
+		DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, x,y, x,y, w, h);
 
 		// Process the gui
 		ev = msgbox.Process();
-		msgbox.Draw(VideoPostProcessor::videoSurface().get());
+		msgbox.Draw(VideoPostProcessor::videoSurface());
 
 		if(ev) {
 
@@ -743,12 +717,12 @@ MessageBoxReturnType Menu_MessageBox(const std::string& sTitle, const std::strin
 			}
 		}
 
-		if(!WasKeyboardEventHappening(SDLK_ESCAPE) && game.state != Game::S_Quit && ret == MBR_INVALID) {
-			DrawCursor(VideoPostProcessor::videoSurface().get());
+		if(!WasKeyboardEventHappening(SDLK_ESCAPE) && !tLX->bQuitGame && ret == MBR_INVALID) {
+			DrawCursor(VideoPostProcessor::videoSurface());
 			doVideoFrameInMainThread();
 			CapFPS();
 			tLX->currentTime = GetTime(); // we need this for CapFPS()
-			ProcessEvents();
+			WaitForNextEvent();
 		} else
 			break;
 	}
@@ -1053,9 +1027,9 @@ void Menu_AddDefaultWidgets()
 		CCombobox* cmb;
 		LevelComboFiller(CCombobox* c) : cmb(c) {}
 		bool operator() (const std::string& filename) {
-			LevelInfo info = infoForLevel(filename, true);
-			if(info.valid)
-				cmb->addItem(info.path, info.name + " [" + info.typeShort.get() + "]");
+			std::string mapName = CMap::GetLevelName(filename, true);
+			if(mapName.size() != 0)
+				cmb->addItem(GetBaseFilename(filename), mapName);
 
 			return true;
 		}
@@ -1071,14 +1045,14 @@ void Menu_FillLevelList(CCombobox *cmb, int random)
 	cmb->setUnique(true);
 
 	LevelComboFiller filler(cmb);
-	FindFiles(filler, "levels", false);
+	FindFiles(filler, "levels", false, FM_REG);
 
 	// Disable sorting and add the random level at the beginning
 	cmb->setSorted(SORT_NONE);
 	//if(random) // If random is true, we add the 'random' level to the list
 	//	cmb->addItem(0, "_random_", "- Random level -");
 
-	cmb->setCurSIndexItem(gameSettings[FT_Map].as<LevelInfo>()->path);
+	cmb->setCurSIndexItem(tLXOptions->tGameInfo.sMapFile);
 }
 
 
@@ -1086,7 +1060,7 @@ void Menu_FillLevelList(CCombobox *cmb, int random)
 // Redraw a section from the buffer to the screen
 void Menu_redrawBufferRect(int x, int y, int w, int h)
 {
-    DrawImageAdv(VideoPostProcessor::videoSurface().get(), tMenu->bmpBuffer, x,y, x,y, w,h);
+    DrawImageAdv(VideoPostProcessor::videoSurface(), tMenu->bmpBuffer, x,y, x,y, w,h);
 }
 
 
@@ -1110,8 +1084,6 @@ bool Menu_IsKeyboardNavigationUsed()
 	return CGuiLayout::isKeyboardNavigationUsed();
 }
 
-// Move the system cursor to menu coordinates (x,y),
-// so the highlighted widget and the cursor stay together during keyboard navigation.
 void Menu_WarpMouse(int x, int y)
 {
 	struct RepositionMouse: public Action
@@ -1120,30 +1092,1204 @@ void Menu_WarpMouse(int x, int y)
 		RepositionMouse(int _x, int _y): x(_x), y(_y)
 		{
 		}
-		Result handle()
+		int handle()
 		{
-			// The menu is presented centered and scaled to the window
-			int wx = x, wy = y;
-			SDL_RenderLogicalToWindow(VideoPostProcessor::get()->sdl_renderer(), x, y, &wx, &wy);
-			SDL_WarpMouseInWindow(VideoPostProcessor::get()->sdl_window(), wx, wy);
+			SDL_WarpMouse(x, y);
 			return true;
 		}
 	};
-	x += VideoPostProcessor::get()->displayScreenOffsetX();
 	Menu_MouseWarpedX = x;
 	Menu_MouseWarpedY = y;
 	doActionInMainThread( new RepositionMouse(x, y) );
 }
 
-// Real mouse movement (not the one caused by Menu_WarpMouse) ends keyboard navigation
 void Menu_ProcessMouseMotion(int x, int y)
 {
-	if (abs(x - Menu_MouseWarpedX) > 2 || abs(y - Menu_MouseWarpedY) > 2)
+	if (x != Menu_MouseWarpedX || y != Menu_MouseWarpedY) {
 		CGuiLayout::setKeyboardNavigationUsed(false);
+	}
 }
 
+/*
+============================
+
+	Server list functions
+
+============================
+*/
+
+
+std::list<server_t> psServerList;
+
+// Maximum number of pings/queries before we ignore the server
+static const int	MaxPings = 4;
+static const int	MaxQueries = MAX_QUERIES;
+
+
+
+///////////////////
+// Clear the server list
+void Menu_SvrList_Clear()
+{
+	Menu_SvrList_Shutdown();
+}
+
+
+///////////////////
+// Clear any servers automatically added
+void Menu_SvrList_ClearAuto()
+{
+    for(std::list<server_t>::iterator it = psServerList.begin(); it != psServerList.end(); it++)
+    {
+        if(!it->bManual) 
+        {
+        	psServerList.erase(it);
+			if (psServerList.empty())
+				return;
+        	it = psServerList.begin();
+        }
+    }
+}
+
+
+///////////////////
+// Shutdown the server list
+void Menu_SvrList_Shutdown()
+{
+	psServerList.clear();
+}
+
+
 	
+static void SendBroadcastPing(int port) {
+	// Broadcast a ping on the LAN
+	CBytestream bs;
+	bs.writeInt(-1,4);
+	bs.writeString("lx::ping");
 	
+	NetworkAddr a;
+	StringToNetAddr("255.255.255.255", a);
+	SetNetAddrPort(a,  port);
+	tMenu->tSocket[SCK_LAN]->setRemoteAddress(a);
+	
+	// Send the ping
+	bs.Send(tMenu->tSocket[SCK_LAN]);
+}
+	
+///////////////////
+// Send a ping out to the LAN (LAN menu)
+void Menu_SvrList_PingLAN()
+{
+	SendBroadcastPing(LX_PORT);
+	if(tLXOptions->iNetworkPort != LX_PORT)
+		SendBroadcastPing(tLXOptions->iNetworkPort); // try also our own port
+}
+
+
+///////////////////
+// Ping a server
+void Menu_SvrList_PingServer(server_t *svr)
+{
+	// If not available, probably the network is not connected right now.
+	if(!IsNetAddrAvailable(svr->getBestAddress())) return;
+
+	for( int af = 0; af < 2; af++ )
+	{
+		NetworkAddr addr = af ? svr->sAddress6 : svr->sAddress;
+		if( !IsNetAddrValid(addr) )
+			continue;
+		if( af == 0 )
+		{
+			if( svr->ports.size() == 0 )
+			{
+				errors << "svr->ports.size() == 0 at " << FILELINE << endl;
+				continue;
+			}
+
+			svr->lastPingedPort++;
+			if( svr->lastPingedPort >= (int)svr->ports.size() || svr->lastPingedPort < 0 )
+				svr->lastPingedPort = 0;
+			SetNetAddrPort(addr, svr->ports[svr->lastPingedPort].first);
+		}
+
+		//hints << "Pinging server " << tmp << " real addr " << svr->szAddress << " name " << svr->szName << endl;
+		tMenu->tSocket[SCK_NET]->setRemoteAddress(addr);
+		
+		CBytestream bs;
+		bs.writeInt(-1,4);
+		bs.writeString("lx::ping");
+		bs.Send(tMenu->tSocket[SCK_NET]);
+	}
+
+	svr->bProcessing = true;
+	svr->nPings++;
+	svr->fLastPing = tLX->currentTime;
+}
+
+///////////////////
+// Send Wants To Join message
+void Menu_SvrList_WantsJoin(const std::string& Nick, server_t *svr)
+{
+	tMenu->tSocket[SCK_NET]->setRemoteAddress(svr->getBestAddress());
+
+	CBytestream bs;
+	bs.writeInt(-1,4);
+
+	if( svr->bBehindNat )
+	{
+		NetworkAddr masterserverAddr;
+		SetNetAddrValid(masterserverAddr, false);
+		NetworkAddr ignored;
+
+		if( ! GetFromDnsCache( Menu_SvrList_GetUdpMasterserverForServer(svr->szAddress), masterserverAddr, ignored ) )
+		{
+			GetNetAddrFromNameAsync( Menu_SvrList_GetUdpMasterserverForServer(svr->szAddress) );
+		}
+
+		for( int count = 0; !IsNetAddrValid(masterserverAddr) && count < 5; count++ )
+		{
+			SDL_Delay(20);
+			GetFromDnsCache( Menu_SvrList_GetUdpMasterserverForServer(svr->szAddress), masterserverAddr, ignored );
+		}
+
+		if( !IsNetAddrValid(masterserverAddr) )
+			return;
+
+		tMenu->tSocket[SCK_NET]->setRemoteAddress(masterserverAddr);
+		bs.writeString("lx::traverse");
+		bs.writeString(svr->szAddress);
+	}
+
+	bs.writeString("lx::wantsjoin");
+	bs.writeString(RemoveSpecialChars(Nick));
+	bs.Send(tMenu->tSocket[SCK_NET]);
+}
+
+///////////////////
+// Get server info
+void Menu_SvrList_GetServerInfo(server_t *svr)
+{
+	// Send a getinfo request
+	tMenu->tSocket[SCK_NET]->setRemoteAddress(svr->getBestAddress());
+
+	CBytestream bs;
+	bs.writeInt(-1,4);
+
+	if( svr->bBehindNat )
+	{
+		NetworkAddr masterserverAddr;
+		SetNetAddrValid(masterserverAddr, false);
+		NetworkAddr ignored;
+
+		if( ! GetFromDnsCache( Menu_SvrList_GetUdpMasterserverForServer(svr->szAddress), masterserverAddr, ignored ) )
+		{
+			GetNetAddrFromNameAsync( Menu_SvrList_GetUdpMasterserverForServer(svr->szAddress) );
+		}
+
+		for( int count = 0; !IsNetAddrValid(masterserverAddr) && count < 5; count++ )
+		{
+			SDL_Delay(20);
+			GetFromDnsCache( Menu_SvrList_GetUdpMasterserverForServer(svr->szAddress), masterserverAddr, ignored );
+		}
+
+		if( !IsNetAddrValid(masterserverAddr) )
+			return;
+
+		tMenu->tSocket[SCK_NET]->setRemoteAddress(masterserverAddr);
+		bs.writeString("lx::traverse");
+		bs.writeString(svr->szAddress);
+	}
+	
+	bs.writeString("lx::getinfo");
+	bs.Send(tMenu->tSocket[SCK_NET]);
+}
+
+///////////////////
+// Query a server
+void Menu_SvrList_QueryServer(server_t *svr)
+{
+	for( int af = 0; af < 2; af++ )
+	{
+		NetworkAddr addr = af ? svr->sAddress6 : svr->sAddress;
+		if( !IsNetAddrValid(addr) )
+			continue;
+
+		tMenu->tSocket[SCK_NET]->setRemoteAddress(addr);
+
+		CBytestream bs;
+		bs.writeInt(-1,4);
+		bs.writeString("lx::query");
+		bs.writeByte(svr->nQueries);
+		bs.Send(tMenu->tSocket[SCK_NET]);
+	}
+	svr->fQueryTimes[svr->nQueries] = tLX->currentTime;
+
+	svr->bProcessing = true;
+	svr->nQueries++;
+	svr->fLastQuery = tLX->currentTime;
+}
+
+
+///////////////////
+// Refresh the server list (Internet menu)
+void Menu_SvrList_RefreshList()
+{
+	// Set all the servers to be pinged
+	for(std::list<server_t>::iterator it = psServerList.begin(); it != psServerList.end(); it++) 
+	{
+		if( ! it->bBehindNat )
+			Menu_SvrList_RefreshServer(&(*it), false);
+	}
+
+	// Update the GUI
+	Timer("Menu_SvrList_RefreshList ping waiter", null, NULL, PingWait, true).startHeadless();
+
+	//Menu_SvrList_UpdateUDPList(); // It adds duplicate server entries
+}
+
+
+///////////////////
+// Refresh a single server
+void Menu_SvrList_RefreshServer(server_t *s, bool updategui)
+{
+	if (!tLX)
+		return;
+
+    s->bProcessing = true;
+	s->bgotPong = false;
+	s->bgotQuery = false;
+	s->bgotQuery6 = false;
+	s->bIgnore = false;
+	s->fLastPing = AbsTime();
+	s->fLastQuery = AbsTime();
+	s->nPings = 0;
+	s->fInitTime = tLX->currentTime;
+	s->nQueries = 0;
+	s->nPing = 0;
+	s->nPing4 = s->nPing6 = 9999;
+	s->bAddrReady = IsNetAddrValid(s->sAddress) || IsNetAddrValid(s->sAddress6);
+	s->lastPingedPort = 0;
+
+	if( s->ports.size() == 0 )
+	{
+		int port = IsNetAddrValid(s->sAddress) ? GetNetAddrPort(s->sAddress) : 0;
+		if (port == 0)
+			port = IsNetAddrValid(s->sAddress6) ?GetNetAddrPort(s->sAddress6) : 0;
+		if (port == 0)
+			port = LX_PORT;
+		s->ports.push_back(std::make_pair(port, -1));
+	}
+
+	if (updategui)
+		Timer("Menu_SvrList_RefreshServer ping waiter", null, NULL, PingWait, true).startHeadless();
+}
+
+
+///////////////////
+// Add a server onto the list (for list and manually)
+server_t *Menu_SvrList_AddServer(const std::string& address, bool bManual, const std::string & name, int udpMasterserverIndex, const std::string& v4address)
+{
+    // Check if the server is already in the list
+    // If it is, don't bother adding it
+	NetworkAddr ad;
+	std::string tmp_address = address;
+	TrimSpaces(tmp_address);
+	int port = -1;
+	if(StringToNetAddr(tmp_address, ad))
+	{
+		port = GetNetAddrPort(ad);
+		if( port == 0 )
+			port = LX_PORT;
+	}
+
+	server_t * found = Menu_SvrList_FindServerStr(tmp_address, name);
+	if( !found && v4address != "" )
+		found = Menu_SvrList_FindServerStr(v4address, name);
+
+	if( found && port != -1 && port != 0 ) {
+		if( found->szName == "Untitled" ) {
+			found->szName = name;
+			TrimSpaces(found->szName);
+		}
+		//hints << "Menu_SvrList_AddServer(): merging duplicate " << found->szName << " " << found->szAddress << endl;
+		if( StringToNetAddr(tmp_address, ad) ) {
+			SetNetAddrPort(ad, port);
+			if( IsNetAddrV6(tmp_address) ) {
+				if( !AreNetAddrEqual(ad, found->sAddress6) ) {
+					// Query it again, to measure v4 ping vs v6 ping
+					found->fLastQuery = AbsTime();
+				}
+				found->sAddress6 = ad;
+			} else {
+				if( !IsNetAddrValid(found->sAddress) && IsNetAddrValid(found->sAddress6) ) {
+					// Query it again, to measure v4 ping vs v6 ping
+					found->fLastQuery = AbsTime();
+				}
+				found->sAddress = ad;
+				for( size_t i = 0; i < found->ports.size(); i++ )
+					if( found->ports[i].first == port )
+						return found;
+				found->ports.push_back( std::make_pair( port, udpMasterserverIndex ) );
+			}
+		}
+
+		return found;
+	}
+
+    // Didn't find one, so create it
+    psServerList.push_back(server_t());
+	server_t * svr = & psServerList.back();
+
+	// Fill in the details
+    svr->bManual = bManual;
+	svr->szAddress = tmp_address;
+	ResetNetAddr(svr->sAddress);
+	ResetNetAddr(svr->sAddress6);
+
+	if( StringToNetAddr(tmp_address, ad) ) {
+		SetNetAddrPort(ad, port);
+		if( IsNetAddrV6(tmp_address) ) {
+			svr->sAddress6 = ad;
+			if (v4address != "" && StringToNetAddr(v4address, ad)) {
+				port = GetNetAddrPort(ad);
+				if( port == 0 )
+					port = LX_PORT;
+				SetNetAddrPort(ad, port);
+				svr->sAddress = ad;
+			}
+		} else {
+			svr->sAddress = ad;
+		}
+	} else {
+		hints << "Menu_SvrList_AddServer(): cannot parse server addr " << svr->szAddress << endl;
+	}
+
+	Menu_SvrList_RefreshServer(svr, bManual);
+	
+	if( svr->ports.size() > 0 )
+		svr->ports[0].second = udpMasterserverIndex;
+		
+	// Default game details
+	svr->szName = name;
+	TrimSpaces(svr->szName);
+	svr->nMaxPlayers = 0;
+	svr->nNumPlayers = 0;
+	svr->nState = 0;
+	svr->nPing = -3; // Put it at the end of server list, after NAT servers
+	svr->nPing4 = svr->nPing6 = 9999;
+	if( udpMasterserverIndex >= 0 )
+	{
+		svr->bBehindNat = true;
+		svr->nPing = -2;
+	}
+	else
+		svr->bBehindNat = false;
+
+	//hints << "Menu_SvrList_AddServer(): added server " << svr->szName << " svr->szAddress " << svr->szAddress << " v4addr " << v4address <<
+	//		" svr->sAddress " << NetAddrToString(svr->sAddress) << " svr->sAddress6 " << NetAddrToString(svr->sAddress6) << endl;
+	
+	return svr;
+}
+
+
+///////////////////
+// Remove a server from the server list
+void Menu_SvrList_RemoveServer(const std::string& szAddress)
+{
+	for(std::list<server_t>::iterator it = psServerList.begin(); it != psServerList.end(); it++)
+		if( it->szAddress == szAddress )
+		{
+			psServerList.erase( it );
+			it = psServerList.begin();
+			break;
+		}
+}
+
+
+///////////////////
+// Find a server based on a string address
+server_t *Menu_SvrList_FindServerStr(const std::string& szAddress, const std::string & name)
+{
+	NetworkAddr addr;
+	if( ! StringToNetAddr(szAddress, addr) )
+		return NULL;
+    
+    return Menu_SvrList_FindServer(addr, name);
+}
+
+
+///////////////////
+// Fill a listview box with the server list
+void Menu_SvrList_FillList(CListview *lv)
+{
+	if (!lv)
+		return;
+
+	std::string		addr;
+	static const std::string states[] = {"Open", "Loading", "Playing", "Open/Loading", "Open/Playing"};
+
+    // Store the ID of the currently selected item
+    int curID = lv->getSelectedID();
+
+	lv->SaveScrollbarPos();
+	lv->Clear();
+
+	for(std::list<server_t>::iterator s = psServerList.begin(); s != psServerList.end(); s++)
+	{
+
+		bool processing = s->bProcessing && Menu_SvrList_GetUdpMasterserverForServer( s->szAddress ) == "";
+
+		// Ping Image
+		int num = 3;
+		if(s->nPing < 700)  num = 2;
+		if(s->nPing < 400)  num = 1;
+		if(s->nPing < 200)  num = 0;
+
+		if(s->bIgnore || processing)
+			num = 3;
+
+		if(s->nPing == -2)	num = 4; // Server behind a NAT
+
+		// Address
+		//GetRemoteNetAddr(tMenu->tSocket, &s->sAddress);
+		//NetAddrToString(&s->sAddress, addr);
+
+		// show port if special
+		addr = s->szAddress;
+		size_t p = addr.rfind(':');
+		if( IsNetAddrV6(addr) && addr.find("]:") == std::string::npos ) {
+			p = std::string::npos;
+		}
+
+		if(p != std::string::npos) {
+			std::string sPort = addr.substr(p + 1);
+			addr.erase(p);
+			if(from_string<int>(sPort) != LX_PORT)
+				addr += ":" + sPort;
+		}
+
+		// State
+		int state = 0;
+		if(s->nState >= 0 && s->nState < 3)
+			state = s->nState;
+		if( state != 0 && s->bAllowConnectDuringGame && s->nNumPlayers < s->nMaxPlayers )
+			state += 2;
+
+		// Colour
+		Color colour = tLX->clListView;
+		if(processing)
+			colour = tLX->clDisabled;
+
+		// Add the server to the list
+		lv->AddItem(s->szAddress, 0, colour);
+		lv->AddSubitem(LVS_IMAGE, itoa(num,10), tMenu->bmpConnectionSpeeds[num], NULL);
+		lv->AddSubitem(LVS_TEXT, s->szName, (DynDrawIntf*)NULL, NULL);
+        if(processing) {
+			if(IsNetAddrValid(s->sAddress) || IsNetAddrValid(s->sAddress6))
+				lv->AddSubitem(LVS_TEXT, "Querying...", (DynDrawIntf*)NULL, NULL);
+			else
+				lv->AddSubitem(LVS_TEXT, "Lookup...", (DynDrawIntf*)NULL, NULL);
+        } else if( num == 3 )
+            lv->AddSubitem(LVS_TEXT, "Down", (DynDrawIntf*)NULL, NULL);
+        else
+		    lv->AddSubitem(LVS_TEXT, states[state], (DynDrawIntf*)NULL, NULL);
+
+		bool unknownData = ( s->bProcessing || num == 3 ) && 
+							Menu_SvrList_GetUdpMasterserverForServer( s->szAddress ) == "";
+
+		// Players
+		lv->AddSubitem(LVS_TEXT,
+					   unknownData ? "?" : (itoa(s->nNumPlayers,10)+"/"+itoa(s->nMaxPlayers,10)),
+					   (DynDrawIntf*)NULL, NULL);
+
+		if (s->nPing <= -2) // Server behind a NAT or not queried, it will add spaces if s->nPing == -3 so not queried servers will be below NAT ones
+			lv->AddSubitem(LVS_TEXT, "N/A" + std::string(' ', -2 - s->nPing), (DynDrawIntf*)NULL, NULL);
+		else
+			lv->AddSubitem(LVS_TEXT, unknownData ? "∞" : itoa(s->nPing,10), (DynDrawIntf*)NULL, NULL); // TODO: the infinity symbol isn't shown correctly
+
+		// Country
+		if (tLXOptions->bUseIpToCountry && iNetMode == net_internet) {
+			IpInfo inf = tIpToCountryDB->GetInfoAboutIP(addr);
+			if( tLXOptions->bShowCountryFlags )
+			{
+				SmartPointer<SDL_Surface> flag = tIpToCountryDB->GetCountryFlag(inf.countryCode);
+				if (flag.get())
+					lv->AddSubitem(LVS_IMAGE, "", flag, NULL, VALIGN_MIDDLE, inf.countryName);
+				else
+					lv->AddSubitem(LVS_TEXT, inf.countryCode, (DynDrawIntf*)NULL, NULL);
+			}
+			else
+			{
+				lv->AddSubitem(LVS_TEXT, inf.countryName, (DynDrawIntf*)NULL, NULL);
+			}
+		}
+
+		// Address
+		lv->AddSubitem(LVS_TEXT, addr, (DynDrawIntf*)NULL, NULL);
+	}
+
+	lv->ReSort();
+    lv->setSelectedID(curID);
+	lv->RestoreScrollbarPos();
+}
+
+static bool bUpdateFromUdpThread = false;
+///////////////////
+// Process the network connection
+// Returns true if a server in the list was added/modified
+bool Menu_SvrList_Process()
+{
+	CBytestream		bs;
+	bool			update = false;
+
+
+	// Process any packets on the net socket
+	while(bs.Read(tMenu->tSocket[SCK_NET])) {
+
+		if( Menu_SvrList_ParsePacket(&bs, tMenu->tSocket[SCK_NET]) )
+			update = true;
+
+	}
+
+	// Process any packets on the LAN socket
+	while(bs.Read(tMenu->tSocket[SCK_LAN])) {
+
+		if( Menu_SvrList_ParsePacket(&bs, tMenu->tSocket[SCK_LAN]) )
+			update = true;
+	}
+	
+	if( bUpdateFromUdpThread )
+	{
+		bUpdateFromUdpThread = false;
+		update = true;
+	}
+
+	bool repaint = false;
+
+
+	// Ping or Query any servers in the list that need it
+	for(std::list<server_t>::iterator s = psServerList.begin(); s != psServerList.end(); s++)
+	{
+
+		// Ignore this server? (timed out)
+		if(s->bIgnore)
+			continue;
+
+		if(!IsNetAddrValid(s->sAddress) && !IsNetAddrValid(s->sAddress6)) {
+			if(tLX->currentTime - s->fInitTime >= DNS_TIMEOUT) {
+				s->bIgnore = true; // timeout
+				update = true;
+			}
+			continue;
+		} else {
+			if(!s->bAddrReady) {
+				s->bAddrReady = true;
+				update = true;
+			}
+		}
+
+		// Need a pingin'?
+		if(!s->bgotPong) {
+			if(tLX->currentTime - s->fLastPing > (float)PingWait / 1000.0f) {
+
+				if(s->nPings >= MaxPings) {
+					s->bIgnore = true;
+					
+					update = true;
+				} else  {
+					// Ping the server
+					Menu_SvrList_PingServer(&(*s));
+					repaint = true;
+				}
+			}
+		}
+
+		// Need a querying?
+		if(s->bgotPong && (
+			(IsNetAddrValid(s->sAddress) && !s->bgotQuery) ||
+			(IsNetAddrValid(s->sAddress6) && !s->bgotQuery6))) {
+			if(tLX->currentTime - s->fLastQuery > (float)QueryWait / 1000.0f) {
+
+				if(s->nQueries >= MaxQueries) {
+					if( !s->bgotQuery && !s->bgotQuery6 ) {
+						s->bIgnore = true;
+						update = true;
+					}
+				} else  {
+					// Query the server
+					Menu_SvrList_QueryServer(&(*s));
+					repaint = true;
+				}
+			}
+		}
+
+		// If we are ignoring this server now, set it to not processing
+		if(s->bIgnore) {
+			s->bProcessing = false;
+			update = true;
+		}
+
+	}
+
+	// Make sure the list repaints when the ping/query is received
+	if (repaint)
+		Timer("Menu_SvrList_Process ping waiter", null, NULL, PingWait + 100, true).startHeadless();
+
+	return update;
+}
+
+
+///////////////////
+// Parse a packet
+// Returns true if we should update the list
+bool Menu_SvrList_ParsePacket(CBytestream *bs, const SmartPointer<NetworkSocket>& sock)
+{
+	NetworkAddr		adrFrom;
+	bool			update = false;
+	std::string cmd,buf;
+
+	// Check for connectionless packet header
+	if(bs->readInt(4) == -1) {
+		cmd = bs->readString();
+
+		adrFrom = sock->remoteAddress();
+
+
+		// Check for a pong
+		if(cmd == "lx::pong") {
+
+			// Look the the list and find which server returned the ping
+			server_t *svr = Menu_SvrList_FindServer(adrFrom);
+			if( svr ) {
+
+				// It pinged, so fill in the ping info so it will now be queried
+				svr->bgotPong = true;
+				svr->nQueries = 0;
+				svr->bBehindNat = false;
+				svr->lastPingedPort = 0;
+				if( AreNetAddrEqual(adrFrom, svr->sAddress6) ) {
+					//NetAddrToString(svr->sAddress6, svr->szAddress);
+				} else {
+					SetNetAddrPort(svr->sAddress, GetNetAddrPort(adrFrom));
+					//NetAddrToString(svr->sAddress, svr->szAddress);
+				}
+				svr->ports.clear();
+				svr->ports.push_back( std::make_pair( (int)GetNetAddrPort(adrFrom), -1 ) );
+
+			} else {
+
+				// If we didn't ping this server directly (eg, subnet), add the server to the list
+				// HINT: in favourites list, only user should add servers
+				if (iNetMode != net_favourites)  {
+					NetAddrToString( adrFrom, buf );
+					svr = Menu_SvrList_AddServer(buf, false);
+
+					if( svr ) {
+
+						// Only update the list if this is the first ping
+						if(!svr->bgotPong)
+							update = true;
+
+						// Set it the ponged
+						svr->bgotPong = true;
+						svr->nQueries = 0;
+
+						//Menu_SvrList_RemoveDuplicateNATServers(svr); // We don't know the name of server yet
+					}
+				}
+			}
+		}
+
+		// Check for a query return
+		else if(cmd == "lx::queryreturn") {
+
+			// Look the the list and find which server returned the ping
+			server_t *svr = Menu_SvrList_FindServer(adrFrom);
+			if( svr ) {
+				bool ipv6 = AreNetAddrEqual(adrFrom, svr->sAddress6);
+
+				// Only update the list if this is the first query
+				if(ipv6) {
+					if(!svr->bgotQuery6)
+						update = true;
+				} else {
+					if(!svr->bgotQuery)
+						update = true;
+				}
+
+				svr->bBehindNat = false;
+				Menu_SvrList_ParseQuery(svr, bs, ipv6);
+
+			}
+
+			// If we didn't query this server, then we should ignore it
+		}
+
+		else if(cmd == "lx::serverlist2") // This should not happen, we have another thread for polling UDP servers
+		{
+			Menu_SvrList_ParseUdpServerlist(bs, 0);
+			update = true;
+		}
+		else if(cmd == "lx::serverlist3") // This should not happen, we have another thread for polling UDP servers
+		{
+			Menu_SvrList_ParseUdpServerlist(bs, 0, true);
+			update = true;
+		}
+
+	}
+
+	return update;
+}
+
+
+///////////////////
+// Find a server from the list by address
+server_t *Menu_SvrList_FindServer(const NetworkAddr& addr, const std::string & name)
+{
+	for(std::list<server_t>::iterator s = psServerList.begin(); s != psServerList.end(); s++)
+	{
+		if( AreNetAddrEqual( addr, s->sAddress ) )
+			return &(*s);
+		if( AreNetAddrEqual( addr, s->sAddress6 ) )
+			return &(*s);
+	}
+
+    NetworkAddr addr1 = addr;
+    SetNetAddrPort(addr1, LX_PORT);
+
+	for(std::list<server_t>::iterator s = psServerList.begin(); s != psServerList.end(); s++)
+	{
+		// Check if any port number match from the server entry
+		NetworkAddr addr2 = s->sAddress;
+		for( size_t i = 0; i < s->ports.size(); i++ )
+		{
+			SetNetAddrPort(addr2, s->ports[i].first);
+			if( AreNetAddrEqual( addr, addr2 ) )
+				return &(*s);
+		}
+			
+		// Check if IP without port and name match
+		SetNetAddrPort(addr2, LX_PORT);
+		if( AreNetAddrEqual( addr1, addr2 ) && name == s->szName && name != "Untitled" )
+			return &(*s);
+	}
+
+	// None found
+	return NULL;
+}
+
+
+///////////////////
+// Parse the server query return packet
+void Menu_SvrList_ParseQuery(server_t *svr, CBytestream *bs, bool ipv6)
+{
+	// TODO: move this net protocol stuff out here
+	
+	// Don't update the name in favourites
+	std::string buf = Utf8String(bs->readString());
+	if(iNetMode != net_favourites)
+		svr->szName = buf;
+	TrimSpaces(svr->szName);
+	//hints << "Menu_SvrList_ParseQuery(): " << svr->szName << " " << svr->szAddress << endl;
+	svr->nNumPlayers = bs->readByte();
+	svr->nMaxPlayers = bs->readByte();
+	svr->nState = bs->readByte();
+    int num = bs->readByte();
+	svr->bProcessing = false;
+	svr->bAllowConnectDuringGame = false;
+	svr->tVersion.reset();
+
+	if(num < 0 || num >= MAX_QUERIES-1)
+		num=0;
+
+	int ping = (int)( (tLX->currentTime - svr->fQueryTimes[num]).milliseconds() );
+
+	if (ipv6) {
+		if (svr->bgotQuery6 && svr->nPing6 > ping)
+			svr->nPing6 = ping;
+		svr->bgotQuery6 = true;
+	} else {
+		if (svr->bgotQuery && svr->nPing > ping)
+			svr->nPing4 = ping;
+		svr->nPing4 = ping;
+		svr->bgotQuery = true;
+	}
+
+	if (svr->nPing4 < svr->nPing6)
+	{
+		svr->nPing = svr->nPing4;
+		NetAddrToString(svr->sAddress, svr->szAddress);
+	}
+	else
+	{
+		svr->nPing = svr->nPing6;
+		NetAddrToString(svr->sAddress6, svr->szAddress);
+	}
+
+	if(svr->nPing < 0)
+		svr->nPing = 999;
+    if(svr->nPing > 999)
+        svr->nPing = 999;
+		
+	if( !bs->isPosAtEnd() )
+	{
+		// Beta8+
+		svr->tVersion.setByString( bs->readString(64) );
+		svr->bAllowConnectDuringGame = bs->readBool();
+	}
+	//hints << "Menu_SvrList_ParseQuery(): " << svr->szName << " addr " << svr->szAddress << " v4 " << NetAddrToString(svr->sAddress) <<
+	//		" v6 " << NetAddrToString(svr->sAddress6) << " ping " << svr->nPing << " ping4 " << svr->nPing4 << " ping6 " << svr->nPing6 << endl;
+	// We got server name in a query. let's remove servers with the same name and IP, which we got from UDP masterserver
+	// Duplicates should be detected in AddServer(), but some servers fail detection because of different port
+	for(std::list<server_t>::iterator it = psServerList.begin(); it != psServerList.end(); it++)
+	{
+		NetworkAddr addr1 = it->sAddress;
+		SetNetAddrPort(addr1, LX_PORT);
+		NetworkAddr addr2 = svr->sAddress;
+		SetNetAddrPort(addr2, LX_PORT);
+		if( it->szName == svr->szName && AreNetAddrEqual(addr1, addr2) && svr != &(*it) )
+		{
+			//Duplicate server - delete it
+			//hints << "Menu_SvrList_ParseQuery(): removing duplicate " << it->szName << " " << it->szAddress << endl;
+			if (IsNetAddrValid(it->sAddress6) && !IsNetAddrValid(svr->sAddress6)) {
+				svr->sAddress6 = it->sAddress6;
+				svr->nPing6 = it->nPing6;
+				svr->bgotQuery6 = it->bgotQuery6;
+			}
+			psServerList.erase(it);
+			it = psServerList.begin();
+		}
+	}
+}
+
+/*************************
+*
+* UDP server list
+*
+************************/
+
+static std::list<std::string> tUdpMasterServers;
+static std::map<size_t, ThreadPoolItem *> tUpdateThreads;
+static size_t threadId = 0;
+
+struct UdpServerlistData  {
+	CBytestream *bs;
+	int UdpServerIndex;
+	bool v4addrIncluded;
+	UdpServerlistData(CBytestream *b, int _UdpServerIndex, bool _v4addrIncluded) : bs(b), UdpServerIndex(_UdpServerIndex), v4addrIncluded(_v4addrIncluded) {}
+};
+
+void Menu_UpdateUDPListEventHandler(UdpServerlistData data)
+{
+	if (iNetMode == net_internet) // Only add them if the Internet tab is active
+		Menu_SvrList_ParseUdpServerlist(data.bs, data.UdpServerIndex, data.v4addrIncluded);
+	delete data.bs;
+}
+
+void Menu_UpdateUDPListEnd(size_t thread)
+{
+	std::map<size_t, ThreadPoolItem *>::iterator it = tUpdateThreads.find(thread);
+	if (it != tUpdateThreads.end())
+		threadPool->wait(it->second, NULL);
+}
+
+Event<UdpServerlistData> serverlistEvent;
+Event<size_t> updateEndEvent;
+int Menu_SvrList_UpdaterThread(void *id)
+{
+	// Setup event handlers
+	updateEndEvent.handler() = getEventHandler(&Menu_UpdateUDPListEnd);
+	serverlistEvent.handler() = getEventHandler(&Menu_UpdateUDPListEventHandler);
+
+	// Open socket for networking
+	NetworkSocket sock;
+	if (!sock.OpenUnreliable(0))  {
+		updateEndEvent.pushToMainQueue((size_t)id);
+		return -1;
+	}
+
+	// Get serverlist from all the servers in the file
+	int UdpServerIndex = 0;
+	for (std::list<std::string>::iterator it = tUdpMasterServers.begin(); it != tUdpMasterServers.end(); ++it, ++UdpServerIndex)  
+	{
+		std::string& server = *it;
+		NetworkAddr addr, addr6;
+		if (server.rfind(':') == std::string::npos)
+			server += ":23450";  // Default port
+
+		// Split to domain and port
+		std::string domain = server.substr(0, server.rfind(':'));
+		int port = atoi(server.substr(server.rfind(':') + 1));
+
+		// Resolve the address
+		if( ! GetFromDnsCache( domain, addr, addr6 ) )
+		{
+			GetNetAddrFromNameAsync(domain);
+		}
+
+		AbsTime start = GetTime();
+		while (GetTime() - start <= 5.0f) {
+			SDL_Delay(40);
+			if( GetFromDnsCache( domain, addr, addr6 ) )
+				break;
+		}
+		
+		if( !IsNetAddrValid(addr) && !IsNetAddrValid(addr6) )
+		{
+			notes << "UDP masterserver failed: cannot resolve domain name " << domain << endl;
+			continue;
+		}
+		
+		// Setup the socket
+		SetNetAddrPort(addr, port);
+		SetNetAddrPort(addr6, port);
+
+		for (int af = 0; af < 2; af++, addr = addr6)
+		{
+			if (!IsNetAddrValid(addr))
+				continue;
+
+			sock.setRemoteAddress(addr);
+
+			// Send the getserverlist packet
+			CBytestream *bs = new CBytestream();
+			bs->writeInt(-1, 4);
+			bs->writeString(af ? "lx::getserverlist3" : "lx::getserverlist2");
+			if(!bs->Send(&sock))
+			{
+				delete bs;
+				warnings << "error while sending data to " << server << (af ? " over IPv6" : " over IPv4") << endl;
+				continue;
+			}
+			bs->Clear();
+
+			//notes << "Sent getserverlist to " << server << endl;
+
+			// Wait for the reply
+			AbsTime timeoutTime = GetTime() + 5.0f;
+			bool firstPacket = true;
+			while( true ) {
+
+				while (GetTime() <= timeoutTime)  {
+					SDL_Delay(40); // TODO: do it event based
+
+					// Got a reply?
+					if (bs->Read(&sock))  {
+						//notes << "Got a reply from " << server << endl;
+						break;
+					}
+					
+					
+				}
+
+				// Parse the reply
+				std::string response;
+				if (bs->GetLength() && bs->readInt(4) == -1 && (response = bs->readString()).find("lx::serverlist") == 0) {
+					serverlistEvent.pushToMainQueue(UdpServerlistData(bs, UdpServerIndex, response == "lx::serverlist3"));
+					timeoutTime = GetTime() + 0.5f;	// Check for another packet
+					bs = new CBytestream(); // old bs pointer is in mainqueue now
+					firstPacket = false;
+				} else  {
+					if( firstPacket )
+						warnings << "Error getting serverlist from " << server << endl;
+					delete bs;
+					break;
+				}
+			}
+		}
+	}
+
+	// Cleanup
+	sock.Close();
+
+	updateEndEvent.pushToMainQueue((size_t)id);
+	return 0;
+}
+
+void Menu_SvrList_UpdateUDPList()
+{
+	if (tUdpMasterServers.size() == 0)  {  // Load the list of servers only if not already loaded
+		// Open the masterservers file
+		FILE *fp1 = OpenGameFile("cfg/udpmasterservers.txt", "rt");
+		if(!fp1)  {
+			warnings << "could not open udpmasterservers.txt file, NAT traversal will be inaccessible" << endl;
+			return;
+		}
+
+		// Get the list of servers
+		while( !feof(fp1) ) {
+			std::string szLine = ReadUntil(fp1);
+			TrimSpaces(szLine);
+
+			if( szLine.length() == 0 )
+				continue;
+
+			tUdpMasterServers.push_back(szLine);
+		}
+		fclose(fp1);
+	}
+
+	// Run the update	
+	ThreadPoolItem *thread = threadPool->start(Menu_SvrList_UpdaterThread, (void *)(++threadId), "serverlist updater");
+	tUpdateThreads[threadId] = thread;
+}
+
+void Menu_SvrList_ParseUdpServerlist(CBytestream *bs, int UdpMasterserverIndex, bool v4AddressIncluded)
+{
+	// Look the the list and find which server returned the ping
+	int amount = bs->readByte();
+	//notes << "Menu_SvrList_ParseUdpServerlist " << amount << endl;
+	for( int f=0; f<amount; f++ )
+	{
+		std::string addr = bs->readString();
+		std::string name = bs->readString();
+		TrimSpaces(name);
+		TrimSpaces(addr);
+		//hints << "Menu_SvrList_ParseUdpServerlist(): " << name << " " << addr << endl;
+		int players = bs->readByte();
+		int maxplayers = bs->readByte();
+		int state = bs->readByte();
+		Version version = bs->readString(64);
+		bool allowConnectDuringGame = bs->readBool();
+		std::string v4address;
+		if( v4AddressIncluded )
+			v4address = bs->readString();
+		// UDP server info is updated once per 40 seconds, so if we have more recent entry - ignore it
+		server_t *svr = Menu_SvrList_FindServerStr(addr, name);
+		if( svr != NULL )
+		{
+			//hints << "Menu_SvrList_ParseUdpServerlist(): got duplicate " << name << " " << addr << " pong " << svr->bgotPong << " query " << svr->bgotQuery << endl;
+			if( svr->bgotPong && IsNetAddrValid(svr->sAddress) && IsNetAddrValid(svr->sAddress6) )
+				continue;
+			// It will merge existing server with new info
+			Menu_SvrList_AddServer(addr, false, name, UdpMasterserverIndex, v4address);
+			continue;
+		}
+
+		// In favourites/LAN only the user should add servers
+		if (iNetMode == net_internet)  {
+			svr = Menu_SvrList_AddServer( addr, false, name, UdpMasterserverIndex, v4address );
+			svr->nNumPlayers = players;
+			svr->nMaxPlayers = maxplayers;
+			svr->nState = state;
+			svr->nPing = -2;
+			svr->nPing4 = svr->nPing6 = 9999;
+			svr->nQueries = 0;
+			svr->bgotPong = false;
+			svr->bgotQuery = false;
+			svr->bgotQuery6 = false;
+			svr->bProcessing = false;
+			svr->tVersion = version;
+			svr->bAllowConnectDuringGame = allowConnectDuringGame;
+			svr->bBehindNat = true;
+		}
+	};
+
+	bUpdateFromUdpThread = true;
+	// Update the GUI when ping times out
+	Timer("Menu_SvrList_ParseUdpServerlist ping waiter", null, NULL, PingWait, true).startHeadless();
+};
+
+///////////////////
+// Save the server list
+void Menu_SvrList_SaveList(const std::string& szFilename)
+{
+    FILE *fp = OpenGameFile(szFilename,"wt");
+    if( !fp )
+        return;
+
+	for(std::list<server_t>::iterator s = psServerList.begin(); s != psServerList.end(); s++)
+	{
+		int UdpMasterServer = -1;
+		for( size_t port = 0; s->bBehindNat && port < s->ports.size() && UdpMasterServer == -1; port++ )
+			if( s->ports[port].second >= 0 )
+				UdpMasterServer = s->ports[port].second;
+
+        fprintf(fp, "%s, %s, %s",s->bManual ? "1" : "0", s->szName.c_str(), s->szAddress.c_str() );
+        if( UdpMasterServer != -1 && !s->bManual )
+        	fprintf(fp, ", %i", UdpMasterServer );
+       	fprintf(fp, "\n" );
+	}
+
+    fclose(fp);
+}
+
+///////////////////
+// Add a favourite server
+void Menu_SvrList_AddFavourite(const std::string& szName, const std::string& szAddress)
+{
+    FILE *fp = OpenGameFile("cfg/favourites.dat","a");  // We're appending
+    if( !fp )  {
+        fp = OpenGameFile("cfg/favourites.dat","wb");  // Try to create the file
+		if (!fp)
+			return;
+	}
+
+	// Append the server
+    fprintf(fp,"%s, %s, %s\n","1", szName.c_str(), szAddress.c_str());
+
+    fclose(fp);
+}
+
+
+///////////////////
+// Load the server list
+void Menu_SvrList_LoadList(const std::string& szFilename)
+{
+    FILE *fp = OpenGameFile(szFilename,"rt");
+    if( !fp )
+        return;
+
+    // Go through every line
+    while( !feof(fp) ) {
+		std::string szLine = ReadUntil(fp);
+        if( szLine == "" )
+            continue;
+
+		// explode and copy it
+		std::vector<std::string> parsed = explode(szLine,",");
+
+        if( parsed.size() >= 3 ) {
+			TrimSpaces(parsed[0]);
+			TrimSpaces(parsed[1]);
+			TrimSpaces(parsed[2]); // Address
+
+			int UdpMasterServer = -1;
+			if( parsed.size() >= 4 )
+				UdpMasterServer = atoi(parsed[3]);
+
+            Menu_SvrList_AddServer(parsed[2], parsed[0] == "1", parsed[1], UdpMasterServer);
+        }
+    }
+
+	// Update the GUI after the ping timed out
+	Timer("Menu_SvrList_LoadList ping waiter", null, NULL, PingWait, true).startHeadless();
+
+    fclose(fp);
+}
+
+std::string Menu_SvrList_GetUdpMasterserverForServer(const std::string & addr)
+{
+	server_t * svr = Menu_SvrList_FindServerStr(addr);
+	if( !svr )
+		return "";
+	if( !svr->bBehindNat )
+		return "";
+
+	for( size_t port = 0; port < svr->ports.size(); port++ )
+	{
+		if( svr->ports[port].second < 0 )
+			continue;
+		int idx = 0;
+		for( std::list<std::string>::iterator it = tUdpMasterServers.begin(); it != tUdpMasterServers.end(); ++it, ++idx )
+			if( idx == svr->ports[port].second )
+				return *it;
+	}
+
+	return "";
+}
+
+
 bool bGotDetails = false;
 bool bOldLxBug = false;
 int nTries = 0;
@@ -1160,18 +2306,18 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 
 	Menu_redrawBufferRect(x,y,w,h);
 
-    Menu_DrawBox(VideoPostProcessor::videoSurface().get(), x,y, x+w, y+h);
-	DrawRectFillA(VideoPostProcessor::videoSurface().get(), x+2,y+2, x+w-1, y+h-1, tLX->clDialogBackground, 230);
-    tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), x+w/2, y+5, tLX->clNormalLabel, "Server Details");
+    Menu_DrawBox(VideoPostProcessor::videoSurface(), x,y, x+w, y+h);
+	DrawRectFillA(VideoPostProcessor::videoSurface(), x+2,y+2, x+w-1, y+h-1, tLX->clDialogBackground, 230);
+    tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), x+w/2, y+5, tLX->clNormalLabel, "Server Details");
 
 
-	server_t::Ptr svr = ServerList::get()->findServerStr(szAddress);
+	server_t* svr = Menu_SvrList_FindServerStr(szAddress);
 	NetworkAddr origAddr;
 	if(svr) {
 		if(IsNetAddrValid(svr->sAddress)) {
 			origAddr = svr->sAddress;
 		} else {
-			tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), x+w/2, y+h/2-8, tLX->clNormalLabel,  "Resolving domain ...");
+			tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), x+w/2, y+h/2-8, tLX->clNormalLabel,  "Resolving domain ...");
 			return;
 		}
 	} else {
@@ -1181,7 +2327,7 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 		if(!StringToNetAddr(tmp_addr, origAddr)) {
 			// TODO: this happens also, if the server is not in the serverlist
 			// we should do the domain resolving also here by ourselfs
-			tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), x+w/2,y+tLX->cFont.GetHeight()+10, tLX->clError, "DNS not resolved");
+			tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), x+w/2,y+tLX->cFont.GetHeight()+10, tLX->clError, "DNS not resolved");
 			return;
 		}
 	}
@@ -1213,7 +2359,7 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 
     if(nTries < 3 && !bGotDetails && !bOldLxBug) {
 
-		tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), x+w/2, y+h/2-8, tLX->clNormalLabel,  "Loading info...");
+		tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), x+w/2, y+h/2-8, tLX->clNormalLabel,  "Loading info...");
 
         if (inbs.Read(tMenu->tSocket[SCK_NET])) {
             // Check for connectionless packet header
@@ -1345,7 +2491,7 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 			bOldLxBug = false;
 
 			if(svr)
-				ServerList::get()->getServerInfo(svr);
+				Menu_SvrList_GetServerInfo(svr);
         }
 
 		// Got details, fill in the listview
@@ -1527,7 +2673,7 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 				lvInfo.AddSubitem(LVS_TEXT, ftoa(fGameSpeed), (DynDrawIntf*)NULL, NULL);
 			}
 			
-			for_each_iterator( FeatureCompatibleSettingList::Feature&, it, GetIteratorRef_second(features.list) ){
+			foreach( FeatureCompatibleSettingList::Feature&, it, features.list ){
 				Color col;
 				switch(it->get().type) {
 					case FeatureCompatibleSettingList::Feature::FCSL_JUSTUNKNOWN: col = tLX->clDisabled; break;
@@ -1549,13 +2695,13 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 
 	// No details, server down
     if(!bGotDetails) {
-        tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), x+w/2,y+tLX->cFont.GetHeight()+10, tLX->clError, "Unable to query server");
+        tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), x+w/2,y+tLX->cFont.GetHeight()+10, tLX->clError, "Unable to query server");
         return;
     }
 
 	// Old bug
     if(bOldLxBug) {
-        tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), x+15,y+tLX->cFont.GetHeight()+10, tLX->clError, "You can't view details\nof this server because\nLieroX v0.56 contains a bug.\n\nPlease wait until the server\nchanges its state to Playing\nand try again.");
+        tLX->cFont.Draw(VideoPostProcessor::videoSurface(), x+15,y+tLX->cFont.GetHeight()+10, tLX->clError, "You can't view details\nof this server because\nLieroX v0.56 contains a bug.\n\nPlease wait until the server\nchanges its state to Playing\nand try again.");
         return;
     }
 
@@ -1575,7 +2721,7 @@ void Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h)
 	}
 
 	// All ok, draw the details
-	lvInfo.Draw( VideoPostProcessor::videoSurface().get() );
+	lvInfo.Draw( VideoPostProcessor::videoSurface() );
 }
 
 void Menu_Current_Shutdown() {
@@ -1616,48 +2762,32 @@ void Menu_Current_Shutdown() {
 				break;
 		}
 	
+	/*Menu_MainShutdown();
+	Menu_LocalShutdown();
+	Menu_PlayerShutdown();
+	Menu_MapEdShutdown();
+	Menu_GameSettingsShutdown();
+	Menu_WeaponsRestrictionsShutdown();
+	Menu_WeaponPresetsShutdown();
+	Menu_BanListShutdown();
+	Menu_ServerSettingsShutdown();
+	Menu_OptionsShutdown();
+	Menu_FloatingOptionsShutdown();
+	Menu_SpeedTest_Shutdown();
+	Menu_NetShutdown();
+	Menu_Net_MainShutdown();
+	Menu_Net_HostPlyShutdown();
+	Menu_Net_HostLobbyShutdown();
+	Menu_Net_LANShutdown();
+	Menu_Net_JoinShutdown();
+	Menu_Net_FavouritesShutdown();
+	Menu_Net_NewsShutdown();
+	Menu_Net_JoinShutdown();
+	Menu_Net_ChatShutdown();
+	Menu_Net_JoinConnectionShutdown();
+	Menu_Net_JoinLobbyShutdown();
+	Menu_Net_NETShutdown();
+	Menu_CGuiSkinShutdown();*/
 }
 	
 } // namespace DeprecatedGUI
-
-
-
-void TaskManager::renderTasksStatus(SDL_Renderer* r, CFont& font) {
-	std::list<std::string> statusTxts;
-
-	static const unsigned int MaxEntries = 4;
-	{
-		ScopedLock lock(mutex);
-		for(std::set<Task*>::const_iterator i = runningTasks.begin(); i != runningTasks.end(); ++i) {
-			std::string statusTxt = (*i)->statusText();
-			if(statusTxt != "") {
-				statusTxts.push_back(statusTxt);
-				if(statusTxts.size() >= MaxEntries)
-					break;
-			}
-		}
-	}
-
-	if(statusTxts.empty()) return;
-
-	static const int StatusLoadingLeft = 5;
-	static const int StatusLeft = 30;
-	static const int StatusTop = 5;
-	static const int StatusLoadingSize = 9;
-	const int StatusHeight = font.GetHeight() + 5;
-	const int count = (int)statusTxts.size();
-	const int screenW = VideoPostProcessor::get()->screenWidth();
-
-	// Full-width translucent bar behind the status lines.
-	DeprecatedGUI::overlayFillRect(r, 0, 0, screenW, StatusTop + StatusHeight * count, Color(42,73,145,180));
-
-	int y = StatusTop;
-	for(std::list<std::string>::iterator i = statusTxts.begin(); i != statusTxts.end(); ++i) {
-		DeprecatedGUI::overlayDrawText(r, font, StatusLeft, y, Color(255,255,255), *i);
-		y += StatusHeight;
-	}
-
-	DeprecatedGUI::overlayDrawLoadingAni(r, StatusLoadingLeft + StatusLoadingSize,
-		StatusHeight * count - StatusLoadingSize, StatusLoadingSize, StatusLoadingSize,
-		Color(255,255,255), Color(128,128,128));
-}

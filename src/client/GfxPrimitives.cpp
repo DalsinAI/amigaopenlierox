@@ -16,16 +16,14 @@
 // Created 12/11/01
 // By Jason Boettcher
 
-#ifndef DEDICATED_ONLY
-#define USE_GD_FOR_IMAGE_LOADING 1
-#endif
+
 
 #include <cassert>
-#include <SDL.h>
-#include <algorithm>
-#if USE_GD_FOR_IMAGE_LOADING
+#ifndef DEDICATED_ONLY
 #include <gd.h>
 #endif
+#include <SDL.h>
+#include <algorithm>
 
 #include "LieroX.h"
 #include "Options.h"
@@ -45,9 +43,8 @@
 #include "Mutex.h"
 #include "Condition.h"
 #include "CVec.h"
-#include "Cache.h"
-#include "CodeAttributes.h"
 
+int iSurfaceFormat = SDL_SWSURFACE;
 
 
 
@@ -79,9 +76,7 @@ void PutPixelA(SDL_Surface * bmpDest, int x, int y, Uint32 colour, Uint8 a)  {
 //////////////////////////
 // Set the per-surface alpha
 void SetPerSurfaceAlpha(SDL_Surface * dst, Uint8 a) {
-	SDL_SetSurfaceAlphaMod(dst, a);
-	// See SDL_BlitSurface(). We also need to enable SDL_BLENDMODE_BLEND.
-	SDL_SetSurfaceBlendMode(dst, SDL_BLENDMODE_BLEND);
+	SDL_SetAlpha(dst, SDL_SRCALPHA, a);
 }
 
 
@@ -115,9 +110,9 @@ static void SetColorKey_Alpha(SDL_Surface * dst, Uint8 r, Uint8 g, Uint8 b) {
 // Set a pink color key
 void SetColorKey(SDL_Surface * dst)  {
 	// If there's already a colorkey set, don't set it again
-	if (Surface_HasColorKey(dst) &&
-		((Surface_GetColorKey(dst) == SDL_MapRGB(dst->format, 255, 0, 255)) ||
-		(Surface_GetColorKey(dst) == SDL_MapRGB(dst->format, 254, 0, 254))))
+	if ((dst->flags & SDL_SRCCOLORKEY) &&
+		((dst->format->colorkey == SDL_MapRGB(dst->format, 255, 0, 255)) ||
+		(dst->format->colorkey == SDL_MapRGB(dst->format, 254, 0, 254))))
 		return;
 
 	// Because some graphic editors (old Photoshop and GIMP and possibly more) contain a bug that rounds 255 to 254
@@ -135,8 +130,8 @@ void SetColorKey(SDL_Surface * dst)  {
 
 
 	// Apply the colorkey
-	if (Surface_HasBlendMode(dst)) {
-		// see comment in other SetColorKey; the behaviour with Surface_HasBlendMode is different
+	if (dst->flags & SDL_SRCALPHA) {
+		// see comment in other SetColorKey; the behaviour with SDL_SRCALPHA is different
 		if (bugged)
 			SetColorKey_Alpha(dst, 254, 0, 254);
 		else
@@ -145,9 +140,9 @@ void SetColorKey(SDL_Surface * dst)  {
 
 	// set in both cases the colorkey (for alpha-surfaces just as a info, it's ignored there)
 	if (bugged)
-		SDL_SetColorKey(dst, 1, bugged_colorkey);
+		SDL_SetColorKey(dst, SDL_SRCCOLORKEY, bugged_colorkey);
 	else
-		SDL_SetColorKey(dst, 1, SDL_MapRGB(dst->format, 255, 0, 255));
+		SDL_SetColorKey(dst, SDL_SRCCOLORKEY, SDL_MapRGB(dst->format, 255, 0, 255));
 }
 
 void SetColorKey(SDL_Surface * dst, Uint8 r, Uint8 g, Uint8 b) {
@@ -156,47 +151,15 @@ void SetColorKey(SDL_Surface * dst, Uint8 r, Uint8 g, Uint8 b) {
 		return;
 	}
 
-	if (Surface_HasBlendMode(dst))
-		// HINT: The behaviour with Surface_HasBlendMode is different
+	if (dst->flags & SDL_SRCALPHA)
+		// HINT: The behaviour with SDL_SRCALPHA is different
 		// and not as you would expect it. The problem is that while blitting to a surface with RGBA,
 		// the alpha channel of the destination is untouched (see manpage to SDL_SetAlpha).
 		SetColorKey_Alpha(dst, r, g, b);
 
 	// set in both cases the colorkey (for alpha-surfaces just as a info, it's ignored there)
-	SDL_SetColorKey(dst, 1, SDL_MapRGB(dst->format, r, g, b));
+	SDL_SetColorKey(dst, SDL_SRCCOLORKEY, SDL_MapRGB(dst->format, r, g, b));
 }
-
-struct VideoFormat {
-	Uint32 bpp;
-	Uint32 amask;
-	Uint32 rmask;
-	Uint32 gmask;
-	Uint32 bmask;
-
-	VideoFormat() {}
-	VideoFormat(const SDL_PixelFormat* fmt) {
-		bpp = fmt->BitsPerPixel;
-		rmask = fmt->Rmask;
-		gmask = fmt->Gmask;
-		bmask = fmt->Bmask;
-		amask = fmt->Amask;
-	}
-	
-	bool operator==(const VideoFormat& f) const {
-		return
-		bpp == f.bpp &&
-		amask == f.amask &&
-		rmask == f.rmask &&
-		gmask == f.gmask &&
-		bmask == f.bmask;
-	}
-	bool operator!=(const VideoFormat& f) const { return !(*this == f); }
-};
-
-INLINE VideoFormat getMainVideoFormat() {
-	return VideoFormat(getMainPixelFormat());
-}
-
 
 //////////////////////////////
 // Create a surface without any alpha channel
@@ -205,19 +168,18 @@ SmartPointer<SDL_Surface> gfxCreateSurface(int width, int height, bool forceSoft
 	if (width <= 0 || height <= 0) // Nonsense, can cause trouble
 		return NULL;
 
-	const VideoFormat fmt = getMainVideoFormat();
+	SDL_PixelFormat* fmt = getMainPixelFormat();
 
 	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-			0,
+			forceSoftware ? SDL_SWSURFACE : iSurfaceFormat,
 			width, height,
-			fmt.bpp, fmt.rmask, fmt.gmask, fmt.bmask, fmt.amask);
-	if(!result.get()) return NULL;
-	
-	// Force to ignore alpha.
-	SDL_SetSurfaceBlendMode(result.get(), SDL_BLENDMODE_NONE);
+			fmt->BitsPerPixel, fmt->Rmask, fmt->Gmask, fmt->Bmask, fmt->Amask);
 
-	// OpenGL strictly requires the surface to be cleared
-	SDL_FillRect(result.get(), NULL, SDL_MapRGBA(result.get()->format, 0, 0, 0, SDL_ALPHA_OPAQUE));
+	if (result.get() != NULL)  {
+		// OpenGL strictly requires the surface to be cleared
+		SDL_FillRect(result.get(), NULL, SDL_MapRGBA(result.get()->format, 0, 0, 0, 255));
+		SDL_SetAlpha(result.get(), 0, 0); // Remove any alpha
+	}
 
 	#ifdef DEBUG
 	//printf("gfxCreateSurface() %p %i %i\n", result.get(), width, height );
@@ -226,6 +188,14 @@ SmartPointer<SDL_Surface> gfxCreateSurface(int width, int height, bool forceSoft
 	return result;
 }
 
+
+struct VideoFormat {
+	Uint32 bpp;
+	Uint32 amask;
+	Uint32 rmask;
+	Uint32 gmask;
+	Uint32 bmask;
+};
 
 static VideoFormat bestSoftwareAlphaFormat() {
 	VideoFormat f;
@@ -272,21 +242,6 @@ static VideoFormat bestSoftwareAlphaFormat() {
 	return f;
 }
 
-INLINE VideoFormat getMainAlphaVideoFormat() {
-	SDL_PixelFormat* fmt = getMainPixelFormat();
-	
-	if(fmt->Amask != 0) // the main pixel format supports alpha blending
-		return VideoFormat(fmt);
-	
-	// no native alpha blending, so create a software alpha blended surface
-	return bestSoftwareAlphaFormat();
-}
-
-INLINE VideoFormat getMainVideoFormat(bool withalpha) {
-	if(withalpha) return getMainAlphaVideoFormat();
-	else return getMainVideoFormat();
-}
-
 /////////////////////////
 // Create a surface with an alpha channel
 SmartPointer<SDL_Surface> gfxCreateSurfaceAlpha(int width, int height, bool forceSoftware)
@@ -294,18 +249,30 @@ SmartPointer<SDL_Surface> gfxCreateSurfaceAlpha(int width, int height, bool forc
 	if (width <= 0 || height <= 0) // Nonsense, can cause trouble
 		return NULL;
 
-	const VideoFormat f = getMainAlphaVideoFormat();
-	assert(f.amask != 0);
-	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-				0,
+	SmartPointer<SDL_Surface> result;
+	SDL_PixelFormat* fmt = getMainPixelFormat();
+
+	if(fmt->Amask != 0) // the main pixel format supports alpha blending
+		result = SDL_CreateRGBSurface(
+				(forceSoftware ? SDL_SWSURFACE : iSurfaceFormat) | SDL_SRCALPHA,
+				width, height,
+				fmt->BitsPerPixel, fmt->Rmask, fmt->Gmask, fmt->Bmask, fmt->Amask);
+
+	else { // no native alpha blending, so create a software alpha blended surface
+		const VideoFormat f = bestSoftwareAlphaFormat();
+		result = SDL_CreateRGBSurface(
+				SDL_SWSURFACE | SDL_SRCALPHA,
 				width, height,
 				f.bpp, f.rmask, f.gmask, f.bmask, f.amask);
-	if(!result.get()) return NULL;
+	}
 	
-	// The surface will have SDL_BLENDMODE_BLEND by default with Amask != 0.
-	
-	// OpenGL strictly requires the surface to be cleared
-	SDL_FillRect( result.get(), NULL, SDL_MapRGB(result.get()->format, 0, 0, 0));
+	if (result.get() != NULL)
+		// OpenGL strictly requires the surface to be cleared
+		SDL_FillRect( result.get(), NULL, SDL_MapRGB(result.get()->format, 0, 0, 0));
+
+	#ifdef DEBUG
+	//printf("gfxCreateSurfaceAlpha() %p %i %i\n", result.get(), width, height );
+	#endif
 
 	return result;
 }
@@ -315,7 +282,7 @@ SmartPointer<SDL_Surface> gfxCreateSurfaceAlpha(int width, int height, bool forc
 void ResetAlpha(SDL_Surface * dst)
 {
 	SDL_SetColorKey(dst, 0, 0); // Remove the colorkey
-	SDL_SetSurfaceAlphaMod(dst, SDL_ALPHA_OPAQUE); // Remove the persurface-alpha
+	SDL_SetAlpha(dst, 0, 0); // Remove the persurface-alpha
 
 	PixelPut& putter = getPixelPutFunc(dst);
 	PixelGet& getter = getPixelGetFunc(dst);
@@ -352,7 +319,7 @@ void ResetAlpha(SDL_Surface * dst)
 #define CLIP_REJECT(a,b) (a&b)
 #define CLIP_ACCEPT(a,b) (!(a|b))
 
-static INLINE int clipEncode(int x, int y, int left, int top, int right, int bottom)
+static inline int clipEncode(int x, int y, int left, int top, int right, int bottom)
 {
     int code = 0;
 
@@ -451,7 +418,7 @@ bool ClipLine(SDL_Surface * dst, int * x1, int * y1, int * x2, int * y2)
 
 
 // TODO: not used, remove?
-INLINE void CopySurfaceFast(SDL_Surface * dst, SDL_Surface * src, int sx, int sy, int dx, int dy, int w, int h) {
+inline void CopySurfaceFast(SDL_Surface * dst, SDL_Surface * src, int sx, int sy, int dx, int dy, int w, int h) {
 	LOCK_OR_QUIT(dst);
 	LOCK_OR_QUIT(src);
 
@@ -475,147 +442,51 @@ INLINE void CopySurfaceFast(SDL_Surface * dst, SDL_Surface * src, int sx, int sy
 	UnlockSurface(dst);
 }
 
-SurfaceCopyScope::SurfaceCopyScope(SDL_Surface *src_) : src(src_) {
+
+///////////////////////
+// Copies area from one image to another (not blitting so the alpha values are kept!)
+void CopySurface(SDL_Surface * dst, SDL_Surface * src, int sx, int sy, int dx, int dy, int w, int h)
+{
 	// Copying is a normal blit without colorkey and alpha
 	// If the surface has alpha or colorkey set, we have to remove them and then put them back
 
 	// Save alpha values
-	PerSurfaceAlpha = SDL_ALPHA_OPAQUE;
-	SDL_GetSurfaceAlphaMod(src, &PerSurfaceAlpha);
-	BlendMode = SDL_BLENDMODE_NONE;
-	SDL_GetSurfaceBlendMode(src, &BlendMode);
+	bool HasAlpha = false;
+	Uint8 PerSurfaceAlpha = SDL_ALPHA_OPAQUE;
+	if (src->flags & SDL_SRCALPHA)  {
+		HasAlpha = true;
+		PerSurfaceAlpha = src->format->alpha;
+	}
 
 	// Save colorkey values
-	HasColorkey = true;
-	Colorkey = 0;
-	if (SDL_GetColorKey(src, &Colorkey) != 0)  {
-		HasColorkey = false;
+	bool HasColorkey = false;
+	Uint32 Colorkey = 0;
+	if (src->flags & SDL_SRCCOLORKEY)  {
+		HasColorkey = true;
+		Colorkey = src->format->colorkey;
 	}
 
 	// Remove alpha and colorkey
-	SDL_SetSurfaceAlphaMod(src, SDL_ALPHA_OPAQUE);
-	SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
+	SDL_SetAlpha(src, 0, 0);
 	SDL_SetColorKey(src, 0, 0);
-}
-
-SurfaceCopyScope::~SurfaceCopyScope() {
-	// Return back alpha and colorkey
-	if (PerSurfaceAlpha != SDL_ALPHA_OPAQUE)
-		SDL_SetSurfaceAlphaMod(src, PerSurfaceAlpha);
-	if (BlendMode != SDL_BLENDMODE_NONE)
-		SDL_SetSurfaceBlendMode(src, BlendMode);
-	if (HasColorkey)
-		SDL_SetColorKey(src, 1, Colorkey);
-}
-
-///////////////////////
-// Copies area from one image to another (not blitting so the alpha values are kept!)
-void CopySurface(SDL_Surface * dst, SDL_Surface * src, int sx, int sy, int dx, int dy, int w, int h, bool stretch2)
-{
-	SurfaceCopyScope copyScope(src);
 
 	// Blit
-	if(stretch2)
-		DrawImageStretch2(dst, src, sx, sy, dx, dy, w, h);
-	else
-		DrawImageAdv(dst, src, sx, sy, dx, dy, w, h);
+	DrawImageAdv(dst, src, sx, sy, dx, dy, w, h);
+
+	// Return back alpha and colorkey
+	if (HasAlpha)
+		SDL_SetAlpha(src, SDL_SRCALPHA, PerSurfaceAlpha);
+	if (HasColorkey)
+		SDL_SetColorKey(src, SDL_SRCCOLORKEY, Colorkey);
 }
 
-SmartPointer<SDL_Surface> GetCopiedImage(SDL_Surface* bmpSrc) {
-	assert(bmpSrc != NULL);
-	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-															0,
-															bmpSrc->w, bmpSrc->h,
-															bmpSrc->format->BitsPerPixel,
-															bmpSrc->format->Rmask,
-															bmpSrc->format->Gmask,
-															bmpSrc->format->Bmask,
-															bmpSrc->format->Amask);
-	if (result.get() == NULL) return NULL;
-
-	CopySurface(result.get(), bmpSrc, 0, 0, 0, 0, bmpSrc->w, bmpSrc->h);
-	
-	// Colorkey.
-	if(Surface_HasColorKey(bmpSrc)) {
-		uint32_t colorkey = Surface_GetColorKey(bmpSrc);
-		SDL_SetColorKey(result.get(), 1, colorkey);
-	}
-	
-	// Per-surface alpha.
-	{
-		uint8_t alpha = SDL_ALPHA_OPAQUE;
-		(void)SDL_GetSurfaceAlphaMod(bmpSrc, &alpha);
-		if(alpha != SDL_ALPHA_OPAQUE) {
-			SDL_SetSurfaceAlphaMod(result.get(), alpha);
-		}
-	}
-	
-	// (Per-pixel) alpha blend mode.
-	{
-		SDL_BlendMode blendMode = Surface_GetBlendMode(bmpSrc);
-		SDL_SetSurfaceBlendMode(result.get(), blendMode);
-	}
-	
-	assert(PixelFormatEqual(bmpSrc->format, result->format));
-
-	return result;
-}
-
-
-SmartPointer<SDL_Surface> GetCopiedStretched2Image(SDL_Surface* bmpSrc) {
-	assert(bmpSrc != NULL);
-	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-															0,
-															bmpSrc->w*2, bmpSrc->h*2,
-															bmpSrc->format->BitsPerPixel,
-															bmpSrc->format->Rmask,
-															bmpSrc->format->Gmask,
-															bmpSrc->format->Bmask,
-															bmpSrc->format->Amask);
-	if (result.get() == NULL) return NULL;
-
-	CopySurface(result.get(), bmpSrc, 0, 0, 0, 0, bmpSrc->w, bmpSrc->h, true);
-
-	// Colorkey.
-	if(Surface_HasColorKey(bmpSrc)) {
-		uint32_t colorkey = Surface_GetColorKey(bmpSrc);
-		SDL_SetColorKey(result.get(), 1, colorkey);
-	}
-	
-	// Per-surface alpha.
-	{
-		uint8_t alpha = SDL_ALPHA_OPAQUE;
-		(void)SDL_GetSurfaceAlphaMod(bmpSrc, &alpha);
-		if(alpha != SDL_ALPHA_OPAQUE) {
-			SDL_SetSurfaceAlphaMod(result.get(), alpha);
-		}
-	}
-	
-	// (Per-pixel) alpha blend mode.
-	{
-		SDL_BlendMode blendMode = Surface_GetBlendMode(bmpSrc);
-		SDL_SetSurfaceBlendMode(result.get(), blendMode);
-	}
-
-	assert(PixelFormatEqual(bmpSrc->format, result->format));
-
-	return result;
-}
-
-template <
-	bool colorkeycheck,
-	bool alphablend,
-	bool src_persurfacealpha,
-	bool src_hasalpha, bool dst_hasalpha,
-	int sbpp, int dbpp,
-	bool sameformat
->
-void _OperateOnSurfaces(SDL_PixelFormat* dstformat, SDL_PixelFormat* srcformat, SDL_Surface * bmpDest, SDL_Surface * bmpSrc, SDL_Rect& rDest, SDL_Rect& rSrc)
+/////////////////////
+// Performs a "correct" blit of RGBA surfaces to RGB or RGBA surfaces
+static void DrawRGBA(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, SDL_Rect& rDest, SDL_Rect& rSrc)
 {
-	assert(bmpSrc->format->BytesPerPixel == sbpp);
-	assert(bmpDest->format->BytesPerPixel == dbpp);
-	assert(!sameformat || sbpp == dbpp);
-	
+	// RGBA surfaces are only 32bit
+	assert(bmpSrc->format->BytesPerPixel == 4);
+
 	// Clip
 	{
 		int old_x = rDest.x;
@@ -624,117 +495,54 @@ void _OperateOnSurfaces(SDL_PixelFormat* dstformat, SDL_PixelFormat* srcformat, 
 		rDest.h = rSrc.h;
 		if (!ClipRefRectWith(rDest, (SDLRect&)bmpDest->clip_rect))
 			return;
-		
+
 		rSrc.x += rDest.x - old_x;
 		rSrc.y += rDest.y - old_y;
+		if (rSrc.x < 0)
+			rDest.x -= rSrc.x;
+		if (rSrc.y < 0)
+			rDest.y -= rSrc.y;
 		if (!ClipRefRectWith(rSrc, (SDLRect&)bmpSrc->clip_rect))
 			return;
 		rDest.w = MIN(rSrc.w, rDest.w);
 		rDest.h = MIN(rSrc.h, rDest.h);
 	}
-	
+
 	LOCK_OR_QUIT(bmpDest);
 	LOCK_OR_QUIT(bmpSrc);
-	
+
+	static const int sbpp = 4;
+	const int dbpp = bmpDest->format->BytesPerPixel;
 	Uint8 *src = ((Uint8 *)bmpSrc->pixels + rSrc.y * bmpSrc->pitch + rSrc.x * sbpp);
 	Uint8 *dst = ((Uint8 *)bmpDest->pixels + rDest.y * bmpDest->pitch + rDest.x * dbpp);
 	int srcgap = bmpSrc->pitch - rDest.w * sbpp;
 	int dstgap = bmpDest->pitch - rDest.w * dbpp;
-	
-	Color key = Unpack_<src_hasalpha>(Surface_GetColorKey(bmpSrc), bmpSrc->format);
-	for (int y = rDest.h; y; --y, dst += dstgap, src += srcgap)
-		for (int x = rDest.w; x; --x, dst += dbpp, src += sbpp) {
-			if(sameformat && !alphablend && !colorkeycheck) {
-				if(sbpp == 4) *(Uint32*)dst = *(Uint32*)src;
-				else if(sbpp == 3) { *dst = *src; *(dst+1) = *(src+1); *(dst+2) = *(src+2); }
-				else if(sbpp == 2) *(Uint16*)dst = *(Uint16*)src;
-				else if(sbpp == 1) *dst = *src;
-				else assert(false);
-			} else {
-				Color c = _GetPixel<src_hasalpha,sbpp>(srcformat, src);
-				if(colorkeycheck && c.r == key.r && c.g == key.g && c.b == key.b)  // Colorkey check
+
+	PixelPutAlpha& putter = getPixelAlphaPutFunc(bmpDest);
+
+	if (bmpSrc->flags & SDL_SRCCOLORKEY)  {
+	// We have to check for the colorkey as well
+		Color key = Unpack_alpha(bmpSrc->format->colorkey, bmpSrc->format);
+		for (int y = rDest.h; y; --y, dst += dstgap, src += srcgap)
+			for (int x = rDest.w; x; --x, dst += dbpp, src += sbpp)  {
+				Color c = Unpack_alpha(GetPixel_32(src), bmpSrc->format);
+				if (c.r == key.r && c.g == key.g && c.b == key.b)  // Colorkey check
 					continue;
-				if(src_persurfacealpha)
-					c.a = ((int)c.a * Surface_GetAlpha(bmpSrc)) / 255;  // Add the per-surface alpha to the source pixel alpha
-				_PutPixel<dst_hasalpha, alphablend, dbpp>(dstformat, dst, c);
+				c.a = (c.a * bmpSrc->format->alpha) / 255;  // Add the per-surface alpha to the source pixel alpha
+				putter.put(dst, bmpDest->format, c);
 			}
-		}
+	} else {
+	// No colorkey, less inner-loop checks needed
+		for (int y = rDest.h; y; --y, dst += dstgap, src += srcgap)
+			for (int x = rDest.w; x; --x, dst += dbpp, src += sbpp)  {
+				Color c = Unpack_alpha(GetPixel_32(src), bmpSrc->format);
+				c.a = (c.a * bmpSrc->format->alpha) / 255;  // Add the per-surface alpha to the source pixel alpha
+				putter.put(dst, bmpDest->format, c);
+			}
+	}
 
 	UnlockSurface(bmpDest);
 	UnlockSurface(bmpSrc);
-}
-
-
-/////////////////////
-// Performs a "correct" blit of RGBA surfaces to RGB or RGBA surfaces
-template<bool alphablend>
-static void DrawRGBA(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, SDL_Rect& rDest, SDL_Rect& rSrc)
-{
-	const int sbpp = bmpSrc->format->BytesPerPixel;
-	const int dbpp = bmpDest->format->BytesPerPixel;
-	const bool src_hasalpha = bmpSrc->format->Amask != 0;
-	const bool dst_hasalpha = bmpDest->format->Amask != 0;
-	const bool src_persurfacealpha = alphablend && Surface_GetAlpha(bmpSrc) != SDL_ALPHA_OPAQUE;
-	const bool colorkeycheck = Surface_HasColorKey(bmpSrc);
-	const bool sameformat = PixelFormatEqual(bmpSrc->format, bmpDest->format);
-	
-#define ____DO_OP(_sbpp, _dbpp, _salpha, _dalpha, _spersurfalpha, _colkeycheck, _sameformat) \
-	_OperateOnSurfaces< \
-		_colkeycheck, \
-		alphablend, \
-		_spersurfalpha, \
-		_salpha, _dalpha, \
-		_sbpp, _dbpp, \
-		_sameformat \
-		>( \
-		bmpDest->format, bmpSrc->format, \
-		bmpDest, bmpSrc, rDest, rSrc)
-
-#define ___DO_OP(_sbpp, _dbpp, _salpha, _dalpha, _spersurfalpha, _colkeycheck) \
-	{ \
-		if(/* this is an extra static(!) check for sameformat */ _sbpp == _dbpp && sameformat) \
-			____DO_OP(_sbpp, _dbpp, _salpha, _dalpha, _spersurfalpha, _colkeycheck, true); \
-		else /* !sameformat */ \
-			____DO_OP(_sbpp, _dbpp, _salpha, _dalpha, _spersurfalpha, _colkeycheck, false); \
-	}
-
-#define __DO_OP(_sbpp, _dbpp, _salpha, _dalpha) \
-	{ \
-		if(src_persurfacealpha) { \
-			if(colorkeycheck) ___DO_OP(_sbpp, _dbpp, _salpha, _dalpha, true, true) \
-			else ___DO_OP(_sbpp, _dbpp, _salpha, _dalpha, true, false) \
-		} \
-		else /* !src_persurfacealpha */ { \
-			if(colorkeycheck) ___DO_OP(_sbpp, _dbpp, _salpha, _dalpha, false, true) \
-			else ___DO_OP(_sbpp, _dbpp, _salpha, _dalpha, false, false) \
-		} \
-	}
-	
-#define _DO_OP(_sbpp, _dbpp) \
-	if(sbpp == _sbpp && dbpp == _dbpp) { \
-		if(src_hasalpha && dst_hasalpha) __DO_OP(_sbpp, _dbpp, true, true) \
-		else if(src_hasalpha && !dst_hasalpha) __DO_OP(_sbpp, _dbpp, true, false) \
-		else if(!src_hasalpha && dst_hasalpha) __DO_OP(_sbpp, _dbpp, false, true) \
-		else __DO_OP(_sbpp, _dbpp, false, false) \
-	}
-	
-	_DO_OP(4,4) else
-	_DO_OP(4,3) else
-	_DO_OP(3,4) else
-	_DO_OP(3,3) else
-	_DO_OP(2,4) else
-	_DO_OP(2,3) else
-	_DO_OP(2,2) else
-	_DO_OP(4,2) else
-	_DO_OP(3,2) else
-	_DO_OP(1,4) else
-	_DO_OP(1,3) else
-	_DO_OP(1,2) else
-	_DO_OP(1,1) else
-	_DO_OP(4,1) else
-	_DO_OP(3,1) else
-	_DO_OP(2,1) else
-	assert(false);
 }
 
 /////////////////////
@@ -750,46 +558,30 @@ void DrawImageAdv(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, SDL_Rect& rDest, 
 		errors << "DrawImageAdv: destination-image not set" << endl;
 		return;
 	}
-
-	SDL_BlitSurface(bmpSrc, &rSrc, bmpDest, &rDest);
-
-	return; // XXX: for now. I hope that SDL2 is faster than our code... :P Also, I didn't checked our code with SDL2 yet
 	
-	if(Surface_HasBlendMode(bmpSrc))
-		DrawRGBA<true>(bmpDest, bmpSrc, rDest, rSrc);
-	else
-		DrawRGBA<false>(bmpDest, bmpSrc, rDest, rSrc);
-
-	return; // TODO: for now. and if the above is fast enough anyway, we don't need the code below (which is buggy)
-	
-	bool src_isrgba = bmpSrc->format->Amask != 0 && Surface_HasBlendMode(bmpSrc);
-	bool dst_isrgba = bmpDest->format->Amask != 0 && Surface_HasBlendMode(bmpDest);
+	bool src_isrgba = bmpSrc->format->Amask != 0 && (bmpSrc->flags & SDL_SRCALPHA);
+	bool dst_isrgba = bmpDest->format->Amask != 0 && (bmpDest->flags & SDL_SRCALPHA);
 
 	// RGB -> RGB
 	// RGB -> RGBA
 	if (!src_isrgba)  {
-		if(bmpDest->format->BitsPerPixel == 8 && bmpSrc->format->BitsPerPixel == 8)
-			CopySurfaceFast(bmpDest, bmpSrc, rSrc.x, rSrc.y, rDest.x, rDest.y, rSrc.w, rSrc.h);
-		else if(dst_isrgba)
-			SDL_BlitSurface(bmpSrc, &rSrc, bmpDest, &rDest);
-		else
-			DrawRGBA<false>(bmpDest, bmpSrc, rDest, rSrc);
-		
+		SDL_BlitSurface(bmpSrc, &rSrc, bmpDest, &rDest);
+
 	// RGBA -> RGB
 	} else if (src_isrgba && !dst_isrgba)  {
-		switch (Surface_GetAlpha(bmpSrc))  {
+		switch (bmpSrc->format->alpha)  {
 		case SDL_ALPHA_OPAQUE:
 			SDL_BlitSurface(bmpSrc, &rSrc, bmpDest, &rDest);
 		break;
 		case SDL_ALPHA_TRANSPARENT:
 		return;
 		default:
-			DrawRGBA<true>(bmpDest, bmpSrc, rDest, rSrc); // To handle the per-surface alpha correctly
+			DrawRGBA(bmpDest, bmpSrc, rDest, rSrc); // To handle the per-surface alpha correctly
 		}
 
 	// RGBA -> RGBA
 	} else {
-		DrawRGBA<true>(bmpDest, bmpSrc, rDest, rSrc);
+		DrawRGBA(bmpDest, bmpSrc, rDest, rSrc);
 	}
 }
 
@@ -799,7 +591,7 @@ void DrawImageAdv(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, SDL_Rect& rDest, 
 // Draw the image tiled on the dest surface
 void DrawImageTiled(SDL_Surface *bmpDest, SDL_Surface *bmpSrc, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh)
 {
-	SDL_Rect newClip = { (SDLRect::Type) dx, (SDLRect::Type) dy, (SDLRect::TypeS) dw, (SDLRect::TypeS) dh };
+	SDL_Rect newClip = {(SDLRect::Type) dx, (SDLRect::Type) dy, (SDLRect::TypeS) dw, (SDLRect::TypeS) dh};
 	ScopedSurfaceClip clip(bmpDest,newClip);	
 	MOD(sx, (int)bmpSrc->w); MOD(sy, (int)bmpSrc->h);
 	
@@ -835,7 +627,7 @@ void DrawImageTiledY(SDL_Surface *bmpDest, SDL_Surface *bmpSrc, int sx, int sy, 
 
 
 ///////////////////
-// Draw the image mirrored with a huge amount of options. horiz, i.e. x is flipped
+// Draw the image mirrored with a huge amount of options
 void DrawImageAdv_Mirror(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, int sx, int sy, int dx, int dy, int w, int h)
 {
 	// TODO: fix this
@@ -886,6 +678,55 @@ void DrawImageAdv_Mirror(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, int sx, in
 	UnlockSurface(bmpSrc);
 }
 
+void DrawImageAdv_MirrorVertical(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, int sx, int sy, int dx, int dy, int w, int h)
+{
+	// TODO: fix this
+	// Warning: Both surfaces have to have same bpp!
+	if(bmpDest->format->BytesPerPixel != bmpSrc->format->BytesPerPixel) {
+		errors << "DrawImageAdv_MirrorVertical: dst bpp " << bmpDest->format->BytesPerPixel << " != " << " src bpp " << bmpSrc->format->BytesPerPixel << endl;
+		return;
+	}
+
+	// Clipping on source surface
+	if (!ClipRefRectWith(sx, sy, w, h, (SDLRect&)bmpSrc->clip_rect))
+		return;
+
+	// Clipping on dest surface
+	if (!ClipRefRectWith(dx, dy, w, h, (SDLRect&)bmpDest->clip_rect))
+		return;
+
+	int x,y;
+
+	// Lock the surfaces
+	LOCK_OR_QUIT(bmpDest);
+	LOCK_OR_QUIT(bmpSrc);
+
+
+	Uint8 *TrgPix = (Uint8 *)bmpDest->pixels + (dy + h - 1)*bmpDest->pitch + dx*bmpDest->format->BytesPerPixel;
+	Uint8 *SrcPix = (Uint8 *)bmpSrc->pixels + sy*bmpSrc->pitch + sx*bmpSrc->format->BytesPerPixel;
+
+	short bpp = bmpDest->format->BytesPerPixel;
+
+	Uint8 *sp,*tp;
+	for(y = h; y; --y) {
+
+		sp = SrcPix;
+		tp = TrgPix;
+		for(x = w; x; --x) {
+			// Copy the pixel
+			memcpy(tp, sp, bpp);
+			tp += bpp;
+			sp += bpp;
+		}
+
+		SrcPix += bmpSrc->pitch;
+		TrgPix -= bmpDest->pitch;
+	}
+
+	// Unlock em
+	UnlockSurface(bmpDest);
+	UnlockSurface(bmpSrc);
+}
 
 ///////////////////
 // Draws a sprite doubly stretched
@@ -1154,19 +995,45 @@ void DrawImageResizedAdv(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, int sx, in
 // Copied over from SDL_stretch.c from SDL-1.2.9
 // This is a safe, esp multithreadingsafe version of SDL_SoftStretch without any ASM magic.
 
-static INLINE void copy_row(PixelCopy& copier, Uint8 *src, int src_w, int sbpp, Uint8 *dst, int dst_w, int dbpp)
-{                                                                                                               
-        int pos = 0x10000;                              
-        int inc = (src_w << 16) / dst_w;                
-        for ( int i=dst_w; i>0; --i ) {                 
-                while ( pos >= 0x10000L ) {             
-                        src += sbpp;                 
-                        pos -= 0x10000L;                
-                } 
-				copier.copy(dst, src - sbpp);
-                dst += dbpp;                         
-                pos += inc;                             
-        }                                               
+#define DEFINE_COPY_ROW(name, type)                     \
+void name(type *src, int src_w, type *dst, int dst_w)   \
+{                                                       \
+        type pixel = 0;                                 \
+                                                        \
+        int pos = 0x10000;                              \
+        int inc = (src_w << 16) / dst_w;                \
+        for ( int i=dst_w; i>0; --i ) {                 \
+                while ( pos >= 0x10000L ) {             \
+                        pixel = *src++;                 \
+                        pos -= 0x10000L;                \
+                }                                       \
+                *dst++ = pixel;                         \
+                pos += inc;                             \
+        }                                               \
+}
+DEFINE_COPY_ROW(copy_row1, Uint8)
+DEFINE_COPY_ROW(copy_row2, Uint16)
+DEFINE_COPY_ROW(copy_row4, Uint32)
+
+/* The ASM code doesn't handle 24-bpp stretch blits */
+void copy_row3(Uint8 *src, int src_w, Uint8 *dst, int dst_w)
+{
+	Uint8 pixel[3] = {0,0,0};
+	
+	int pos = 0x10000;
+	int inc = (src_w << 16) / dst_w;
+	for ( int i=dst_w; i>0; --i ) {
+		while ( pos >= 0x10000L ) {
+			pixel[0] = *src++;
+			pixel[1] = *src++;
+			pixel[2] = *src++;
+			pos -= 0x10000L;
+		}
+		*dst++ = pixel[0];
+		*dst++ = pixel[1];
+		*dst++ = pixel[2];
+		pos += inc;
+	}
 }
 
 /* Perform a stretch blit between two surfaces of the same format.
@@ -1183,9 +1050,13 @@ int SafeSoftStretch(SDL_Surface *src, SDL_Rect *srcrect,
 	Uint8 *dstp;
 	SDL_Rect full_src;
 	SDL_Rect full_dst;
-	const int sbpp = src->format->BytesPerPixel;
-	const int dbpp = dst->format->BytesPerPixel;
-		
+	const int bpp = dst->format->BytesPerPixel;
+	
+	if ( src->format->BitsPerPixel != dst->format->BitsPerPixel ) {
+		SDL_SetError("Only works with same format surfaces");
+		return(-1);
+	}
+	
 	/* Verify the blit rectangles */
 	if ( srcrect ) {
 		if ( (srcrect->x < 0) || (srcrect->y < 0) ||
@@ -1243,21 +1114,33 @@ int SafeSoftStretch(SDL_Surface *src, SDL_Rect *srcrect,
 	inc = (srcrect->h << 16) / dstrect->h;
 	src_row = srcrect->y;
 	dst_row = dstrect->y;
-
-	PixelCopy& copier = getPixelCopyFunc(src, dst);
-
+	
 	/* Perform the stretch blit */
 	for ( dst_maxrow = dst_row+dstrect->h; dst_row<dst_maxrow; ++dst_row ) {
 		dstp = (Uint8 *)dst->pixels + (dst_row*dst->pitch)
-		+ (dstrect->x*dbpp);
+		+ (dstrect->x*bpp);
 		while ( pos >= 0x10000L ) {
 			srcp = (Uint8 *)src->pixels + (src_row*src->pitch)
-			+ (srcrect->x*sbpp);
+			+ (srcrect->x*bpp);
 			++src_row;
 			pos -= 0x10000L;
 		}
-		
-		copy_row(copier, srcp, srcrect->w, sbpp, dstp, dstrect->w, dbpp);
+		switch (bpp) {
+			case 1:
+				copy_row1(srcp, srcrect->w, dstp, dstrect->w);
+				break;
+			case 2:
+				copy_row2((Uint16 *)srcp, srcrect->w,
+						  (Uint16 *)dstp, dstrect->w);
+				break;
+			case 3:
+				copy_row3(srcp, srcrect->w, dstp, dstrect->w);
+				break;
+			case 4:
+				copy_row4((Uint32 *)srcp, srcrect->w,
+						  (Uint32 *)dstp, dstrect->w);
+				break;
+		}
 		pos += inc;
 	}
 	
@@ -1317,75 +1200,6 @@ void DrawImageResampledAdv(SDL_Surface * bmpDest, SDL_Surface * bmpSrc, int sx, 
 		SafeSoftStretch(bmpSrc, &src, bmpDest, &dst);
 }
 
-
-// horiz, i.e. y flipped
-SmartPointer<SDL_Surface> GetHMirroredImage(const SmartPointer<SDL_Surface> & bmpSrc) {
-	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-															bmpSrc->flags,
-															bmpSrc->w, bmpSrc->h,
-															bmpSrc->format->BitsPerPixel,
-															bmpSrc->format->Rmask,
-															bmpSrc->format->Gmask,
-															bmpSrc->format->Bmask,
-															bmpSrc->format->Amask);
-
-	LockSurface(bmpSrc); LockSurface(result);
-	PixelCopy& copier = getPixelCopyFunc(bmpSrc.get(), result.get());
-	for(int y = 0; y < result->h; ++y) {
-		for(int x = 0; x < result->w; ++x) {
-			copier.copy(GetPixelAddr(result.get(), x, y), GetPixelAddr(bmpSrc.get(), x, bmpSrc->h - y - 1));
-		}
-	}
-	UnlockSurface(result); UnlockSurface(bmpSrc);
-	return result;
-}
-
-// vert, i.e. x flipped
-SmartPointer<SDL_Surface> GetVMirroredImage(const SmartPointer<SDL_Surface> & bmpSrc) {
-	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-															bmpSrc->flags,
-															bmpSrc->w, bmpSrc->h,
-															bmpSrc->format->BitsPerPixel,
-															bmpSrc->format->Rmask,
-															bmpSrc->format->Gmask,
-															bmpSrc->format->Bmask,
-															bmpSrc->format->Amask);
-
-	LockSurface(bmpSrc); LockSurface(result);
-	PixelCopy& copier = getPixelCopyFunc(bmpSrc.get(), result.get());
-	for(int y = 0; y < result->h; ++y) {
-		for(int x = 0; x < result->w; ++x) {
-			copier.copy(GetPixelAddr(result.get(), x, y), GetPixelAddr(bmpSrc.get(), bmpSrc->w - x - 1, y));
-		}
-	}
-	UnlockSurface(result); UnlockSurface(bmpSrc);
-	return result;
-}
-
-// rotate clockwise
-SmartPointer<SDL_Surface> GetRotatedImage(const SmartPointer<SDL_Surface> & bmpSrc) {
-	SmartPointer<SDL_Surface> result = SDL_CreateRGBSurface(
-															bmpSrc->flags,
-															bmpSrc->h, bmpSrc->w, // flipped
-															bmpSrc->format->BitsPerPixel,
-															bmpSrc->format->Rmask,
-															bmpSrc->format->Gmask,
-															bmpSrc->format->Bmask,
-															bmpSrc->format->Amask);
-	LockSurface(bmpSrc); LockSurface(result);
-	PixelCopy& copier = getPixelCopyFunc(bmpSrc.get(), result.get());
-	for(int y = 0; y < result->h; ++y) {
-		for(int x = 0; x < result->w; ++x) {
-			copier.copy(GetPixelAddr(result.get(), x, y),
-						GetPixelAddr(bmpSrc.get(), y, bmpSrc->h - x - 1)
-						);
-		}
-	}
-	UnlockSurface(result); UnlockSurface(bmpSrc);
-	return result;
-}
-
-
 //
 // Helper functions for the Scale2x algorithm
 //
@@ -1428,10 +1242,10 @@ static void Scale2xPixel(SDL_Surface *bmpDest, SDL_Surface *bmpSrc, int dx, int 
 	// Get the four colors to put on the dest surface
 	Uint32 dstE[4];
 	if (colors[B] != colors[H] && colors[D] != colors[F]) {
-		dstE[0] = (colors[D] == colors[B]) ? colors[D] : colors[E];
-		dstE[1] = (colors[B] == colors[F]) ? colors[F] : colors[E];
-		dstE[2] = (colors[D] == colors[H]) ? colors[D] : colors[E];
-		dstE[3] = (colors[H] == colors[F]) ? colors[F] : colors[E];
+		dstE[0] = colors[D] == colors[B] ? colors[D] : colors[E];
+		dstE[1] = colors[B] == colors[F] ? colors[F] : colors[E];
+		dstE[2] = colors[D] == colors[H] ? colors[D] : colors[E];
+		dstE[3] = colors[H] == colors[F] ? colors[F] : colors[E];
 
 		// Put the four pixels
 		putter.put(pixel, dstE[0]);
@@ -1660,91 +1474,6 @@ void DrawImageScaleHalf(SDL_Surface* bmpDest, SDL_Surface* bmpSrc) {
 
 }
 
-static Color HalfBlendPixelAdv(Uint32 s1, Uint32 s2, Uint32 s3, Uint32 s4, bool usekey, const SDL_Surface *src)
-{
-	const SDL_PixelFormat *format = src->format;
-	Color c1(format, s1);
-	Color c2(format, s2);
-	Color c3(format, s3);
-	Color c4(format, s4);
-	if (usekey)  {
-		Uint32 colorkey = Surface_GetColorKey(src);
-		if (EqualRGB(s1, colorkey, format))
-			c1.a = 0;
-		if (EqualRGB(s2, colorkey, format))
-			c2.a = 0;
-		if (EqualRGB(s3, colorkey, format))
-			c3.a = 0;
-		if (EqualRGB(s4, colorkey, format))
-			c4.a = 0;
-	}
-
-#define CHPART(var, chan) ((var.chan * var.a) >> 10)
-
-	Color res(CHPART(c1, r) + CHPART(c2, r) + CHPART(c3, r) + CHPART(c4, r),
-				CHPART(c1, g) + CHPART(c2, g) + CHPART(c3, g) + CHPART(c4, g),
-				CHPART(c1, b) + CHPART(c2, b) + CHPART(c3, b) + CHPART(c4, b),
-				(c1.a + c2.a + c3.a + c4.a) >> 2);
-	return res;
-}
-
-/////////////////////////
-// Draws the image half-scaled onto the destination surface
-// Handles colorkey and alpha correctly
-void DrawImageScaleHalfAdv(SDL_Surface* bmpDest, SDL_Surface* bmpSrc, int sx, int sy, int dx, int dy, int sw, int sh)
-{
-	// Lock
-	LOCK_OR_QUIT(bmpDest);
-	LOCK_OR_QUIT(bmpSrc);
-
-	// Clip
-	int dw = sw / 2;
-	int dh = sh / 2;
-	if (!ClipRefRectWith(dx, dy, dw, dh, (SDLRect&)bmpDest->clip_rect))
-		return;
-	sw = dw * 2;
-	sh = dh * 2;
-	if (!ClipRefRectWith(sx, sy, sw, sh, (SDLRect&)bmpSrc->clip_rect))
-		return;
-
-	if (sh < 2 || sw < 2)
-		return;
-	dw = sw / 2;
-	dh = sh / 2;
-
-	const short bpp = bmpDest->format->BytesPerPixel;
-	Uint8 *srcrow_1 = GetPixelAddr(bmpSrc, sx, sy);
-	Uint8 *srcrow_2 = GetPixelAddr(bmpSrc, sx, sy + 1);
-	Uint8 *dstrow = GetPixelAddr(bmpDest, dx, dy);
-	PixelPutAlpha& put = getPixelAlphaPutFunc(bmpDest);
-	const bool usekey = Surface_HasColorKey(bmpSrc);
-
-	for(int y = sy + dh; y != sy; --y)  {
-		Uint8 *srcpx_1 = srcrow_1;
-		Uint8 *srcpx_2 = srcrow_2;
-		Uint8 *dstpx = dstrow;
-		for(int x = sx + dw; x != sx; --x, srcpx_1 += bpp * 2, srcpx_2 += bpp * 2, dstpx += bpp) {
-			Uint32 px1 = GetPixelFromAddr(srcpx_1, bpp);  // x, y
-			Uint32 px2 = GetPixelFromAddr(srcpx_1 + bpp, bpp); // x + 1, y
-			Uint32 px3 = GetPixelFromAddr(srcpx_2, bpp);  // x, y + 1
-			Uint32 px4 = GetPixelFromAddr(srcpx_2 + bpp, bpp);  // x + 1, y + 1
-			const Color pxBg(bmpDest->format, GetPixelFromAddr(dstpx, bpp));
-
-			put.put(dstpx, bmpDest->format, HalfBlendPixelAdv(px1, px2, px3, px4, usekey, bmpSrc));
-			//PutPixelToAddr(dstpx, HalfBlendPixel(px1, px2, px3, px4, bmpSrc->format), bpp);
-		}
-
-		srcrow_1 += 2*bmpSrc->pitch;
-		srcrow_2 += 2*bmpSrc->pitch;
-		dstrow += bmpDest->pitch;
-	}
-
-	// Unlock
-	UnlockSurface(bmpDest);
-	UnlockSurface(bmpSrc);
-
-}
-
 
 //////////////////////
 // Generates a shadow for the given object
@@ -1903,7 +1632,7 @@ void LaserSightPutPixel(SDL_Surface * bmpDest, int x, int y, Uint32 colour)
 ////////////////////
 // Perform a line draw using a put pixel callback
 // Grabbed from allegro
-INLINE void perform_line(SDL_Surface * bmp, int x1, int y1, int x2, int y2, Color col, void (*proc)(SDL_Surface * , int, int, Uint32, Uint8))
+inline void perform_line(SDL_Surface * bmp, int x1, int y1, int x2, int y2, Color col, void (*proc)(SDL_Surface * , int, int, Uint32, Uint8))
 {
 	int dx = x2-x1;
 	int dy = y2-y1;
@@ -1994,7 +1723,7 @@ INLINE void perform_line(SDL_Surface * bmp, int x1, int y1, int x2, int y2, Colo
    UnlockSurface(bmp);
 }
 
-INLINE void perform_line(SDL_Surface * bmp, int x1, int y1, int x2, int y2, Color col, void (*proc)(SDL_Surface * , int, int, Uint32))
+inline void perform_line(SDL_Surface * bmp, int x1, int y1, int x2, int y2, Color col, void (*proc)(SDL_Surface * , int, int, Uint32))
 {
 	int dx = x2-x1;
 	int dy = y2-y1;
@@ -2087,14 +1816,14 @@ INLINE void perform_line(SDL_Surface * bmp, int x1, int y1, int x2, int y2, Colo
 
 
 
-INLINE void secure_perform_line(SDL_Surface * bmpDest, int x1, int y1, int x2, int y2, Color color, void (*proc)(SDL_Surface *, int, int, Uint32, Uint8)) {
+inline void secure_perform_line(SDL_Surface * bmpDest, int x1, int y1, int x2, int y2, Color color, void (*proc)(SDL_Surface *, int, int, Uint32, Uint8)) {
 	if (!ClipLine(bmpDest, &x1, &y1, &x2, &y2)) // Clipping
 		return;
 
 	perform_line(bmpDest, x1, y1, x2, y2, color, proc);
 }
 
-INLINE void secure_perform_line(SDL_Surface * bmpDest, int x1, int y1, int x2, int y2, Color color, void (*proc)(SDL_Surface *, int, int, Uint32)) {
+inline void secure_perform_line(SDL_Surface * bmpDest, int x1, int y1, int x2, int y2, Color color, void (*proc)(SDL_Surface *, int, int, Uint32)) {
 	if (!ClipLine(bmpDest, &x1, &y1, &x2, &y2)) // Clipping
 		return;
 	
@@ -2105,6 +1834,11 @@ INLINE void secure_perform_line(SDL_Surface * bmpDest, int x1, int y1, int x2, i
 ////////////////////////
 // Draw horizontal line
 void DrawHLine(SDL_Surface * bmpDest, int x, int x2, int y, Color colour) {
+
+	if (bmpDest->flags & SDL_HWSURFACE)  {
+		DrawRectFill(bmpDest, x, y, x2, y + 1, colour); // In hardware mode this is much faster, in software it is slower
+		return;
+	}
 
 	// Swap the ends if necessary
 	if (x2 < x)  {
@@ -2162,6 +1896,10 @@ void DrawHLine(SDL_Surface * bmpDest, int x, int x2, int y, Color colour) {
 
 // Draw vertical line
 void DrawVLine(SDL_Surface * bmpDest, int y, int y2, int x, Color colour) {
+	if (bmpDest->flags & SDL_HWSURFACE)  {
+		DrawRectFill(bmpDest, x, y, x + 1, y2, colour); // In hardware mode this is much faster, in software it is slower
+		return;
+	}
 
 	// Swap the ends if necessary
 	if (y2 < y)  {
@@ -2708,102 +2446,26 @@ void TestPolygonDrawing(SDL_Surface* surf) {
 
 
 
-void DumpPixelFormat(const SDL_PixelFormat* format, const std::string& prefix) {
+void DumpPixelFormat(const SDL_PixelFormat* format) {
 	std::ostringstream str;
-	str
-	<< prefix
-	<< "PixelFormat:" << std::endl
-	<< prefix
+	str << "PixelFormat:" << std::endl
 	<< "  BitsPerPixel: " << (int)format->BitsPerPixel << ","
 	<< "  BytesPerPixel: " << (int)format->BytesPerPixel << std::endl
-	<< prefix
 	<< "  R/G/B/A mask: " << std::hex
 	<< (uint)format->Rmask << "/"
 	<< (uint)format->Gmask << "/"
 	<< (uint)format->Bmask << "/"
 	<< (uint)format->Amask << std::endl
-	<< prefix
 	<< "  R/G/B/A loss: "
 	<< (uint)format->Rloss << "/"
 	<< (uint)format->Gloss << "/"
 	<< (uint)format->Bloss << "/"
-	<< (uint)format->Aloss << std::endl;
+	<< (uint)format->Aloss << std::endl
+	<< "  Colorkey: " << std::hex << (uint)format->colorkey << ","
+	<< "  Alpha: " << std::dec << (int)format->alpha;
 	notes << str.str() << endl;
 }
 
-void DumpSurfaceInfo(const SDL_Surface* s, const char* name, bool dumpAFewPixels) {
-	notes << "Surface";
-	if(name) notes << " '" << name << "'";
-	notes << " (" << s << ")" << endl;
-	if(!s) return;
-
-	notes << "  Size (WxH): " << s->w << " x " << s->h << endl;
-	notes << "  Pitch: " << s->pitch << endl;
-	
-	DumpPixelFormat(s->format, "  ");
-
-	std::ostringstream str;
-	str << "  ColorKey: ";
-	if(Surface_HasColorKey(s))
-		str << " yes, " << std::hex << Surface_GetColorKey(s);
-	else
-		str << " no";
-	str << std::endl;
-	
-	{
-		str << "  AlphaBlendMode: ";
-		SDL_BlendMode m;
-		int r = SDL_GetSurfaceBlendMode((SDL_Surface*)s, &m);
-		if(r != 0)
-			str << "ERROR: " << SDL_GetError();
-		else
-			switch(m) {
-				case SDL_BLENDMODE_NONE: str << "none"; break;
-				case SDL_BLENDMODE_ADD: str << "add"; break;
-				case SDL_BLENDMODE_BLEND: str << "blend"; break;
-				case SDL_BLENDMODE_MOD: str << "mod"; break;
-				default: str << "invalid"; break;
-			}
-		str << std::endl;
-	}
-	
-	{
-		str << "  AlphaMod: ";
-		Uint8 a = SDL_ALPHA_OPAQUE;
-		int r = SDL_GetSurfaceAlphaMod((SDL_Surface*)s, &a);
-		if(r != 0)
-			str << "ERROR: " << SDL_GetError();
-		else
-			str << std::dec << a;
-		str << std::endl;
-	}
-	
-	if(dumpAFewPixels) {
-		std::string pfmt = " %." + itoa(s->format->BytesPerPixel*2) + "X";
-		static constexpr int MaxY = 2, MaxX = 10;
-		for(int y = 0; y < MIN(MaxY, s->h); ++y) {
-			for(int x = 0; x < MIN(MaxX, s->w); ++x) {
-				char buffer[10];
-				snprintf(buffer, sizeof(buffer), pfmt.c_str(), GetPixel(s, x, y));
-				buffer[sizeof(buffer)-1] = 0;
-				notes << buffer;
-			}
-			if(MaxX < s->w) notes << " ...";
-			notes << endl;
-		}
-		if(MaxY < s->h) notes << "..." << endl;
-	}
-}
-
-void DumpSurface(const SDL_Surface* s) {
-	DumpPixelFormat(s->format);
-	std::string pfmt = " %." + itoa(s->format->BytesPerPixel*2) + "X";
-	for(int y = 0; y < MIN(10, s->h); ++y) {
-		for(int x = 0; x < MIN(10, s->w); ++x)
-			printf(pfmt.c_str(), GetPixel(s, x, y));
-		printf("\n");
-	}
-}
 
 bool PixelFormatEqual(const SDL_PixelFormat* fm1, const SDL_PixelFormat* fm2) {
 	return
@@ -2820,115 +2482,12 @@ bool IsCorrectSurfaceFormat(const SDL_PixelFormat* format) {
 }
 
 
-#if USE_GD_FOR_IMAGE_LOADING
-///////////////////////
-// Converts the gdImagePtr to SDL_surface
-SmartPointer<SDL_Surface> GDImage2SDLSurface(gdImagePtr src, bool withalpha, bool keep8bit) {
-	SmartPointer<SDL_Surface> dst;
-	if(withalpha)
-		dst = gfxCreateSurfaceAlpha(gdImageSX(src), gdImageSY(src));
-	else if(!keep8bit || gdImageTrueColor(src))
-		dst = gfxCreateSurface(gdImageSX(src), gdImageSY(src));
-	else // keep8bit && gd img is 8bit
-		dst = SDL_CreateRGBSurface(SDL_SWSURFACE, gdImageSX(src), gdImageSY(src), 8, 0,0,0,0);	
-	if(!dst.get()) return NULL;
-	
-	if (!LockSurface(dst)) return NULL;
-	
-	if(dst->format->BytesPerPixel > 1)
-		for(int y = 0; y < dst->h; y++) 
-			for(int x = 0; x < dst->w; ++x) {
-				Uint32 px = gdImageGetTrueColorPixel(src, x, y);
-				Color c;
-				c.r = px >> 16;
-				c.g = px >> 8;
-				c.b = px;
-				c.a = 0x7f - (px >> 24);
-				c.a *= 2;
-				if(c.a > 0x7f && c.a <= 0xfe) c.a++;
-				PutPixel(dst.get(), x, y, Pack(c, dst->format));
-			}
-	else
-		for(int y = 0; y < dst->h; y++) 
-			for(int x = 0; x < dst->w; ++x) {
-				Uint8 px = gdImageGetPixel(src, x, y);
-				PutPixel(dst.get(), x, y, px);
-			}
-
-	UnlockSurface(dst);
-	
-	return dst;
-}
-
-SmartPointer<SDL_Surface> LoadGameImage_viaGd(const std::string& _filename, bool withalpha, bool keep8bit) {
-	/* WARNING: Don't use gd-functions which take a FILE* argument on Windows!
-	 * The DLL doesn't work anymore with recent MSVC versions.
-	 * See here: http://stackoverflow.com/questions/9945648/crash-when-calling-gd-function
-	 * Or: http://www.gamedev.net/topic/479025-libgd-problem/
-	*/
-
-	std::string fileContent = GetFileContents(_filename);
-	if(fileContent.empty()) return NULL;
-
-	std::string ext = GetFileExtensionWithDot(_filename);
-	stringlwr(ext);
-	gdImagePtr src = NULL;
-
-	if(ext == ".bmp") {
-		SDL_Surface* s = SDL_LoadBMP_RW(SDL_RWFromConstMem(&fileContent[0], (int)fileContent.size()), true);
-		if(s == NULL) {
-			errors << "LoadGameImage: cannot load bmp: " << _filename << endl;
-			return NULL;
-		}
-		return s;
-	}
-	else if(ext == ".jpg" || ext == ".jpeg")
-		src = gdImageCreateFromJpegPtr((int)fileContent.size(), &fileContent[0]);
-	else if(ext == ".png")
-		src = gdImageCreateFromPngPtr((int)fileContent.size(), &fileContent[0]);
-	else if(ext == ".gif")
-		src = gdImageCreateFromGifPtr((int)fileContent.size(), &fileContent[0]);
-	else {
-		errors << "LoadGameImage: file extension unknown: " << _filename << endl;
-		return NULL;
-	}
-	
-	if(src == NULL) {
-		errors << "LoadGameImage: cannot load: " << _filename << endl;
-		return NULL;
-	}	
-	SmartPointer<SDL_Surface> Image = GDImage2SDLSurface(src, withalpha, keep8bit);
-	gdImageDestroy(src);
-	
-	if(Image.get() == NULL)
-		errors << "LoadGameImage: error in GDImage2SDLSurface for: " << _filename << endl;
-	return Image;	
-}
-#endif
-
-SmartPointer<SDL_Surface> LoadGameImage_viaSdlImage(const std::string& _filename, bool withalpha, bool keep8bit) {
-	// Load the image
-	std::string fullfname = GetFullFileName(_filename);
-	if(fullfname.size() == 0)
-		return NULL;
-	
-	return IMG_Load(Utf8ToSystemNative(fullfname).c_str());	
-}
-
 
 ////////////////////////
 //
 //  Image loading/saving routines
 //
 ////////////////////////
-
-SmartPointer<SDL_Surface> LoadGameImage_unaltered(const std::string& _filename, bool withalpha, bool keep8bit) {
-#if USE_GD_FOR_IMAGE_LOADING
-	return LoadGameImage_viaGd(_filename, withalpha, keep8bit);
-#else
-	return LoadGameImage_viaSdlImage(_filename, withalpha, keep8bit);
-#endif
-}
 
 ///////////////////
 // Loads an image, and converts it to the same colour depth as the screen (speed)
@@ -2943,59 +2502,185 @@ SmartPointer<SDL_Surface> LoadGameImage(const std::string& _filename, bool witha
 			return ImageCache;
 	}
 	
-#if USE_GD_FOR_IMAGE_LOADING
-	SmartPointer<SDL_Surface> img = LoadGameImage_viaGd(_filename, withalpha, false);	
-#else
-	SmartPointer<SDL_Surface> img = LoadGameImage_viaSdlImage(_filename, withalpha, false);
-#endif
-	if(!img.get()) return NULL;
-	
-	if(!withalpha)
-		// Force no blend mode.
-		SDL_SetSurfaceBlendMode(img.get(), SDL_BLENDMODE_NONE);
-	
-	const VideoFormat wantedFormat = getMainVideoFormat(withalpha);
-	if(wantedFormat != VideoFormat(img->format)) {
-		SmartPointer<SDL_Surface> converted;
-		if(bDedicated || !VideoPostProcessor::videoSurface().get()) {
-			if(!bDedicated)
-				// we haven't initialized the screen yet
-				warnings << "LoadGameImage: screen not initialized yet while loading image" << endl;	
-			
-			if (withalpha)
-				converted = gfxCreateSurfaceAlpha(img.get()->w, img.get()->h);
-			else
-				converted = gfxCreateSurface(img.get()->w, img.get()->h);			
-			CopySurface(converted.get(), img, 0, 0, 0, 0, img.get()->w, img.get()->h);
-		}
-		else {
-			// Convert the image to the screen's colour depth
-			if (withalpha)  {
-				converted = gfxCreateSurfaceAlpha(img.get()->w, img.get()->h);
-				CopySurface(converted.get(), img, 0, 0, 0, 0, img.get()->w, img.get()->h);
-			} else {
-				SDL_PixelFormat fmt = *(getMainPixelFormat());
-				SDL_SetSurfaceBlendMode(img.get(), SDL_BLENDMODE_NONE); // Remove the alpha flag here, ConvertSurface will remove the alpha completely later
-				SDL_SetColorKey(img.get(), 0, 0); // Remove the colorkey here, we don't want it (normally it shouldn't be activated here, so only for safty)
-				converted = SDL_ConvertSurface(img.get(), &fmt, 0);
-				SDL_SetSurfaceBlendMode(converted.get(), SDL_BLENDMODE_NONE); // we explicitly said that we don't want alpha, so remove it
-			}
-		}
-		
-		if(!converted.get()) {
-			errors << "LoadGameImage: cannot create new surface" << endl;
-			return NULL;
-		}
-		img = converted;
+	// Load the image
+	std::string fullfname = GetFullFileName(_filename);
+	if(fullfname.size() == 0)
+		return NULL;
+
+	SmartPointer<SDL_Surface> img = IMG_Load(Utf8ToSystemNative(fullfname).c_str());
+
+	if(!img.get())  {
+		return NULL;
 	}
-	
+
+	SmartPointer<SDL_Surface> Image;
+	if(bDedicated || !VideoPostProcessor::videoSurface()) {
+		if(!bDedicated)
+			// we haven't initialized the screen yet
+			warnings << "LoadGameImage: screen not initialized yet while loading image" << endl;	
+
+		if (withalpha)
+			Image = gfxCreateSurfaceAlpha(img.get()->w, img.get()->h);
+		else
+			Image = gfxCreateSurface(img.get()->w, img.get()->h);			
+		CopySurface(Image.get(), img, 0, 0, 0, 0, img.get()->w, img.get()->h);
+	}
+	else {
+		// Convert the image to the screen's colour depth
+		if (withalpha)  {
+			Image = gfxCreateSurfaceAlpha(img.get()->w, img.get()->h);
+			CopySurface(Image.get(), img, 0, 0, 0, 0, img.get()->w, img.get()->h);
+		} else {
+			SDL_PixelFormat fmt = *(getMainPixelFormat());
+			img.get()->flags &= ~SDL_SRCALPHA; // Remove the alpha flag here, ConvertSurface will remove the alpha completely later
+			img.get()->flags &= ~SDL_SRCCOLORKEY; // Remove the colorkey here, we don't want it (normally it shouldn't be activated here, so only for safty)
+			Image = SDL_ConvertSurface(img.get(), &fmt, iSurfaceFormat);
+			Image.get()->flags &= ~SDL_SRCALPHA; // we explicitly said that we don't want alpha, so remove it
+		}
+	}
+
+	if(!Image.get()) {
+		errors << "LoadGameImage: cannot create new surface" << endl;
+		return NULL;
+	}
+
 	// Save to cache
 	#ifdef DEBUG
 	//printf("LoadImage() %p %s\n", Image.get(), _filename.c_str() );
 	#endif
-	cCache.SaveImage__unsafe(_filename, img);
-	return img;
+	cCache.SaveImage__unsafe(_filename, Image);
+	return Image;
 }
+
+#ifndef DEDICATED_ONLY
+///////////////////////
+// Converts the SDL_surface to gdImagePtr
+static gdImagePtr SDLSurface2GDImage(SDL_Surface * src) {
+	gdImagePtr gd_image = gdImageCreateTrueColor(src->w,src->h);
+	if(!gd_image)
+		return NULL;
+
+	Uint32 rmask, gmask, bmask;
+	// format of gdImage
+	rmask=0x00FF0000; gmask=0x0000FF00; bmask=0x000000FF;
+
+	SmartPointer<SDL_Surface> formated = SDL_CreateRGBSurface(SDL_SWSURFACE, src->w, src->h, 32, rmask, gmask, bmask, 0);
+	if(!formated.get())
+		return NULL;
+	#ifdef DEBUG
+	//printf("SDLSurface2GDImage() %p\n", formated.get() );
+	#endif
+	// convert it to the new format (32 bpp)
+	CopySurface(formated.get(), src, 0, 0, 0, 0, src->w, src->h);
+
+	if (!LockSurface(formated))
+		return NULL;
+
+	for(int y = 0; y < src->h; y++) {
+		memcpy(gd_image->tpixels[y], (uchar*)formated.get()->pixels + y*formated.get()->pitch, formated.get()->pitch);
+	}
+
+	UnlockSurface(formated);
+
+	return gd_image;
+}
+#endif //DEDICATED_ONLY
+
+///////////////////////
+// Saves the surface into the specified file with the specified format
+bool SaveSurface(SDL_Surface * image, const std::string& FileName, int Format, const std::string& Data)
+{
+	//
+	// BMP
+	//
+
+	// We use standard SDL function for saving BMPs
+	if (Format == FMT_BMP)  {
+
+		// Save the image
+		std::string abs_fn = GetWriteFullFileName (FileName, true);  // SDL requires full paths
+		SDL_SaveBMP(image, abs_fn.c_str());
+
+		// Append any additional data
+		if (!Data.empty())  {
+
+			FILE *f = OpenGameFile (FileName, "ab");
+			if (!f)
+				return false;
+
+			fwrite(Data.data(), 1, Data.size(), f);
+			fclose (f);
+		}
+
+		return true;
+	}
+
+#ifdef DEDICATED_ONLY
+	warnings << "SaveSurface: cannot use something else than BMP in dedicated-only-mode" << endl;
+	return false;
+
+#else
+	
+	//
+	// JPG, PNG, GIF
+	//
+
+	// We use GD for saving these formats
+	gdImagePtr gd_image = NULL;
+
+	// Convert the surface
+	gd_image = SDLSurface2GDImage ( image );
+	if ( !gd_image )
+		return false;
+
+	// Save the image
+	int s;
+	char *data = NULL;
+	FILE *out = OpenGameFile (FileName, "wb");
+	if ( !out )
+		return false;
+
+	// Get the data depending on the format
+	switch (Format)
+	{
+		case FMT_PNG:
+			data = ( char * ) gdImagePngPtr ( gd_image, &s );
+			break;
+		case FMT_JPG:
+			data = ( char * ) gdImageJpegPtr ( gd_image, &s,tLXOptions->iJpegQuality );
+			break;
+		case FMT_GIF:
+			data = ( char * ) gdImageGifPtr ( gd_image, &s );
+			break;
+		default:
+			data = ( char * ) gdImagePngPtr ( gd_image, &s );
+			break;
+	}
+
+	// Check
+	if (!data)
+		return false;
+
+	// Size of the data
+	size_t size = s > 0 ? s : -s;
+
+	// Write the image data
+	if (fwrite(data, 1, size, out) != size)
+		return false;
+
+	// Write any additional data
+	if (!Data.empty())
+		fwrite(Data.data(), 1, Data.size(), out);
+
+	// Free everything
+	gdFree ( data );
+	gdImageDestroy ( gd_image );
+
+	// Close the file and quit
+	return fclose(out) == 0;
+#endif // !DEDICATED_ONLY
+}
+
 
 void test_Clipper() {
 	SDL_Rect r1 = {52, 120, 7, 14};
@@ -3015,16 +2700,118 @@ template <> void SmartPointer_ObjectDeinit<SDL_Surface> ( SDL_Surface * obj )
 	SDL_FreeSurface(obj);
 }
 
-template <> void SmartPointer_ObjectDeinit<SDL_Texture> ( SDL_Texture * obj ) {
-	SDL_DestroyTexture(obj);
+#ifdef DEBUG
+SDL_mutex *SmartPointer_CollMutex = NULL;
+std::map< void *, SDL_mutex * > * SmartPointer_CollisionDetector = NULL;
+#endif
+
+
+
+
+
+void DrawLoadingAni(SDL_Surface* bmpDest, int x, int y, int rx, int ry, Color fg, Color bg, LoadingAniType type) {
+	switch(type) {
+		case LAT_CIRCLES: {
+			static const int STEPS = 12;
+			int cur = int(((GetTime().milliseconds() % 1000)) * STEPS * 0.001f);
+			for(int i = 0; i < STEPS; ++i) {
+				const float a = (float)PI * 2.0f * i / STEPS;
+				VectorD2<float> p( cosf(a) * rx, sinf(a) * ry );
+				
+				DrawCircleFilled(bmpDest, int(x + p.x), int(y + p.y), rx / 5, ry / 5, (i == cur) ? fg : bg);
+			}
+			break;
+		}
+		case LAT_CAKE: {
+			static const int STEPS = 6;
+			int cur = int(((GetTime().milliseconds() % 500)) * STEPS * 0.002f);
+			for(int i = 0; i < STEPS; ++i) {
+				const float angle = (float)PI * 2.0f * i / STEPS;
+				const float a = angle + (float)PI * 2.0f * -0.5f / STEPS;
+				const float b = angle + (float)PI * 2.0f * 0.5f / STEPS;
+				Polygon2D poly;
+				poly.startPointAdding();
+				poly.addPoint(VectorD2<float>(cosf(a) * rx, sinf(a) * ry));
+				poly.addPoint(VectorD2<float>(cosf(b) * rx, sinf(b) * ry));
+				poly.addPoint(VectorD2<int>(0,0));
+				poly.endPointAdding();
+				float colf = float((STEPS + cur - i) % STEPS) / float(STEPS - 1);
+				Color col = bg * colf + fg * (1.0f - colf);
+				poly.drawFilled(bmpDest, x, y, col);
+			}
+			break;
+		}
+	}
 }
 
-template <> void SmartPointer_ObjectDeinit<SDL_Renderer> ( SDL_Renderer * obj ) {
-	SDL_DestroyRenderer(obj);
+struct ScopedBackgroundLoadingAni::Data {
+	ThreadPoolItem* thread;
+	Mutex mutex;
+	bool quit;
+	Condition breakSig;
+	SmartPointer<SDL_Surface> screenBackup;
+	
+	Data() : thread(NULL), quit(false) {
+		screenBackup = gfxCreateSurface(640,480);
+		CopySurface(screenBackup.get(), VideoPostProcessor::videoSurface(), 0,0,0,0,640,480);
+	}
+	~Data() {
+		CopySurface(VideoPostProcessor::videoSurface(), screenBackup.get(), 0,0,0,0,640,480);	
+	}
+};
+
+ScopedBackgroundLoadingAni::ScopedBackgroundLoadingAni(int x, int y, int rx, int ry, Color fg, Color bg, LoadingAniType type) {
+	data = NULL;
+	if(bDedicated) return;
+	
+	data = new Data();
+	struct Animator : Action {
+		int x, y, rx, ry;
+		LoadingAniType type;
+		Color fg, bg;
+		Data* data;
+		
+		int handle() {
+			Mutex::ScopedLock lock(data->mutex);
+			while(!data->quit) {
+				// Kind of a hack: we update the time so that mainlockdetector does not break this
+				// loading, no matter how slow it is.
+				// As we are only loading the mod/map, we can savly access tLX->currentTime.
+				tLX->currentTime = GetTime();
+				
+				DrawImageEx(VideoPostProcessor::videoSurface(), data->screenBackup, 0,0,640,480);
+				DrawLoadingAni(VideoPostProcessor::videoSurface(), x, y, rx, ry, fg, bg, type);
+				doVideoFrameInMainThread();
+				
+				data->breakSig.wait(data->mutex, 10);
+			}
+			return 0;
+		}
+	};
+	
+	Animator* anim = new Animator();
+	anim->x = x;
+	anim->y = y;
+	anim->rx = rx;
+	anim->ry = ry;
+	anim->fg = fg;
+	anim->bg = bg;
+	anim->type = type;
+	anim->data = data;
+	
+	data->thread = threadPool->start(anim, "Background Loading animation");
 }
 
-template <> void SmartPointer_ObjectDeinit<SDL_Window> ( SDL_Window * obj ) {
-	SDL_DestroyWindow(obj);
+ScopedBackgroundLoadingAni::~ScopedBackgroundLoadingAni() {
+	if(data) {
+		{
+			Mutex::ScopedLock lock(data->mutex);
+			data->quit = true;
+			data->breakSig.signal();
+		}
+		threadPool->wait(data->thread);
+		delete data; data = NULL;
+	}
 }
 
 

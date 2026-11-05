@@ -147,7 +147,7 @@ std::string	ReadUntil(FILE* fp, char until_character) {
 	res = "";
 	size_t buf_pos = 0;
 	while(true) {
-		if(ferror(fp) || feof(fp) || fread(&buf[buf_pos],1,1,fp) == 0 || buf[buf_pos] == until_character) {
+		if(fread(&buf[buf_pos],1,1,fp) == 0 || buf[buf_pos] == until_character) {
 			res.append(buf,buf_pos);
 			break;
 		}
@@ -457,6 +457,7 @@ short stringcasecmp(const std::string& s1, const std::string& s2) {
 	std::string::const_iterator p1, p2;
 	p1 = s1.begin();
 	p2 = s2.begin();
+	short dif;
 	while(true) {
 		if(p1 == s1.end()) {
 			if(p2 == s2.end())
@@ -468,40 +469,16 @@ short stringcasecmp(const std::string& s1, const std::string& s2) {
 			// not at end of s1
 			return 1; // s1 > s2
 
-		// Note: Only use `tolower`, if they actually differ.
-		// `tolower` is probably way more expensive than this fast check.
-		if(*p1 != *p2) {
-			short dif = (short)(uchar)tolower((uchar)*p1) - (short)(uchar)tolower((uchar)*p2);
-			if(dif != 0) return dif; // dif > 0  <=>  s1 > s2
-		}
-		
+		dif = (short)(uchar)tolower((uchar)*p1) - (short)(uchar)tolower((uchar)*p2);
+		if(dif != 0) return dif; // dif > 0  <=>  s1 > s2
+
 		p1++; p2++;
 	}
 }
 
 bool stringcaseequal(const std::string& s1, const std::string& s2) {
-	size_t S = s1.size();
-	if(S != s2.size()) return false;
-	if(S == 0) return true;
-	// Optimized version, not just stringcasecmp().
-	// This function is heavily used in the FindFile system,
-	// thus it's important that this is fast.
-	// The idea is to both check from start-to-end and from end-to-start.
-	const uchar* fw_c1 = (const uchar*) &s1[0];
-	const uchar* fw_c2 = (const uchar*) &s2[0];
-	const uchar* bw_c1 = (const uchar*) &s1[S-1];
-	const uchar* bw_c2 = (const uchar*) &s2[S-1];
-	while(true) {
-		if(fw_c1 > bw_c1) break;
-		if(tolower(*fw_c1) != tolower(*fw_c2)) return false;
-		if(fw_c1 >= bw_c1) break;
-		if(tolower(*bw_c1) != tolower(*bw_c2)) return false;
-		fw_c1++;
-		fw_c2++;
-		bw_c1--;
-		bw_c2--;
-	}
-	return true;
+	if (s1.size() != s2.size()) return false;
+	return stringcasecmp(s1, s2) == 0;
 }
 
 bool subStrEqual(const std::string& s1, const std::string s2, size_t p) {
@@ -632,14 +609,6 @@ std::string GetFileExtension(const std::string& path) {
 	return filename.substr(p+1);
 }
 
-std::string GetFileExtensionWithDot(const std::string& path) {
-	std::string filename = GetBaseFilename(path);
-	size_t p = filename.rfind('.');
-	if(p == std::string::npos) return "";
-	return filename.substr(p);	
-}
-
-
 std::string GetBaseFilename(const std::string& filename) {
 	size_t p = findLastPathSep(filename);
 	if(p == std::string::npos) return filename;
@@ -658,23 +627,6 @@ std::string GetBaseFilenameWithoutExt(const std::string& filename) {
 	if(p == std::string::npos) return f;
 	return f.substr(0,p);	
 }
-
-std::string GetFilenameWithoutExt(const std::string& f) {
-	size_t pathSep = findLastPathSep(f);
-	if(pathSep == std::string::npos) {
-		size_t p = f.rfind('.');
-		if(p == std::string::npos) return f;
-		return f.substr(0,p);	
-	}
-
-	size_t p = f.rfind('.');
-	if(p == std::string::npos || p < pathSep)
-		// filename has no extension
-		return f;
-	
-	return f.substr(0,p);	
-}
-
 
 std::list<std::string> SplitFilename(const std::string& filename, size_t numPartsFromRight) {
 	std::list<std::string> ret;
@@ -798,14 +750,8 @@ static void charactersParsed(void* context, const xmlChar* ch, int len)
 	*result += std::string( (const char *) ch, len );
 }
 
-/* GCS: custom error function to ignore errors. libxml2 2.12+ added a
- * `const` to the second argument; pick the right signature so we
- * compile on both pre- and post-2.12 libxml2. */
-#if defined(LIBXML_VERSION) && LIBXML_VERSION >= 21200
-static void xmlErrorHandlerDummy(void *, const xmlError *)
-#else
+/* GCS: custom error function to ignore errors */
 static void xmlErrorHandlerDummy(void *, xmlErrorPtr)
-#endif
 {
 	/* ignore all errors */
 }
@@ -1175,7 +1121,7 @@ bool FileChecksum( const std::string & path, size_t * _checksum, size_t * _files
 	while( ! feof( ff ) )
 	{
 		size_t read = fread( buf, 1, sizeof(buf), ff );
-		checksum = adler32( checksum, (const Bytef *)buf, (unsigned int)read);
+		checksum = adler32( checksum, (const Bytef *)buf, read);
 		size += read;
 	};
 	fclose( ff );
@@ -1229,7 +1175,7 @@ std::string Base64Decode(const std::string &src)
     if(src[length+equalsTerm] == '=')
       equalsTerm++;
   }
-  numQuantums = int((length + equalsTerm) / 4);
+  numQuantums = (length + equalsTerm) / 4;
 
   /* Don't allocate a buffer if the decoded length is 0 */
   if(numQuantums <= 0)
@@ -1335,35 +1281,18 @@ bool strSeemsLikeChatCommand(const std::string& str) {
 
 
 
-
-static bool FilenameSimplePatternMatch(
-	std::string::const_iterator fn_it, const std::string::const_iterator& fn_end,
-	std::string::const_iterator pt_it, const std::string::const_iterator& pt_end
-) {	
-	while(fn_it != fn_end && pt_it != pt_end) {
-		std::string::const_iterator fn_oldit = fn_it;
-		std::string::const_iterator pt_oldit = pt_it;
-		UnicodeChar fn_c = GetNextUnicodeFromUtf8(fn_it, fn_end);
-		UnicodeChar pt_c = GetNextUnicodeFromUtf8(pt_it, pt_end);
-		
-		if(pt_c == (uchar)'?') continue;
-		if(pt_c == (uchar)'*') {
-			if(pt_it == pt_end) return true;
-			if(FilenameSimplePatternMatch(fn_it, fn_end, pt_oldit, pt_end)) return true;
-			if(FilenameSimplePatternMatch(fn_oldit, fn_end, pt_it, pt_end)) return true;
-			continue;
-		}
-		
-		if(UnicodeToLower(fn_c) != UnicodeToLower(pt_c)) return false;
-	}
-	
-	return (fn_it == fn_end) && (pt_it == pt_end);
-}
-
-bool FilenameSimplePatternMatch(const std::string& filename, const std::string& pattern) {
-	std::string::const_iterator fn_it = filename.begin();
-	std::string::const_iterator pt_it = pattern.begin();
-	const std::string::const_iterator fn_end = filename.end();
-	const std::string::const_iterator pt_end = pattern.end();
-	return FilenameSimplePatternMatch(fn_it, fn_end, pt_it, pt_end);
+template<> VectorD2<int> from_string< VectorD2<int> >(const std::string& s, bool& fail) {
+	std::string tmp = s;
+	TrimSpaces(tmp);
+	if(tmp.size() > 2 && tmp[0] == '(' && tmp[tmp.size()-1] == ')')
+		tmp = tmp.substr(1, tmp.size() - 2);
+	size_t f = tmp.find(',');
+	if(f == std::string::npos) { fail = true; return VectorD2<int>(); }
+	VectorD2<int> v;
+	fail = false;
+	v.x = from_string<int>(tmp.substr(0, f), fail);
+	if(fail) return VectorD2<int>();
+	v.y = from_string<int>(tmp.substr(f + 1), fail);
+	if(fail) return VectorD2<int>();
+	return v;
 }

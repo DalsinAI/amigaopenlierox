@@ -15,7 +15,7 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
@@ -54,6 +54,23 @@ bool Menu_Net_MainInitialize()
 	CBrowser *b = (CBrowser *)cMain.getWidget(nm_NewsBrowser);
 	b->LoadFromFile("cfg/news.txt");
 
+	/*cMain.Add( new CListview(),								PlayerList, 40,150,150,150);
+
+
+	cMain.SendMessage(PlayerList,	LVM_ADDCOLUMN, (DWORD)"Players", 22);
+	cMain.SendMessage(PlayerList,	LVM_ADDCOLUMN, (DWORD)"", 60);
+
+	// Add the players to the list
+	CListview *lv = (CListview *)cMain.getWidget(PlayerList);
+
+	profile_t *p = GetProfiles();
+	for(; p; p=p->tNext) {
+		if(p->iType == PRF_COMPUTER)
+			continue;
+		lv->AddItem("",p->iID,tLX->clListView);
+		lv->AddSubitem(LVS_IMAGE,"",p->bmpWorm);
+		lv->AddSubitem(LVS_TEXT, p->sName, NULL);
+	}*/
 
 	cMain.Add( new CLabel("OpenLieroX News", tLX->clNormalLabel), -1, 255, 140, 0,0);
 
@@ -81,11 +98,10 @@ void Menu_Net_MainFrame(int mouse)
 
 	// Process & Draw the gui
 	ev = cMain.Process();
-	cMain.Draw( VideoPostProcessor::videoSurface().get() );
+	cMain.Draw( VideoPostProcessor::videoSurface() );
 
 	if (Menu_Net_ProcessTabBarButtons(ev))
 		return;
-
 
 	// Process any events
 	if(ev) {
@@ -112,7 +128,7 @@ void Menu_Net_MainFrame(int mouse)
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 }; // namespace DeprecatedGUI

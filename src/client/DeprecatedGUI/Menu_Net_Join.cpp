@@ -17,13 +17,13 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "CClient.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
 #include "StringUtils.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Protocol.h"
 #include "DeprecatedGUI/CButton.h"
 #include "DeprecatedGUI/CTextbox.h"
@@ -36,11 +36,8 @@
 #include "AuxLib.h"
 #include "CClientNetEngine.h"
 #include "Debug.h"
-#include "OLXConsole.h"
+#include "console.h"
 #include "DeprecatedGUI/CChatWidget.h"
-#include "game/Level.h"
-#include "game/Mod.h"
-#include "game/ServerList.h"
 
 
 namespace DeprecatedGUI {
@@ -60,16 +57,18 @@ enum {
 };
 
 int		iJoinMenu = join_connecting;
+std::string	sJoinAddress;
 
 
 ///////////////////
 // Join a server
-bool Menu_Net_JoinInitialize()
+bool Menu_Net_JoinInitialize(const std::string& sAddress)
 {
 	iNetMode = net_join;
 	iJoinMenu = join_connecting;
+	sJoinAddress = sAddress;
 
-	if(!Menu_Net_JoinConnectionInitialize()) {
+	if(!Menu_Net_JoinConnectionInitialize(sAddress)) {
 		// Error
 		return false;
 	}
@@ -120,7 +119,9 @@ void Menu_Net_JoinShutdown()
 */
 
 
-CGuiLayout cConnecting;
+static CGuiLayout cConnecting;
+static Timer *cConnectingScreenUpdate = NULL;
+
 enum {
 	cm_Cancel=0
 };
@@ -128,21 +129,27 @@ enum {
 
 ///////////////////
 // Initialize the connection menu
-bool Menu_Net_JoinConnectionInitialize()
+bool Menu_Net_JoinConnectionInitialize(const std::string& sAddress)
 {
 	iJoinMenu = join_connecting;
+	tLX->iGameType = GME_JOIN;
+	sJoinAddress = sAddress;
 	cConnecting.Shutdown();
 	cConnecting.Initialize();
 
 	cConnecting.Add( new CButton(BUT_CANCEL, tMenu->bmpButtons),	cm_Cancel, 	25, 440, 75,15);
 
     Menu_redrawBufferRect(0, 0, 640, 480);
+	if (!cConnectingScreenUpdate)
+		cConnectingScreenUpdate = new Timer("Connecting...", null, NULL, 250, false);
+	cConnectingScreenUpdate->start();
 
 	return true;
 }
 
 void Menu_Net_JoinConnectionShutdown()
 {
+	cConnectingScreenUpdate->stop();
 	cConnecting.Shutdown();
 }
 
@@ -156,7 +163,8 @@ void Menu_Net_JoinConnectionFrame(int mouse)
 	Menu_redrawBufferRect(0,180,640,tLX->cFont.GetHeight());
 
 	// Process the client frame
-	tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface().get(), 320, 180, tLX->clNormalLabel, "Connecting to " + cClient->getServerAddr_HumanReadable());
+	tLX->cFont.DrawCentre(VideoPostProcessor::videoSurface(), 320, 180, tLX->clNormalLabel, "Connecting to " + cClient->getServerAddr_HumanReadable());
+	cClient->Frame();
 
 
 	// Connected??
@@ -167,10 +175,9 @@ void Menu_Net_JoinConnectionFrame(int mouse)
 
 		if(!Menu_Net_JoinLobbyInitialize()) {
 			// Error
-			game.state = Game::S_Inactive;
 			Menu_Net_MainInitialize();
-			return;
 		}
+		return;
 	}
 
 	// Check for a bad connection
@@ -178,14 +185,18 @@ void Menu_Net_JoinConnectionFrame(int mouse)
 		warnings << "Bad connection: " << cClient->getBadConnectionMsg() << endl;
 		Menu_MessageBox("Connection Error", cClient->getBadConnectionMsg(), LMB_OK);
 
-		game.state = Game::S_Inactive;
+		cClient->Shutdown();
+
+		// Shutdown
+		Menu_Net_JoinConnectionShutdown();
+		Menu_NetInitialize();
 		return;
 	}
 
 
 	// Process & Draw the gui
 	ev = cConnecting.Process();
-	cConnecting.Draw( VideoPostProcessor::videoSurface().get() );
+	cConnecting.Draw( VideoPostProcessor::videoSurface() );
 
 
 	// Process any events
@@ -201,7 +212,6 @@ void Menu_Net_JoinConnectionFrame(int mouse)
 					PlaySoundSample(sfxGeneral.smpClick);
 
 					// Shutdown
-					game.state = Game::S_Inactive;
 					Menu_Net_JoinConnectionShutdown();
 
 					Menu_NetInitialize();
@@ -212,7 +222,7 @@ void Menu_Net_JoinConnectionFrame(int mouse)
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 
@@ -273,8 +283,10 @@ bool Menu_Net_JoinLobbyInitialize()
 	iJoinMenu = join_lobby;
 
 	cClient->getChatbox()->Clear();
-    iJoinSpeaking = 0;  // The first player is always speaking
+	iJoinSpeaking = 0; // The first player is always speaking
 	tMenu->sSavedChatText = "";
+
+	tLX->iGameType = GME_JOIN;
 
 	return true;
 }
@@ -283,7 +295,13 @@ bool Menu_Net_JoinLobbyInitialize()
 // Shutdown the join lobby
 void Menu_Net_JoinLobbyShutdown()
 {
+	if (cClient)
+		cClient->Disconnect();
+
 	cJoinLobby.Shutdown();
+
+	if (cClient)
+		cClient->Shutdown();
 
 	tMenu->sSavedChatText = "";
 }
@@ -360,11 +378,11 @@ static void updateDetailsList(CListview* l) {
 	SETI; si->sText = cClient->getServerName(); // servername
 	SETI;
 	if(cClient->getHaveMap()) {
-		si->sText = cClient->getGameLobby()[FT_Map].as<LevelInfo>()->name;
+		si->sText = cClient->getGameLobby()->sMapName;
 		if (si->tNext)
 			si->tNext->bVisible = false;  // Hide the download button
 	} else {  // Don't have the map
-		si->sText = cClient->getGameLobby()[FT_Map].as<LevelInfo>()->path;
+		si->sText = cClient->getGameLobby()->sMapFile;
 		si->iColour = tLX->clError;
 		if (si->tNext)  {
 			// not downloading the map, display an option for doing so
@@ -372,40 +390,45 @@ static void updateDetailsList(CListview* l) {
 		} 
 	}
 
+	const std::string gamemodes[] = {"Death Match","Team Death Match", "Tag", "Demolitions"};
 	SETI;
-	si->sText = cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->toString();
+	if(cClient->getGameLobby()->sGameMode == "") {
+		int generalType = cClient->getGameLobby()->iGeneralGameType;
+		si->sText = (generalType < 0 || (uint)generalType >= sizeof(gamemodes)/sizeof(std::string)) ? "Invalid" : gamemodes[generalType];
+	} else
+		si->sText = cClient->getGameLobby()->sGameMode;
 	SETI;
 	if(cClient->getHaveMod()) {
-		si->sText = cClient->getGameLobby()[FT_Mod].as<ModInfo>()->name;
+		si->sText = cClient->getGameLobby()->sModName;
 		if (si->tNext)
 			si->tNext->bVisible = false;  // Hide the download button
 	} else {
-		si->sText = cClient->getGameLobby()[FT_Mod].as<ModInfo>()->name;
+		si->sText = cClient->getGameLobby()->sModName;
 		si->iColour = tLX->clError;
 		if (si->tNext)
 			si->tNext->bVisible = !cClient->getDownloadingMod();
 	}
 	
 	SETI;
-	if((int)cClient->getGameLobby()[FT_Lives] >= 0) {
-		si->sText = itoa((int)cClient->getGameLobby()[FT_Lives]);
+	if(cClient->getGameLobby()->iLives >= 0) {
+		si->sText = itoa(cClient->getGameLobby()->iLives);
 	} else {
 		si->sText = "infinity";
 		si->iColour = tLX->clDisabled;
 	}
 	
 	SETI;
-	if((int)cClient->getGameLobby()[FT_KillLimit] >= 0) {
-		si->sText = itoa((int)cClient->getGameLobby()[FT_KillLimit]);
+	if(cClient->getGameLobby()->iKillLimit >= 0) {
+		si->sText = itoa(cClient->getGameLobby()->iKillLimit);
 	} else {
 		si->sText = "infinity";
 		si->iColour = tLX->clDisabled;
 	}
 
 	SETI;
-	if((float)cClient->getGameLobby()[FT_TimeLimit] >= 0) {
-		si->sText = ftoa(cClient->getGameLobby()[FT_TimeLimit]) + " min";		
-	} else if((float)cClient->getGameLobby()[FT_TimeLimit] <= -100) {
+	if(cClient->getGameLobby()->fTimeLimit >= 0) {
+		si->sText = ftoa(cClient->getGameLobby()->fTimeLimit) + " min";		
+	} else if(cClient->getGameLobby()->fTimeLimit <= -100) {
 		si->sText = "unknown";
 		si->iColour = tLX->clDisabled;
 	} else {
@@ -413,8 +436,8 @@ static void updateDetailsList(CListview* l) {
 		si->iColour = tLX->clDisabled;		
 	}
 	
-	SETI; si->sText = itoa((int)cClient->getGameLobby()[FT_LoadingTime]) + "%";
-	SETI; si->sText = cClient->getGameLobby()[FT_Bonuses] ? "On" : "Off";
+	SETI; si->sText = itoa(cClient->getGameLobby()->iLoadingTime) + "%";
+	SETI; si->sText = cClient->getGameLobby()->bBonusesOn ? "On" : "Off";
 
 	// Advanced info
 	if (tLXOptions->bAdvancedLobby)  {
@@ -424,33 +447,19 @@ static void updateDetailsList(CListview* l) {
 		for( int rm = index; rm < numItems; rm++ )
 			l->RemoveItem(rm);
 		
-		for_each_iterator( Feature*, f, ArrayRef(featureArray,featureArrayLen()) ) {
-			if( cClient->getGameLobby()[f->get()] == f->get()->unsetValue )
+		foreach( Feature*, f, Array(featureArray,featureArrayLen()) ) {
+			if( cClient->getGameLobby()->features[f->get()] == f->get()->unsetValue )
 				continue;
-			switch(featureArrayIndex(f->get())) {
-			case FT_Map:
-			case FT_Mod:
-			case FT_GameMode:
-			case FT_Lives:
-			case FT_KillLimit:
-			case FT_TimeLimit:
-			case FT_LoadingTime:
-			case FT_Bonuses:
-				// they are all covered above
-				continue;
-			default: break;
-			}
-
 			i = l->AddItem("feature:" + f->get()->name, index++, tLX->clNormalLabel);
 			l->AddSubitem(LVS_TEXT, f->get()->humanReadableName + ":", (DynDrawIntf*)NULL, NULL); 
 			l->AddSubitem(LVS_TEXT, "", (DynDrawIntf*)NULL, NULL);
 			si = i->tSubitems->tNext;
 			
 			si->iColour = defaultColor;
-			si->sText = cClient->getGameLobby()[f->get()].toString();
+			si->sText = cClient->getGameLobby()->features[f->get()].toString();
 		}
 
-		for_each_iterator( FeatureCompatibleSettingList::Feature&, f, GetIteratorRef_second(cClient->getUnknownFeatures().list) ) {
+		foreach( FeatureCompatibleSettingList::Feature&, f, cClient->getUnknownFeatures().list ) {
 			i = l->AddItem("feature:" + f->get().name, index++, tLX->clNormalLabel);
 			l->AddSubitem(LVS_TEXT, f->get().humanName + ":", (DynDrawIntf*)NULL, NULL);
 			l->AddSubitem(LVS_TEXT, "", (DynDrawIntf*)NULL, NULL);
@@ -580,15 +589,20 @@ void Menu_Net_JoinLobbyCreateGui()
 	initDetailsList(details);
 	
 	iJoinSpeaking = 0; // The first client is always speaking
+
+	cJoinLobby.FocusWidget(jl_ChatText);
+#ifdef __ANDROID__
+	Menu_WarpMouse(cJoinLobby.getWidget(jl_ChatText)->getX() + cJoinLobby.getWidget(jl_ChatText)->getWidth() - 2,
+					cJoinLobby.getWidget(jl_ChatText)->getY() + cJoinLobby.getWidget(jl_ChatText)->getHeight() - 2);
+#endif
 }
 
 
 ///////////////////
 // Go straight back to the join lobby
+// TODO: please comment the difference between Menu_Net_JoinGotoLobby and GotoJoinLobby
 void Menu_Net_JoinGotoLobby()
 {
-    //Menu_redrawBufferRect(0, 0, 640, 480);
-
     Menu_Net_JoinDrawLobby();
 
     Menu_Net_JoinLobbyCreateGui();
@@ -615,7 +629,7 @@ void Menu_Net_JoinGotoLobby()
 	// Add the ingame chatter text to lobby chatter
 	Menu_Net_JoinLobbySetText(cClient->chatterText());
 
-    iJoinSpeaking = 0; // The first player is always speaking
+	iJoinSpeaking = 0; // The first player is always speaking
 	tMenu->sSavedChatText = "";
 }
 
@@ -623,7 +637,7 @@ void Menu_Net_JoinGotoLobby()
 // Get the content of the chatbox
 std::string Menu_Net_JoinLobbyGetText()
 {
-	if (game.state == Game::S_Lobby)  {
+	if (tMenu->bMenuRunning)  {
 		std::string buf;
 		cJoinLobby.SendMessage(jl_ChatText, TXS_GETTEXT, &buf, 256);
 		return buf;
@@ -642,22 +656,56 @@ void Menu_Net_JoinLobbySetText(const std::string& str) {
 void Menu_Net_JoinLobbyFrame(int mouse)
 {
 	gui_event_t *ev = NULL;
-	int			y;
+	int			i,y;
+
+	// Process the client
+	cClient->Frame();
+
+    // If there is a client error, leave
+    if(cClient->getClientError()) {
+
+		Menu_Net_JoinShutdown();
+        Menu_NetInitialize();
+		bJoin_Update = true;
+		return;
+    }
 
 
 	// If we have started, leave the frontend
-	if(game.state >= Game::S_Preparing) {
+	if(cClient->getGameReady()) {
 
 		cJoinLobby.Shutdown();
 
         // Setup the client
         cClient->SetupViewports();
 
+		// Leave the frontend
+		*bGame = true;
+		tMenu->bMenuRunning = false;
+		tLX->iGameType = GME_JOIN;
+
 		// Save the chat text
 		cJoinLobby.SendMessage(jl_ChatText, TXS_GETTEXT, &tMenu->sSavedChatText, 256);
 
 		bJoin_Update = true;
 
+		return;
+	}
+
+
+	// Check if the communication link between us & server is still ok
+	if(cClient->getServerError()) {
+		// Create the buffer
+		DrawImage(tMenu->bmpBuffer.get(),tMenu->bmpMainBack_common,0,0);
+		Menu_DrawSubTitle(tMenu->bmpBuffer.get(),SUB_LOBBY);
+
+		Menu_MessageBox("Communication", cClient->getServerErrorMsg(), LMB_OK);
+
+        cJoinLobby.Shutdown();
+
+		Menu_NetInitialize();
+
+		bJoin_Update = true;
 		return;
 	}
 
@@ -684,7 +732,7 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 		
 
 	// Draw the connected players
-	if (/*bJoin_Update*/ true /* always for now, too much errors */)  {
+	if (bJoin_Update)  {
 		CListview *player_list = (CListview *)cJoinLobby.getWidget(jl_PlayerList);
 		if (!player_list) { // Weird, shouldn't happen
 			warnings << "Menu_Net_JoinLobbyFrame: player_list unset" << endl;
@@ -693,15 +741,17 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 		player_list->SaveScrollbarPos();
 		player_list->Clear();  // Clear first
 
+		CWorm *w = cClient->getRemoteWorms();
 		CImage *team_img = NULL;
 
-		for_each_iterator(CWorm*, w_, game.worms()) {
-			CWorm* w = w_->get();
+		for (i=0; i < MAX_PLAYERS; i++, w++)  {
+			if (!w->isUsed())  // Don't bother with unused worms
+				continue;
 
-			w->ChangeGraphics();
+			w->ChangeGraphics(cClient->getGameLobby()->iGeneralGameType);
 
 			// Add the item
-			player_list->AddItem(w->getName(), w->getID(), tLX->clNormalLabel);
+			player_list->AddItem(w->getName(), i, tLX->clNormalLabel);
 			if (w->getLobbyReady())  // Ready control
 				player_list->AddSubitem(LVS_IMAGE, "", tMenu->bmpLobbyReady, NULL);
 			else
@@ -710,7 +760,7 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 			player_list->AddSubitem(LVS_TEXT, "#"+itoa(w->getID())+" "+w->getName(), (DynDrawIntf*)NULL, NULL);  // Name
 
 			// Display the team mark if TDM
-			if (cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->generalGameType == GMT_TEAMS)  {
+			if (cClient->getGameLobby()->iGeneralGameType == GMT_TEAMS)  {
 				team_img = new CImage(gfxGame.bmpTeamColours[w->getTeam()]);
 				if (!team_img)
 					continue;
@@ -735,7 +785,7 @@ void Menu_Net_JoinLobbyFrame(int mouse)
         int x = 360;
         y = 15;
 
-		f->Draw(VideoPostProcessor::videoSurface().get(), x, y,  tLX->clHeading, "Game Details");
+		f->Draw(VideoPostProcessor::videoSurface(), x, y,  tLX->clHeading, "Game Details");
 	}
 
 	// If any textbox is selected, forbid to show the console
@@ -747,11 +797,11 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 	if (!Con_IsVisible() && !CChatWidget::GlobalEnabled())  // Don't process when the console is opened
 		ev = cJoinLobby.Process();
 
-	cJoinLobby.Draw( VideoPostProcessor::videoSurface().get() );
+	cJoinLobby.Draw( VideoPostProcessor::videoSurface() );
 
 	if(CChatWidget::GlobalEnabled())
 	{
-		CChatWidget::GlobalProcessAndDraw(VideoPostProcessor::videoSurface().get());
+		CChatWidget::GlobalProcessAndDraw(VideoPostProcessor::videoSurface());
 		return;
 	}
 
@@ -764,7 +814,11 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 				if(ev->iEventMsg == BTN_CLICKED) {
 					// Click
 					PlaySoundSample(sfxGeneral.smpClick);
-					game.state = Game::S_Inactive;
+
+					Menu_Net_JoinLobbyShutdown();
+
+					// Back to net menu
+					Menu_NetInitialize();
 				}
 				break;
 
@@ -773,9 +827,8 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 				if(ev->iEventMsg == BTN_CLICKED) {
 					// Let the server know that my worms are now ready
 					bool ready = true;
-					for_each_iterator(CWorm*, w, game.localWorms())
-						ready &= w->get()->getLobbyReady();
-					ready = !ready;
+					if( cClient->getNumWorms() > 0 )
+						ready = ! cClient->getWorm(0)->getLobbyReady();
 					cClient->getNetEngine()->SendUpdateLobby(ready);
 
 					// Hide the ready button
@@ -790,7 +843,7 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 			// Add to favourites
 			case jl_Favourites:
 				if (ev->iEventMsg == BTN_CLICKED) {
-					ServerList::get()->addFavourite(cClient->getServerName(),cClient->getServerAddress());
+					Menu_SvrList_AddFavourite(cClient->getServerName(),cClient->getServerAddress());
 				}
 				break;
 
@@ -835,7 +888,7 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 					cJoinLobby.SendMessage(jl_ChatText, TXS_SETTEXT, "",0);
 
 					// Send
-					cClient->getNetEngine()->SendText(text, ifTrue<std::string,CWorm*>(game.firstLocalHumanWorm(), &CWorm::getName, ""));
+					cClient->getNetEngine()->SendText(text, cClient->getWorm(0)->getName());
 				} else
 				if(ev->iEventMsg == TXT_TAB) {
 					if(strSeemsLikeChatCommand(Menu_Net_JoinLobbyGetText())) {
@@ -853,14 +906,14 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 						switch (ev2->iControlID)  {
 						case jl_DownloadMap:
 							if (ev2->iEventMsg == IMG_CLICK)  {
-								cClient->DownloadMap(cClient->getGameLobby()[FT_Map].as<LevelInfo>()->path);  // Download the map
+								cClient->DownloadMap(cClient->getGameLobby()->sMapFile);  // Download the map
 								Menu_Net_JoinStartDownload();
 								updateDetailsList(details);
 							}
 						break;
 						case jl_DownloadMod:
 							if (ev2->iEventMsg == IMG_CLICK)  {
-								cClient->DownloadMod(cClient->getGameLobby()[FT_Mod].as<ModInfo>()->path); // Download the mod
+								cClient->DownloadMod(cClient->getGameLobby()->sModDir); // Download the mod
 								Menu_Net_JoinStartDownload();
 								updateDetailsList(details);
 							}
@@ -909,7 +962,7 @@ void Menu_Net_JoinLobbyFrame(int mouse)
 	}
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 }; // namespace DeprecatedGUI

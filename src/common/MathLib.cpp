@@ -71,20 +71,15 @@ float GetRandomPosNum() {
 int GetRandomInt(int max)
 {
 	assert(max >= 0);
-	float f = GetRandomPosNum()*(float(max)+1);
+	float f = GetRandomPosNum()*(float)(max+1);
 	return CLAMP((int)f, 0, max);
-}
-
-unsigned long GetRandomLong(unsigned long max) {
-	float f = GetRandomPosNum()*(float(max)+1);
-	return MIN((unsigned long)f, max);
 }
 
 //////////////////
 // Round the number
 int Round(float x)
 {
-	return (int) ceil((double)x-0.5);
+        return (int) ceil((double)x-0.5); 
 }
 
 
@@ -125,8 +120,7 @@ float NormalizeVector(CVec *vec)
 // Get a random normalized vector
 CVec GetRandomVec()
 {
-	float angle = GetRandomPosNum() * 2.0f * (float)PI;
-	return CVec( cosf(angle), sinf(angle) ) * GetRandomNum();
+	return CVec(GetRandomNum(),GetRandomNum());
 }
 
 
@@ -247,9 +241,4 @@ float Parabola::getLength(float pa, float pb)
 	float low = (log(sqrt(lower_u*lower_u + 1) + lower_u) + lower_u*sqrt(lower_u*lower_u + 1))/(4*a);
 
 	return fabs(up - low);
-}
-
-unsigned long SyncedRandom::getRandomSeed()
-{
-	return (unsigned long)time(NULL) + ~ SDL_GetTicks();
 }

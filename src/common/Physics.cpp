@@ -11,26 +11,40 @@
 #include "PhysicsLX56.h"
 #include "Debug.h"
 #include "LieroX.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "CClient.h"
 #include "CProjectile.h"
 #include "CBonus.h"
-#include "game/Game.h"
-#include "CGameScript.h"
 
+
+static PhysicsEngine* engine = NULL;
+PhysicsEngine* PhysicsEngine::Get() { return engine; }
+void PhysicsEngine::Set(PhysicsEngine* e) { engine = e; }
 
 void PhysicsEngine::Init() {
-	notes << "PhysicsEngine " << PhysicsEngine::Get()->name() << " loaded" << endl;
-	PhysicsEngine::Get()->initGame();
+	engine = CreatePhysicsEngineLX56();
+	
+	notes << "PhysicsEngine " << engine->name() << " loaded" << endl;
 }
 
 void PhysicsEngine::UnInit() {
-	PhysicsEngine::Get()->uninitGame();
-	notes << "unloading PhysicsEngine " << PhysicsEngine::Get()->name() << " .." << endl;
+	if(engine) {
+		notes << "unloading PhysicsEngine " << engine->name() << " .." << endl;
+		delete engine;
+		engine = NULL;
+	}
+	else
+		errors << "PhysicsEngine::UnInit: physics engine not loaded" << endl;
 }
 
 AbsTime GetPhysicsTime() {
-	return game.simulationAbsTime();
+	return tLX->currentTime;
+}
+
+
+
+void PhysicsEngine::skipWorm(CWorm* worm) {
+	worm->fLastSimulationTime += tLX->fRealDeltaTime;
 }
 
 void PhysicsEngine::skipProjectiles(Iterator<CProjectile*>::Ref projs) {
@@ -40,4 +54,13 @@ void PhysicsEngine::skipProjectiles(Iterator<CProjectile*>::Ref projs) {
 		CProjectile* p = i->get();
 		p->fLastSimulationTime += tLX->fRealDeltaTime;
 	}
+}
+
+void PhysicsEngine::skipBonuses(CBonus* bonuses, size_t count) {
+	if(!cClient->getGameLobby()->bBonusesOn) return;
+	CBonus *b = bonuses;
+	for(size_t i=0; i < count; i++,b++) {
+		if(!b->getUsed()) continue;
+		b->fLastSimulationTime += tLX->fRealDeltaTime;
+	}	
 }

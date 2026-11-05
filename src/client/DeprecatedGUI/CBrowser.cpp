@@ -29,6 +29,7 @@
 #include "Cursor.h"
 #include "Timer.h"
 #include "AuxLib.h"
+#include "Touchscreen.h"
 
 
 namespace DeprecatedGUI {
@@ -81,7 +82,7 @@ public:
 	// WARNING 2: the first object always points to this object, so don't free it!
 	std::pair<CTextObject *, CTextObject *> Split(int maxwidth)
 	{
-		std::pair<CTextObject *, CTextObject *> result((CTextObject *)NULL, (CTextObject *)NULL);
+		std::pair<CTextObject *, CTextObject *> result(nullptr, nullptr);
 
 		if (tRect.w <= maxwidth)  {
 			result.first = this;
@@ -156,8 +157,8 @@ public:
 	// Render the list item object
 	virtual void Render(SDL_Surface *dest, int x, int y)  
 	{
-		DrawSimpleArrow(dest, x, y + (tRect.h - ARROW_H)/2, ARROW_W, ARROW_H, ardLeft, tLX->clNormalText);
-		DrawSimpleArrow(dest, x + ARROW_W, y + (tRect.h - ARROW_H)/2, ARROW_W, ARROW_H, ardRight, tLX->clNormalText);
+		DrawArrow(dest, x, y + (tRect.h - ARROW_H)/2, ARROW_W, ARROW_H, ardLeft, tLX->clNormalText);
+		DrawArrow(dest, x + ARROW_W, y + (tRect.h - ARROW_H)/2, ARROW_W, ARROW_H, ardRight, tLX->clNormalText);
 	}
 };
 
@@ -252,6 +253,8 @@ void CBrowser::Create()
 
 	bUseScroll = false;
 	bNeedsRender = true;
+	bFingerDragged = false;
+	iFingerDraggedPos = 0;
 
 	// Setup the scrollbar
 	cScrollbar.Create();
@@ -561,11 +564,40 @@ int CBrowser::MouseDown(mouse_t *tMouse, int nDown)
 	if (!bFocused)
 		return BRW_NONE;
 
-	if(bUseScroll && (tMouse->X > iX+iWidth-20 || cScrollbar.getGrabbed()) && bShowScrollbar)
+	if(bUseScroll && (tMouse->X > iX+iWidth-20 || cScrollbar.getGrabbed()))
 	{
 		cScrollbar.MouseDown(tMouse, nDown);
 		bNeedsRender = true; // Always redraw, scrollbar may change its image
 		return BRW_NONE;
+	}
+
+	// Finger drag
+	if (tMouse->FirstDown)  {
+		bFingerDragged = false;
+		iFingerDraggedPos = tMouse->Y;
+	}
+
+	if (tMenu->bFingerDrag && tMouse->Down && bUseScroll) {
+		int clickDist = DEFAULT_LINE_HEIGHT;
+		if (abs(iFingerDraggedPos - tMouse->Y) > clickDist) {
+			bFingerDragged = true;
+		}
+		if (bFingerDragged) {
+			int clicks = (tMouse->Y - iFingerDraggedPos) / clickDist;
+			while (clicks > 0) {
+				clicks--;
+				iFingerDraggedPos += clickDist;
+				if( cScrollbar.MouseWheelUp(tMouse) == SCR_CHANGE )
+					bNeedsRender = true;
+			}
+			while (clicks < 0) {
+				clicks++;
+				iFingerDraggedPos -= clickDist;
+				if( cScrollbar.MouseWheelDown(tMouse) == SCR_CHANGE )
+					bNeedsRender = true;
+			}
+			return BRW_NONE;
+		}
 	}
 
 	MousePosToCursorPos(tMouse->X, tMouse->Y, iCursorColumn, iCursorLine);
@@ -618,7 +650,7 @@ int CBrowser::MouseDown(mouse_t *tMouse, int nDown)
 // Mouse over event
 int CBrowser::MouseOver(mouse_t *tMouse)
 {
-	if(bUseScroll && tMouse->X > iX+iWidth-20 && bShowScrollbar)
+	if(bUseScroll && tMouse->X > iX+iWidth-20)
 	{
 		if( cScrollbar.MouseOver(tMouse) == SCR_CHANGE )
 			bNeedsRender = true;
@@ -665,10 +697,15 @@ int CBrowser::MouseWheelUp(mouse_t *tMouse)
 // Mouse up event
 int CBrowser::MouseUp(mouse_t *tMouse, int nDown)
 {
-	if(bUseScroll && (tMouse->X > iX+iWidth-20 || cScrollbar.getGrabbed()) && bShowScrollbar)
+	if(bUseScroll && (tMouse->X > iX+iWidth-20 || cScrollbar.getGrabbed()))
 	{
 		cScrollbar.MouseUp(tMouse, nDown);
 		bNeedsRender = true; // Always redraw, scrollbar may change it's image
+		return BRW_NONE;
+	}
+
+	if (bFingerDragged) {
+		bFingerDragged = false;
 		return BRW_NONE;
 	}
 
@@ -727,8 +764,9 @@ int CBrowser::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 			} else {
 				ClearSelection();
 			}
-		} else if (Menu_IsKeyboardNavigationUsed()) {
-			return BRW_NONE; // Switch to next widget
+		} else {
+			if (Menu_IsKeyboardNavigationUsed())
+				return BRW_NONE; // Switch to next widget
 		}
 	return BRW_KEY_PROCESSED;
 
@@ -753,8 +791,9 @@ int CBrowser::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 			} else {
 				ClearSelection();
 			}
-		} else if (Menu_IsKeyboardNavigationUsed()) {
-			return BRW_NONE; // Switch to next widget
+		} else {
+			if (Menu_IsKeyboardNavigationUsed())
+				return BRW_NONE; // Switch to next widget
 		}
 	return BRW_KEY_PROCESSED;
 
@@ -870,15 +909,15 @@ int CBrowser::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 	}
 
     // Ctrl-c or Super-c or Ctrl-Insert (copy)
-    if (((modstate.bCtrl || modstate.bGui) && keysym == SDLK_c ) ||
-		(((modstate.bCtrl || modstate.bGui) && keysym == SDLK_INSERT ))) {
+    if (((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_c ) ||
+		(((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_INSERT ))) {
 		if (!IsSelectionEmpty())
 			copy_to_clipboard(GetSelectedText());
         return BRW_KEY_PROCESSED;
     }
 
     // Ctrl-a or Super-a (select all)
-    if ((modstate.bCtrl || modstate.bGui) && keysym == SDLK_a) {
+    if ((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_a) {
 		iSelectionStartLine = 0;
 		iSelectionStartColumn = 0;
 		if (tLines.size())  {
@@ -953,7 +992,7 @@ void CBrowser::Draw(SDL_Surface * bmpDest)
 	DrawCursor(bmpDest);
 
 	// Scrollbar
-	if (bUseScroll && bShowScrollbar)  {
+	if (bUseScroll)  {
 		cScrollbar.Draw(bmpDest);
 	}
 }
@@ -1742,6 +1781,15 @@ void CBrowser::AddChatBoxLine(const std::string & text, Color color, TXT_TYPE te
 	if (bUseScroll && shouldScrollDown) {
 		ScrollToLastLine();
 	}
+
+	static std::list<std::string> chatLines;
+	while (chatLines.size() > 4)
+		chatLines.pop_front();
+	chatLines.push_back(text);
+	std::string chatLinesStr;
+	for (std::list<std::string>::iterator it = chatLines.begin(); it != chatLines.end(); it++)
+		chatLinesStr += *it + "\n";
+	SetTouchscreenTextInputHintMessage(chatLinesStr.c_str());
 }
 
 //////////////////////

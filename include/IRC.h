@@ -39,7 +39,6 @@ public:
 	m_socketIsReady(false),
 	m_connecting(false),
 	m_connectionClosedTime(0),
-	m_reconnectWaitTime(5.0f),
 	m_authorizedState(AUTH_NONE),
 	m_nickUniqueNumber(-1),
 	m_updatingUserList(false),
@@ -118,7 +117,6 @@ private:
 	bool		m_socketIsReady;
 	bool		m_connecting;
 	AbsTime		m_connectionClosedTime;
-	TimeDiff	m_reconnectWaitTime;
 	std::string	m_myNick;
 	std::string	m_AwayMessage;
 	IRCState	m_authorizedState;

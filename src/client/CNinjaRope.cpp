@@ -19,117 +19,80 @@
 
 #include "DeprecatedGUI/Graphics.h"
 #include "GfxPrimitives.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "MathLib.h"
 #include "Entity.h"
 #include "CClient.h"
-#include "game/Game.h"
-#include "Geometry.h"
-#include "gusanos/luaapi/classes.h"
 #include "CGameScript.h"
-#include "gusanos/gusgame.h"
 
-
-LuaReference CNinjaRope::metaTable;
-
-CNinjaRope::CNinjaRope()
-#ifndef DEDICATED_ONLY
-: m_sprite(NULL), m_animator(NULL)
-#endif
-{
-	thisRef.classId = LuaID<CNinjaRope>::value;
-	Clear();
-}
-
-CNinjaRope::~CNinjaRope() {
-	// We must delete the object now out of the list because this destructor
-	// is not called from Gusanos but from CClient.
-	// NOTE: Not really the best way but I don't know a better way
-	// TODO: move this out here
-	for ( Grid::iterator iter = game.objects.beginAll(); iter;)
-	{
-		if( &*iter == this )
-			iter.erase();
-		else
-			++iter;
-	}
-}
-
-BaseObject* CNinjaRope::parentObject() const {
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if(&w->get()->cNinjaRope.get() == this)
-			return w->get();
-	}
-	return NULL;
-}
-
-CWorm* CNinjaRope::owner() const {
-	return dynamic_cast<CWorm*>(parentObject());
-}
-
-
-bool CNinjaRope::isPlayerAttached() const {
-	if(PlayerAttached < 0) return false;
-	return game.wormById(PlayerAttached, false) != NULL;
-}
-
-CWorm* CNinjaRope::getAttachedPlayer() const {
-	return game.wormById(PlayerAttached, false);
-}
 
 ///////////////////
 // Clear the ninja rope vars
 void CNinjaRope::Clear()
-{	
+{
 	Released = false;
 	HookShooting = false;
 	HookAttached = false;
-	PlayerAttached = -1;
-	justCreated = false;
+	PlayerAttached = false;
+	Worm = NULL;
+
+	LastReleased = Released;
+	LastHookShooting = HookShooting;
+	LastHookAttached = HookAttached;
+	LastPlayerAttached = PlayerAttached;
+	LastWorm = NULL;
 }
 
+
+///////////////////
+// Release the ninja rope
+// TODO: there is a name-inconvesion between isReleased and Release
+void CNinjaRope::Release()
+{
+	// Un-hook the rope from the other worm
+	if(HookAttached && PlayerAttached && Worm)
+		Worm->setHooked(false,NULL);
+
+	Clear();
+}
 
 
 ///////////////////
 // Shoot the rope
-void CNinjaRope::Shoot(CVec dir)
+void CNinjaRope::Shoot(CWorm* owner, CVec pos, CVec dir)
 {
 	Clear();
 
-	if(game.gameScript()->gusEngineUsed() && gusGame.NRPartType == NULL) return;
-	if(owner() == NULL) {
-		errors << "CNinjaRope::Shoot: owner unknown" << endl;
-		return;
-	}
-
-	if(!owner()->canUseNinja()) return;
+	if(!owner->canUseNinja()) return;
 	
 	Released = true;
 	HookShooting = true;
 	HookAttached = false;
-	PlayerAttached = -1;
-	justCreated = true;
+	PlayerAttached = false;
+	Worm = NULL;
 
-	pos() = owner()->pos();
-	velocity() = dir * (float)cClient->getGameLobby()[FT_RopeSpeed];
-	if(cClient->getGameLobby()[FT_RopeAddParentSpeed])
-		velocity() += owner()->getVelocity();
+	HookPos = pos;
+	HookDir = dir;
+	HookVelocity = dir*250;
+}
 
-	m_length = (float)(int)gusGame.options.ninja_rope_startDistance;
-	m_angle = Vec(velocity()).getAngle();
-	m_angleSpeed = 0;
 
-	foreach(t, timer)
-	{
-		t->reset();
-	}
+///////////////////
+// Setup the details from the gamescript
+void CNinjaRope::Setup(CGameScript *gs)
+{
+	assert( gs );
+
+	RopeLength = (float)gs->getRopeLength();
+	RestLength = (float)gs->getRestLength();
+	Strength = gs->getStrength();
 }
 
 
 
 ///////////////////
 // Draw the thing
-void CNinjaRope::Draw(SDL_Surface * bmpDest, CViewport *view, CVec ppos, bool drawHook) const
+void CNinjaRope::Draw(SDL_Surface * bmpDest, CViewport *view, CVec ppos)
 {
 	if(!Released)
 		return;
@@ -139,25 +102,39 @@ void CNinjaRope::Draw(SDL_Surface * bmpDest, CViewport *view, CVec ppos, bool dr
 	int wx = view->GetWorldX();
 	int wy = view->GetWorldY();
 
-	int hx = (int)pos().get().x;
-	int hy = (int)pos().get().y;
+	int hx = (int)HookPos.x;
+	int hy = (int)HookPos.y;
 
 	// HINT: the hooked worm position could change since the Simulate procedure was called,
 	// because the worms are being processed in a "random" order -> we simulate and then the hook worm
 	// is simulated -> we have a wrong position, that's why we are correcting it here:
-	if(HookAttached && PlayerAttached >= 0) {
-		CWorm* w = game.wormById(PlayerAttached, false);
-		if(w) {
-			hx = (int)w->getPos().x;
-			hy = (int)w->getPos().y;
+	if(HookAttached && PlayerAttached && Worm) {
+		int prevx = (int)hookPos().x;
+		int prevy = (int)hookPos().y;
+		hx = (int)Worm->getPos().x;
+		hy = (int)Worm->getPos().y;
+		// HINT: don't change HookPos directly here, this should only be done by the simulation-function
+		if (cClient->getGameLobby()->features[FT_InfiniteMap]) {
+			while (hx > prevx + (int)(cClient->getMap()->GetWidth() / 2))
+				hx -= cClient->getMap()->GetWidth();
+			while (hx < prevx - (int)(cClient->getMap()->GetWidth() / 2))
+				hx += cClient->getMap()->GetWidth();
+			while (hy > prevy + (int)(cClient->getMap()->GetHeight() / 2))
+				hy -= cClient->getMap()->GetHeight();
+			while (hy < prevy - (int)(cClient->getMap()->GetHeight() / 2))
+				hy += cClient->getMap()->GetHeight();
 		}
 	}
+
+	int px = (int)ppos.x;
+	int py = (int)ppos.y;
+
+	px = ((int)ppos.x-wx)*2+l;
+	py = ((int)ppos.y-wy)*2+t;
 
 	hx = (hx-wx)*2+l;
 	hy = (hy-wy)*2+t;
 
-	int px = ((int)ppos.x-wx)*2+l;
-	int py = ((int)ppos.y-wy)*2+t;
 
 	// Rope
 	px -= px % 2;
@@ -172,125 +149,102 @@ void CNinjaRope::Draw(SDL_Surface * bmpDest, CViewport *view, CVec ppos, bool dr
 	   hy>=t && hy<=t+view->GetVirtH()) {
 
 		// Hook
-		if(drawHook)
-			DrawImage(bmpDest,DeprecatedGUI::gfxGame.bmpHook,hx-2,hy-2);
+		DrawImage(bmpDest,DeprecatedGUI::gfxGame.bmpHook,hx-2,hy-2);
 	}
 
 	// The clipping on the viewport is done in the line function
-}
-
-bool CNinjaRope::isInside(int x, int y) const {
-	if(!Released) return false;
-	if(!owner()) return false;
-	if(!owner()->getAlive()) return false;
-	
-	Line l(owner()->pos(), pos());
-	return l.distFromPoint2(VectorD2<int>(x, y)) < 2.0f;
-}
-
-Color CNinjaRope::renderColorAt(/* relative coordinates */ int x, int y) const {
-	x += (int)pos().get().x;
-	y += (int)pos().get().y;
-	if(isInside(x, y)) return Color(159,79,0);
-	return Color(0,0,0,SDL_ALPHA_TRANSPARENT);
 }
 
 ////////////////////
 // Unattaches rope from a worm
 void CNinjaRope::UnAttachPlayer()
 {
-	if (PlayerAttached < 0)
+	if (!Worm)
 		return;
 
-	velocity() = CVec();
+	HookVelocity.x = HookVelocity.y = 0;
 	HookShooting = false;
 	HookAttached = false;
-	PlayerAttached = -1;
+	PlayerAttached = false;
+	Worm->setHooked(false, NULL);
+	Worm = NULL;
 }
 
-void CNinjaRope::Attach() {
+void CNinjaRope::AttachToPlayer(CWorm *worm, CWorm *owner)
+{
 	HookShooting = false;
 	HookAttached = true;
-
-	m_length = (float)(int)gusGame.options.ninja_rope_restLength;
-	velocity() = CVec();
-
-	if(gusGame.NRPartType && gusGame.NRPartType->groundCollision)
-		gusGame.NRPartType->groundCollision->run(this);
-}
-
-void CNinjaRope::AttachToPlayer(CWorm *worm)
-{
-	Attach();
-	PlayerAttached = worm->getID();
+	PlayerAttached = true;
+	Worm = worm;
+	worm->setHooked(true, owner);
 }
 
 
 ///////////////////
 // Return the pulling force
-CVec CNinjaRope::GetForce() const
+CVec CNinjaRope::GetForce(CVec playerpos)
 {
 	if(!HookAttached)
 		return CVec(0,0);
 
-	CVec dir = owner()->pos() - pos();
-	dir = dir.Normalize();
-	
-	const float RestLength = (float)(int)cClient->getGameLobby()[FT_RopeRestLength];
-	if((owner()->pos() - pos()).GetLength2() < RestLength*RestLength)
-		return CVec(0,0);
-	
-	dir *= (float)cClient->getGameLobby()[FT_RopeStrength] * -100;
-	
-	return dir;
-}
-
-
-void CNinjaRope::checkForWormAttachment() {
-	if(owner() == NULL) return;
-
-	// Check if the hook has hit another worm
-	if(cClient->getGameLobby()[FT_RopeCanAttachWorm] && !isAttached() && !isPlayerAttached()) {
-
-		for_each_iterator(CWorm*, w, game.aliveWorms()) {
-			if(w->get()->getID() == owner()->getID())
-				continue;
-			if(!w->get()->isVisible(owner()))
-				continue;
-
-			if( ( w->get()->getPos() - hookPos() ).GetLength2() < 25 ) {
-				AttachToPlayer(w->get());
-				break;
-			}
-		}
-	}
-
-	// Put the hook where the worm is
-	else if(isAttached() && isPlayerAttached()) {
-
-		// If the worm has been killed, or dropped, or became invisible in H&S - drop the hook
-		if(	!getAttachedPlayer() ||
-			!getAttachedPlayer()->getAlive() ||
-			!getAttachedPlayer()->isVisible(owner()) )
-		{
-			UnAttachPlayer();
-		} else {
-			hookPos() = getAttachedPlayer()->getPos();
-		}
-	}
+	return CalculateForce(playerpos);//,HookPos);
 }
 
 
 ///////////////////
+// Calculate the pulling force
+CVec CNinjaRope::CalculateForce(CVec playerpos)
+{
+	CVec dir = playerpos-HookPos;
+	dir = dir.Normalize();
+
+	if((playerpos-HookPos).GetLength2() < RestLength*RestLength)
+		return CVec(0,0);
+
+	// Make sure the pull isn't huge
+	float l = -Strength;
+
+	dir *= l*100;
+
+	return dir;
+}
+
+//////////////
+// Synchronizes the variables used for check below
+void CNinjaRope::updateCheckVariables()
+{
+	LastReleased = Released;
+	LastHookShooting = HookShooting;
+	LastHookAttached = HookAttached;
+	LastPlayerAttached = PlayerAttached;
+	LastWorm = Worm;
+	LastWrite = tLX->currentTime;
+}
+
+//////////////
+// Returns true if the write function needs to be called
+bool CNinjaRope::writeNeeded()
+{
+	if		((LastReleased != Released) ||
+			(LastHookShooting != HookShooting) ||
+			(LastHookAttached != HookAttached) ||
+			(LastPlayerAttached != PlayerAttached) ||
+			(LastWorm != Worm))
+				return true;
+
+	return HookPos != OldHookPos;
+}
+
+///////////////////
 // Write out the rope details to a bytestream
-void CNinjaRope::write(CBytestream *bs) const
+void CNinjaRope::write(CBytestream *bs)
 {
 	int type = ROP_NONE;
 
 	if(HookShooting)
 		type = ROP_SHOOTING;
 	else if(HookAttached) {
-		if(PlayerAttached >= 0)
+		if(PlayerAttached)
 			type = ROP_PLYHOOKED;
 		else
 			type = ROP_HOOKED;
@@ -301,84 +255,95 @@ void CNinjaRope::write(CBytestream *bs) const
 	bs->writeByte( type );
 
 	// Position
-	short x = (short)pos().get().x;
-	short y = (short)pos().get().y;
+	short x = (short)HookPos.x;
+	short y = (short)HookPos.y;
 
 	// Write out position of the hook
 	bs->write2Int12( x, y );
 
 
+	// Calculate the heading angle that the hook is travelling
+	float heading = (float)( -atan2(HookDir.x,HookDir.y) * (180.0f/PI) );
+	heading+=90;
+	if(heading < 0)
+		heading+=360;
+	if(heading > 360)
+		heading-=360;
+	if(heading == 360)
+		heading=0;
+
 	// Write out the direction is shooting out
 	if(type == ROP_SHOOTING) {
-		// HookDir was removed as it is not really used
-		bs->writeByte( 0 );
+		// Convert angle to fixed 256
+		int a = (int)(256*heading/360)&255;
+		bs->writeByte( a );
 	}
 
 	// Write out the worm id the hook is stuck to
 	if(type == ROP_PLYHOOKED) {
-		bs->writeByte( PlayerAttached );
+		bs->writeByte( Worm->getID() );
 	}
+
+	// Update the "last" variables
+	updateCheckVariables();
 }
 
 
 
 ///////////////////
 // Read rope details from a bytestream
-void CNinjaRope::read(CBytestream *bs, int owner)
+void CNinjaRope::read(CBytestream *bs, CWorm *worms, int owner)
 {
-	if(this->owner() == NULL)
-		errors << "CNinjaRope::read: owner unknown" << endl;
-	else if(this->owner() != game.wormById(owner, false))
-		errors << "CNinjaRope::read: owner (" << this->owner()->getID() << ") differs from param " << owner << endl;
-	
+	OldHookPos = HookPos;
 	int type = bs->readByte();
 	Released = true;
+	Worm = NULL;
 
 	switch(type) {
 		case ROP_SHOOTING:
 			HookShooting = true;
 			HookAttached = false;
-			PlayerAttached = -1;
+			PlayerAttached = false;
 			break;
 		case ROP_HOOKED:
 			HookShooting = false;
 			HookAttached = true;
-			PlayerAttached = -1;
+			PlayerAttached = false;
 			break;
 		case ROP_FALLING:
 			HookShooting = false;
 			HookAttached = false;
-			PlayerAttached = -1;
+			PlayerAttached = false;
 			break;
 		case ROP_PLYHOOKED:
 			HookShooting = false;
 			HookAttached = true;
+			PlayerAttached = true;
 			break;
 	}
 
 	// Position
 	short x, y;
 	bs->read2Int12( x, y );
-	pos() = CVec( float(x), float(y) );
+	HookPos.x=( (float)x );
+	HookPos.y=( (float)y );
 
 	// Angle
 	if(type == ROP_SHOOTING) {
-		// we don't use/need the angle
-		/* angle = */ bs->readByte();
+		int a = bs->readByte();
+		int angle = 360*a/256;
+		GetVecsFromAngle((float)angle, &HookDir, NULL);
 	}
 
 	// Worm id
 	if(type == ROP_PLYHOOKED) {
 		int id = bs->readByte();
 		if(id >= 0 && id < MAX_WORMS) {
-			PlayerAttached = id;
-			CWorm* w = game.wormById(id, false);
-			if(w) {
-				// Set the hook pos on the worm
-				pos() = w->getPos();
-			}
+			Worm = &worms[id];
+			Worm->setHooked(true, &worms[owner]);
+
+            // Set the hook pos on the worm
+            HookPos = Worm->getPos();
 		}
 	}
 }
-
-REGISTER_CLASS(CNinjaRope, LuaID<CGameObject>::value)

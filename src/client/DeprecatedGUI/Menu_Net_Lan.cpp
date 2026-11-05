@@ -16,7 +16,7 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "Clipboard.h"
 #include "AuxLib.h"
 #include "DeprecatedGUI/Graphics.h"
@@ -29,7 +29,6 @@
 #include "Timer.h"
 #include "ProfileSystem.h"
 #include "Debug.h"
-#include "game/ServerList.h"
 
 
 
@@ -49,10 +48,7 @@ enum {
 	nl_PlayerSelection
 };
 
-void Menu_Net_LAN_ServerList_Refresher() {
-	ServerList::get()->fillList( (CListview *)cLan.getWidget( nl_ServerList ), SLFT_Lan );
-}
-	
+
 
 ///////////////////
 // Initialize the LAN menu
@@ -69,22 +65,27 @@ bool Menu_Net_LANInitialize()
 	cLan.Add( new CListview(),							   nl_ServerList, 40, 180, 560, 242);
 	cLan.Add( new CLabel("Select player:",tLX->clNormalLabel),-1,		125, 152, 180,15);
 	cLan.Add( new CCombobox(),								nl_PlayerSelection,		225,150, 170,  19);
+	//cLan.Add( new CLabel("Local Area Network", tLX->clHeading),	   -1,		   40, 140, 0,   0);
 
 	Menu_Net_AddTabBarButtons(&cLan);
-	//cLan.Add( new CLabel("Local Area Network", tLX->clHeading),	   -1,		   40, 140, 0,   0);
+
 
 	// Fill the players box
 	CCombobox* PlayerSelection = (CCombobox*) cLan.getWidget( nl_PlayerSelection );
+	profile_t *p = GetProfiles();
 	bool validName = false;
-	for_each_iterator(SmartPointer<profile_t>, p, GetProfiles()) {
-		int index = PlayerSelection->addItem( p->get()->sName, p->get()->sName );
-		PlayerSelection->setImage( p->get()->cSkin.getPreview(), index );
-		if( p->get()->sName == tLXOptions->sLastSelectedPlayer )
-			validName = true;
+	for(;p;p=p->tNext) {
+		/*if(p->iType == PRF_COMPUTER)
+			continue;*/
+
+		int index = PlayerSelection->addItem( p->sName, p->sName );
+		PlayerSelection->setImage( p->cSkin.getPreview(), index );
+		if( p->sName == tLXOptions->sLastSelectedPlayer )
+			validName=true;
 	}
 
 	if( ! validName )
-		tLXOptions->sLastSelectedPlayer = MainHumanProfile()->sName;
+		tLXOptions->sLastSelectedPlayer = GetProfiles()->sName;
 
 	PlayerSelection->setCurSIndexItem( tLXOptions->sLastSelectedPlayer );
 
@@ -112,8 +113,8 @@ bool Menu_Net_LANInitialize()
 	((CListview*) cLan.getWidget( nl_ServerList ))->SetSortColumn( tLXOptions->iLANSortColumn, true ); // Sorting
 
 	// Clear the server list
-	ServerList::get()->pingLAN();
-	ServerList::get()->fillList( (CListview *)cLan.getWidget( nl_ServerList ), SLFT_Lan );
+	Menu_SvrList_Clear();
+	Menu_SvrList_PingLAN();
 
 	return true;
 }
@@ -129,15 +130,15 @@ void Menu_Net_LANShutdown()
 		CCombobox* combo = (CCombobox *) cLan.getWidget(nl_PlayerSelection);
 		if( combo )
 		{
-			const GuiListItem::Pt item = combo->getSelectedItem();
-			if (item.get())
-				tLXOptions->sLastSelectedPlayer = item->index();
+			const cb_item_t* item = combo->getSelectedItem();
+			if (item)
+				tLXOptions->sLastSelectedPlayer = item->sIndex;
 		}
 
-		if (iNetMode == net_lan)  {
+		if (iNetMode == net_lan && cLan.getWidget(nl_ServerList))  {
 			// Save the column widths
 			for (int i=0;i<6;i++)
-				tLXOptions->iLANList[i] = (int)cLan.SendMessage(nl_ServerList,LVM_GETCOLUMNWIDTH,i,0);
+				tLXOptions->iLANList[i] = cLan.SendMessage(nl_ServerList,LVM_GETCOLUMNWIDTH,i,0);
 
 			// Save the sorting column
 			tLXOptions->iLANSortColumn = ((CListview *)cLan.getWidget(nl_ServerList))->GetSortColumn();
@@ -158,16 +159,15 @@ void Menu_Net_LANFrame(int mouse)
 
 	// Process & Draw the gui
 	ev = cLan.Process();
-	cLan.Draw( VideoPostProcessor::videoSurface().get() );
+	cLan.Draw( VideoPostProcessor::videoSurface() );
 
 	if (Menu_Net_ProcessTabBarButtons(ev))
 		return;
 
-
 	// Process the server list
-	if( ServerList::get()->process() ) {
+	if( Menu_SvrList_Process() ) {
 		// Add the servers to the listview
-		ServerList::get()->fillList( (CListview *)cLan.getWidget( nl_ServerList ), SLFT_Lan );
+		Menu_SvrList_FillList( (CListview *)cLan.getWidget( nl_ServerList ) );
 	}
 
 
@@ -182,9 +182,9 @@ void Menu_Net_LANFrame(int mouse)
 				if(ev->iEventMsg == BTN_CLICKED) {
 
 					CCombobox* combo = (CCombobox *) cLan.getWidget(nl_PlayerSelection);
-					const GuiListItem::Pt item = combo->getSelectedItem();
-					if (item.get())
-						tLXOptions->sLastSelectedPlayer = item->index();
+					const cb_item_t* item = combo->getSelectedItem();
+					if (item)
+						tLXOptions->sLastSelectedPlayer = item->sIndex;
 
 					// Click!
 					PlaySoundSample(sfxGeneral.smpClick);
@@ -204,9 +204,9 @@ void Menu_Net_LANFrame(int mouse)
 					// Click!
 					PlaySoundSample(sfxGeneral.smpClick);
 
-					ServerList::get()->clear(SLFT_Lan);
 					// Send out a ping over the lan
-					ServerList::get()->pingLAN();
+					Menu_SvrList_Clear();
+					Menu_SvrList_PingLAN();
 				}
 				break;
 
@@ -215,7 +215,7 @@ void Menu_Net_LANFrame(int mouse)
 				if(ev->iEventMsg == BTN_CLICKED) {
 
 					addr = "";
-					int result = (int)cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					if(result != -1 && addr != "") {
 
 						// Click!
@@ -242,7 +242,7 @@ void Menu_Net_LANFrame(int mouse)
 
 					// Just join for the moment
 					addr = "";
-					int result = (int)cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					lv_subitem_t *sub = ((CListview *)cLan.getWidget(nl_ServerList))->getCurSubitem(1);
 					if(result != -1 && addr != "" && sub) {
 						Menu_Net_LANJoinServer(addr,sub->sText);
@@ -253,7 +253,7 @@ void Menu_Net_LANFrame(int mouse)
                 // Right click
                 if( ev->iEventMsg == LV_RIGHTCLK ) {
                     addr = "";
-					int result = (int)cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					if(result && addr != "") {
                         // Display a menu
                         szLanCurServer = addr;
@@ -274,7 +274,7 @@ void Menu_Net_LANFrame(int mouse)
 				if( ev->iEventMsg == LV_ENTER )  {
 					// Join
 					addr = "";
-					int result = (int)cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					lv_subitem_t *sub = ((CListview *)cLan.getWidget(nl_ServerList))->getCurSubitem(1);
 					if(result != -1 && addr != "" && sub) {
 						Menu_Net_LANJoinServer(addr,sub->sText);
@@ -285,11 +285,11 @@ void Menu_Net_LANFrame(int mouse)
 				// Delete
 				if( ev->iEventMsg == LV_DELETE )  {
 					addr = "";
-					int result = (int)cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cLan.SendMessage(nl_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					if(result && addr != "") {
-						ServerList::get()->removeServer(addr);
+						Menu_SvrList_RemoveServer(addr);
 						// Re-Fill the server list
-						ServerList::get()->fillList( (CListview *)cLan.getWidget( nl_ServerList ), SLFT_Lan );
+						Menu_SvrList_FillList( (CListview *)cLan.getWidget( nl_ServerList ) );
 					}
 				}
 
@@ -297,23 +297,18 @@ void Menu_Net_LANFrame(int mouse)
 
             // Popup menu
             case nl_PopupMenu:
-				// Only moving the selection, the menu stays
-				if( ev->iEventMsg == MNU_SELECTION_CHANGED )
-					break;
                 switch( ev->iEventMsg ) {
                     // Delete the server
                     case MNU_USER+0:
-                        ServerList::get()->removeServer(szLanCurServer);
-						// Re-Fill the server list
-						ServerList::get()->fillList( (CListview *)cLan.getWidget( nl_ServerList ), SLFT_Lan );						
+                        Menu_SvrList_RemoveServer(szLanCurServer);
                         break;
 
                     // Refresh the server
                     case MNU_USER+1:
                         {
-							server_t::Ptr sv = ServerList::get()->findServerStr(szLanCurServer);
+                            server_t *sv = Menu_SvrList_FindServerStr(szLanCurServer);
                             if(sv)
-                                ServerList::get()->refreshServer(sv);
+                                Menu_SvrList_RefreshServer(sv);
                         }
                         break;
 
@@ -329,20 +324,20 @@ void Menu_Net_LANFrame(int mouse)
                     // Add server to favourites
                     case MNU_USER+3:
 						{
-							server_t::Ptr sv = ServerList::get()->findServerStr(szLanCurServer);
+							server_t *sv = Menu_SvrList_FindServerStr(szLanCurServer);
 							if (sv)
-								ServerList::get()->addFavourite(sv->szName,sv->szAddress);
+								Menu_SvrList_AddFavourite(sv->szName,sv->szAddress);
 						}
                         break;
 
                     // Send a "wants to join" message
                     case MNU_USER+4:
 						{
-							server_t::Ptr sv = ServerList::get()->findServerStr(szLanCurServer);
+							server_t *sv = Menu_SvrList_FindServerStr(szLanCurServer);
 							std::string Nick;
 							cLan.SendMessage(nl_PlayerSelection, CBS_GETCURNAME, &Nick, 0);
 							if (sv)
-								ServerList::get()->wantsToJoin(Nick, sv);
+								Menu_SvrList_WantsJoin(Nick, sv);
 						}
                         break;
 
@@ -361,10 +356,10 @@ void Menu_Net_LANFrame(int mouse)
                 }
 
                 // Re-Fill the server list
-                ServerList::get()->fillList( (CListview *)cLan.getWidget( nl_ServerList ), SLFT_Lan );
+                Menu_SvrList_FillList( (CListview *)cLan.getWidget( nl_ServerList ) );
 
                 // Remove the menu widget
-                cLan.SendMessage(nl_PopupMenu, MNM_REDRAWBUFFER, (uintptr_t)0, 0);
+                cLan.SendMessage(nl_PopupMenu, MNM_REDRAWBUFFER, (DWORD)0, 0);
                 cLan.removeWidget(nl_PopupMenu);
                 break;
 		}
@@ -373,13 +368,13 @@ void Menu_Net_LANFrame(int mouse)
 
 	// F5 updates the list
 	if (WasKeyboardEventHappening(SDLK_F5))  {
-		ServerList::get()->clear(SLFT_Lan);
-		ServerList::get()->pingLAN();
+		Menu_SvrList_Clear();
+		Menu_SvrList_PingLAN();
 	}
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 
@@ -389,17 +384,25 @@ void Menu_Net_LANJoinServer(const std::string& sAddress, const std::string& sNam
 {
 	// Fill in the game structure
 	CCombobox* combo = (CCombobox *) cLan.getWidget(nl_PlayerSelection);
-	const GuiListItem::Pt item = combo->getSelectedItem();
-	if(!item.get()) {
+	const cb_item_t* item = combo->getSelectedItem();
+	if(!item) {
 		errors << "no player selected" << endl;
 		return;
 	}
 	
-	tLXOptions->sLastSelectedPlayer = item->index();
+	tLXOptions->sLastSelectedPlayer = item->sIndex;
 	
-	if(!JoinServer(sAddress, sName, item->index()))
+	if(!JoinServer(sAddress, sName, item->sIndex))
 		return;
+
+	// Shutdown
+	cLan.Shutdown();
+
+	tMenu->iReturnTo = net_lan;
+
+	Menu_Net_JoinInitialize(sAddress);
 }
+
 
 enum {
 	ld_Ok=0,
@@ -423,7 +426,7 @@ void Menu_Net_LanShowServer(const std::string& szAddress)
 
 	Menu_RedrawMouse(true);
 
-	int center = VideoPostProcessor::menuWidth/2; // menu is presented centered
+	int center = VideoPostProcessor::videoSurface()->w/2;
 	int y = VideoPostProcessor::videoSurface()->h/2 - INFO_H/2;
 
     cDetails.Initialize();
@@ -439,7 +442,7 @@ void Menu_Net_LanShowServer(const std::string& szAddress)
 	nTries = 0;
 	fStart = AbsTime();
 
-	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && game.state != Game::S_Quit) {
+    while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && tMenu->bMenuRunning) {
 		tLX->currentTime = GetTime();
 
 		Menu_RedrawMouse(true);
@@ -448,7 +451,7 @@ void Menu_Net_LanShowServer(const std::string& szAddress)
 
 		Menu_SvrList_DrawInfo(szAddress, INFO_W, INFO_H);
 
-        cDetails.Draw(VideoPostProcessor::videoSurface().get());
+        cDetails.Draw(VideoPostProcessor::videoSurface());
         gui_event_t *ev = NULL;
 
 		ev = cDetails.Process();
@@ -475,7 +478,7 @@ void Menu_Net_LanShowServer(const std::string& szAddress)
 			}
         }
 
-        DrawCursor(VideoPostProcessor::videoSurface().get());
+        DrawCursor(VideoPostProcessor::videoSurface());
 		doVideoFrameInMainThread();
 		CapFPS();
     }

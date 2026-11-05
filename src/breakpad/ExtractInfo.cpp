@@ -13,7 +13,6 @@
 
 #include "ExtractInfo.h"
 #include "Debug.h"
-#include "ThreadPool.h" // InitThreadPool, threadPool, UnInitThreadPool
 #include "Networking.h"
 #include "Options.h"
 #include "Version.h"
@@ -70,13 +69,8 @@ int DoCrashReport(int argc, char** argv) {
 	if(argc < 2) return 0;
 	if(std::string(argv[1]) != "-crashreport") return 0;
 	
-	notes << "exec:";
-	for(int i = 0; i < argc; ++i)
-		notes << " \"" << argv[i] << "\"";
-	notes << endl;
-	
 	if(argc < 5) {
-		errors << "usage: " << argv[0] << " -crashreport <dumpdir> <dumpid> <logfile> [-debug]" << endl;
+		errors << "usage: " << argv[0] << " -crashreport <dumpdir> <dumpid> <logfile>" << endl;
 		return 1;
 	}
 
@@ -97,14 +91,6 @@ int DoCrashReport(int argc, char** argv) {
 	// minidumpfile is from cmd parameter, so it is already systemnative.
 	MinidumpExtractInfo(minidumpfile, crashinfo, crashinfoerror);
 
-	if(argc >= 6 && strcmp(argv[5], "-debug") == 0) {
-		std::cout << crashinfo.str() << std::endl;
-		std::cout << "----" << std::endl;
-		std::cout << crashinfoerror.str() << std::endl;
-		std::cout << "---- EOF" << std::endl;
-		return 1;
-	}
-	
 	SmtpClient smtp;
 	smtp.host = "mail.az2000.de:25";
 	smtp.mailfrom = "olxcrash@az2000.de";
@@ -226,7 +212,7 @@ static int PrintRegister(const char *name, u_int32_t value, int sequence, std::o
 
 //=============================================================================
 static void PrintStack(const CallStack *stack, const string &cpu, std::ostream& out, std::ostream& err) {
-	int frame_count = (int)stack->frames()->size();
+	int frame_count = stack->frames()->size();
 	char buffer[1024];
 	for (int frame_index = 0; frame_index < frame_count; ++frame_index) {
 		const StackFrame *frame = stack->frames()->at(frame_index);
@@ -436,24 +422,23 @@ static void ProcessSingleReport(const std::string& minidump_file, std::ostream& 
 	}
 	
 	// Print all of the threads in the dump.
-	int thread_count = (int)process_state.threads()->size();
+	int thread_count = process_state.threads()->size();
 	//const std::vector<google_breakpad::MinidumpMemoryRegion*>
     //*thread_memory_regions = process_state.thread_memory_regions();
 	
 	for (int thread_index = 0; thread_index < thread_count; ++thread_index) {
-		if (thread_index == requesting_thread)
+		if (thread_index != requesting_thread) {
 			// Don't print the crash thread again, it was already printed.
-			continue;
-
-		out << std::endl;
-		out << "Thread " << thread_index << std::endl;
-		PrintThread(process_state.threads()->at(thread_index), cpu, out, err);
-		
-		// Optional
-		//google_breakpad::MinidumpMemoryRegion
-		//*thread_stack_bytes = thread_memory_regions->at(thread_index);
-		
-		//thread_stack_bytes->Print();
+			out << std::endl;
+			out << "Thread " << thread_index << std::endl;
+			PrintThread(process_state.threads()->at(thread_index), cpu, out, err);
+			
+			// Optional
+			//google_breakpad::MinidumpMemoryRegion
+			//*thread_stack_bytes = thread_memory_regions->at(thread_index);
+			
+			//thread_stack_bytes->Print();
+		}
 	}
 		
 	// Print information about modules

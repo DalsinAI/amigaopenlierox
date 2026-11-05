@@ -9,8 +9,7 @@
 
 #include "CGameMode.h"
 #include "CServer.h"
-#include "game/CWorm.h"
-#include "game/Game.h"
+#include "CWorm.h"
 
 class CDemolitionsMatch : public CGameMode {
 
@@ -31,11 +30,17 @@ public:
 		// And the worm with the highest dirt count wins
 		
 		// Add up all the worm's dirt counts
-		int nDirtCount = 0;		
-		for_each_iterator(CWorm*, w, game.worms())
-			nDirtCount += w->get()->getDirtCount();
+		int nDirtCount = 0;
 		
-		if( nDirtCount > (float)game.gameMap()->GetDirtCount()*0.8f ) {
+		CWorm *w = cServer->getWorms();
+		for( short i=0; i<MAX_WORMS; i++,w++ ) {
+			if( !w->isUsed() )
+				continue;
+			
+			nDirtCount += w->getDirtCount();
+		}
+		
+		if( nDirtCount > (float)cServer->getMap()->GetDirtCount()*0.8f ) {
 			// TODO: make configureable
 			cServer->SendGlobalText("Demolition limit hit", TXT_NORMAL);
 			// Make the server trigger a game over

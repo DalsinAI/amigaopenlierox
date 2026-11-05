@@ -13,11 +13,8 @@
 #include "Physics.h"
 
 PhysicsEngine* CreatePhysicsEngineLX56();
-int getCurrentLX56PhysicsFPS();
 
-// Default LX56PhysicsFPS is 84.
-#define	LX56PhysicsFixedFPS	getCurrentLX56PhysicsFPS()
-// With default FPS, this is about 11.9ms.
+#define	LX56PhysicsFixedFPS	84
 #define	LX56PhysicsDT	TimeDiff(1000 / LX56PhysicsFixedFPS)
 
 #endif

@@ -18,7 +18,6 @@
 
 
 #include <cassert>
-#include <atomic>
 #ifdef WIN32
 	#include <windows.h>
 	#include <wininet.h>
@@ -30,12 +29,11 @@
 
 #include "LieroX.h"
 #include "Debug.h"
-#include "FindFile.h"
 #include "Options.h"
 #include "HTTP.h"
 #include "Timer.h"
 #include "StringUtils.h"
-#include "olx-types.h"
+#include "types.h"
 #include "Version.h"
 #include "MathLib.h"
 #include "InputEvents.h"
@@ -44,17 +42,6 @@
 // Some basic defines
 #define		HTTP_TIMEOUT	10	// Filebase became laggy lately, so increased that from 5 seconds
 //#define		BUFFER_LEN		8192
-
-// Abort a transfer stalled below this speed (bytes/sec) for this long (sec).
-#define		HTTP_LOW_SPEED_LIMIT	30
-#define		HTTP_LOW_SPEED_TIME		30
-
-// Set on shutdown to abort running transfers.
-static std::atomic<bool> httpTransfersAborting(false);
-
-void SetHttpTransfersAborting(bool aborting) {
-	httpTransfersAborting = aborting;
-}
 
 
 //
@@ -165,38 +152,34 @@ void AutoSetupHTTPProxy()
 
 
 
-struct CurlThread : Action {
-
+struct CurlThread : Action {	
+	
 	CurlThread( CHttp * parent, CURL * _curl ) :
 		parent( parent ),
 		curl( _curl ),
-		curlForm( NULL ),
-		aborted( false )
+		curlForm( NULL )
 	{
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlReceiveCallback);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)this);
-		// Lets us abort a stalled transfer; curl calls it ~1x/sec.
-		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, (long) 0);
-		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CurlProgressCallback);
-		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void *)this);
+		//curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0);
+		//curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, CurlProgressCallback);
+		//curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, (void *)this);	
 	}
-
-	Result handle();
+	
+	int handle();
 
 	CHttp *			parent;
 	CURL *			curl;
 	curl_httppost *	curlForm;
 	Mutex			Lock;
-	std::atomic<bool> aborted; // set by CancelProcessing
-
+	
 	static size_t CurlReceiveCallback(void *ptr, size_t size, size_t nmemb, void *data);
-	static int CurlProgressCallback(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow);
+	//static int CurlProgressCallback(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow);
 };
 
 CHttp::CHttp()
 {
 	ProcessingResult = HTTP_PROC_FINISHED;
-	HTTPStatusCode = 0;
 	DownloadStart = DownloadEnd = 0;
 	curlThread = NULL;
 }
@@ -222,13 +205,17 @@ size_t CurlThread::CurlReceiveCallback(void *ptr, size_t size, size_t nmemb, voi
 	return realsize;
 }
 
-int	CurlThread::CurlProgressCallback(void *clientp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+/*
+int	CurlThread::CurlProgressCallback(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow) {
 	CurlThread* self = (CurlThread *)clientp;
-	// Non-zero aborts the transfer (CURLE_ABORTED_BY_CALLBACK).
-	if( self->aborted || httpTransfersAborting )
-		return 1;
-	return 0;
+	
+	Mutex::ScopedLock l(self->Lock);
+	if( !self->parent ) // Aborting
+		return 0;
+	
+	return 1;
 }
+*/
 
 CURL * CHttp::InitializeTransfer(const std::string& url, const std::string& proxy)
 {
@@ -238,7 +225,6 @@ CURL * CHttp::InitializeTransfer(const std::string& url, const std::string& prox
 	Proxy = proxy;
 	Useragent = GetFullGameName();
 	Data = "";
-	HTTPStatusCode = 0;
 	DownloadStart = DownloadEnd = tLX->currentTime;
 
 	CURL * curl = curl_easy_init();
@@ -247,26 +233,9 @@ CURL * CHttp::InitializeTransfer(const std::string& url, const std::string& prox
 	curl_easy_setopt( curl, CURLOPT_USERAGENT, Useragent.c_str() );
 	curl_easy_setopt( curl, CURLOPT_NOSIGNAL, (long) 1 );
 	curl_easy_setopt( curl, CURLOPT_CONNECTTIMEOUT, (long) HTTP_TIMEOUT );
-	curl_easy_setopt( curl, CURLOPT_LOW_SPEED_LIMIT, (long) HTTP_LOW_SPEED_LIMIT );
-	curl_easy_setopt( curl, CURLOPT_LOW_SPEED_TIME, (long) HTTP_LOW_SPEED_TIME );
 	curl_easy_setopt( curl, CURLOPT_FOLLOWLOCATION, (long) 1 ); // Allow server to use 3XX Redirect codes
 	curl_easy_setopt( curl, CURLOPT_MAXREDIRS, (long) 25 ); // Some reasonable limit
-#ifdef CURLSSLOPT_NATIVE_CA
-	// Verify HTTPS certificates against the OS certificate store. Without this,
-	// the OpenSSL build of libcurl looks for a CA bundle file that is not
-	// shipped with the packaged Windows build, so every https:// request fails.
-	curl_easy_setopt( curl, CURLOPT_SSL_OPTIONS, (long) CURLSSLOPT_NATIVE_CA );
-#endif
-	// If a CA bundle is shipped with the game (e.g. the Android APK ships
-	// Mozilla's cacert.pem for libcurl's mbedTLS backend, which has no
-	// system cert store to fall back to), point curl at it. Returns "" on
-	// platforms where no bundle is shipped, in which case we leave the
-	// default verification path in place.
-	{
-		static const std::string caBundle = GetFullFileName("cacert.pem");
-		if(!caBundle.empty())
-			curl_easy_setopt( curl, CURLOPT_CAINFO, caBundle.c_str() );
-	}
+	curl_easy_setopt( curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4 ); // Force IPv4
 	//curl_easy_setopt( curl, CURLOPT_TIMEOUT, (long) HTTP_TIMEOUT ); // Do not set this if you don't want abort in the middle of large transfer
 	return curl;
 }
@@ -275,7 +244,7 @@ void CHttp::RequestData(const std::string& url, const std::string& proxy)
 {
 	CURL * curl = InitializeTransfer(url, proxy);
 	curlThread = new CurlThread(this, curl);
-	threadPool->start(curlThread, "CHttp: " + Url);
+	threadPool->start(curlThread, "CHttp: " + Url, true);
 }
 
 void CHttp::SendData(const std::list<HTTPPostField>& data, const std::string url, const std::string& proxy)
@@ -308,10 +277,10 @@ void CHttp::SendData(const std::list<HTTPPostField>& data, const std::string url
 	curl_easy_setopt(curl, CURLOPT_HTTPPOST, curlForm);
 	curlThread = new CurlThread(this, curl);
 	curlThread->curlForm = curlForm;
-	threadPool->start(curlThread, "CHttp: " + Url);
+	threadPool->start(curlThread, "CHttp: " + Url, true);
 }
 
-Result CurlThread::handle()
+int CurlThread::handle()
 {
 	CURLcode res = curl_easy_perform(curl); // Blocks until processing finished
 
@@ -331,10 +300,7 @@ Result CurlThread::handle()
 			parent->Error.sErrorMsg = curl_easy_strerror(res);
 		}
 		parent->DownloadEnd = tLX->currentTime;
-
-		// Remember the HTTP status code so callers can reject error responses.
-		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &parent->HTTPStatusCode);
-
+		
 		if( curlForm != NULL )
 			curl_formfree(curlForm);
 		curlForm = NULL;
@@ -345,7 +311,7 @@ Result CurlThread::handle()
 	
 	curl_easy_cleanup(curl);
 
-	return true;
+	return 0;
 }
 
 void CHttp::CancelProcessing() // Non-blocking
@@ -355,7 +321,6 @@ void CHttp::CancelProcessing() // Non-blocking
 	if(curlThread != NULL)
 	{
 		Mutex::ScopedLock l(curlThread->Lock);
-		curlThread->aborted = true; // abort a running transfer, not just detach
 		curlThread->parent = NULL;
 		curlThread = NULL;
 	}

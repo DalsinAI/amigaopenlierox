@@ -11,7 +11,6 @@
 #include "SMTP.h"
 #include "Debug.h"
 #include "Timer.h"
-#include "StringUtils.h"
 
 struct SmtpClient::Handler {
 	NetworkSocket sock;
@@ -69,7 +68,7 @@ bool SmtpClient::connect() {
 	if(intern) reset();
 	intern = new Handler();
 	
-	NetworkAddr addr, ignored;
+	NetworkAddr addr, addr6;
 	AbsTime dnsRequestTime = GetTime();
 	if(!GetNetAddrFromNameAsync(host)) {
 		errors << "SMTP: Error while starting name resolution for " << host << endl;
@@ -82,7 +81,7 @@ bool SmtpClient::connect() {
 			return false;
 		}
 		SDL_Delay(10);
-		GetFromDnsCache(host, addr, ignored);
+		GetFromDnsCache(host, addr, addr6);
 	}
 	
 	std::string host_addr;

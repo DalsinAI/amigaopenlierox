@@ -23,15 +23,13 @@
 #include <SDL.h> // for SInt16
 #include <string>
 #include <set>
-#include "olx-types.h"
+#include "types.h"
 #include "Networking.h"
 #include "SmartPointer.h"
-#include "CodeAttributes.h"
 
-class ScriptVar_t;
+struct ScriptVar_t;
 struct Logger;
 struct PrintOutFct;
-struct CustomVar;
 
 class CBytestream {
 public:
@@ -92,7 +90,7 @@ public:
 	bool		write2Int4(short x, short y);
 	bool		writeBit(bool bit);
 	bool		writeData(const std::string& value);	// Do not append '\0' at the end, writes just the raw data
-	bool		writeVar(const ScriptVar_t& var, const CustomVar* diffToOld = NULL);
+	bool		writeVar(const ScriptVar_t& var);
 	
 	// Reads
 	uchar		readByte();
@@ -113,8 +111,6 @@ public:
 	uchar		peekByte() const;
 	std::string	peekData(size_t len) const;
 
-	const std::string& data() const { return Data; }
-	
 	// Skips
 	// Folowing functions return true if we're at the end of stream after the skip
 	bool		Skip(size_t num);
@@ -124,8 +120,7 @@ public:
 	bool		SkipString();
 	void		SkipAll()		{ pos = Data.size(); }
 	bool	SkipRestBits() { if(isPosAtEnd()) return true; ResetBitPos(); pos++; return isPosAtEnd(); }
-	bool SkipVar();
-
+	
 	// Networking stuff
 	bool	Send(NetworkSocket* sock);
 	size_t	Read(NetworkSocket* sock);
@@ -214,11 +209,11 @@ class CBytestreamBitIterator
 
 
 template< bool (*fct1) (CBytestream*), bool (*fct2) (CBytestream*) >
-INLINE bool SkipMult(CBytestream* bs) { return (*fct1)(bs) && (*fct2)(bs); }
+bool SkipMult(CBytestream* bs) { return (*fct1)(bs) && (*fct2)(bs); }
 
 template< size_t NUM >
-INLINE bool Skip(CBytestream* bs) { return bs->Skip(NUM); }
+bool Skip(CBytestream* bs) { return bs->Skip(NUM); }
 
-INLINE bool SkipString(CBytestream* bs) { return bs->SkipString(); }
+inline bool SkipString(CBytestream* bs) { return bs->SkipString(); }
 
 #endif  //  __CBITSTREAM_H__

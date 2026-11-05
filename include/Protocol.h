@@ -52,11 +52,8 @@ enum C2S_MESSAGES {
 	C2S_CHATCMDCOMPLREQ	= 10, // since Beta7
 	C2S_AFK				= 11, // since Beta7, if client away from keyboard
 	C2S_REPORTDAMAGE	= 12, // since Beta9
-	//C2S_NEWNET_KEYS	= 13, // since Beta9 - NewNet was never finished and later was removed
-	//C2S_NEWNET_CHECKSUM = 14, // since Beta9 - NewNet was never finished and later was removed
-	C2S_GUSANOS			= 15, // >=0.59 beta1
-	C2S_GUSANOSUPDATE	= 16, // >=0.59 beta5
-	C2S_GAMEATTRUPDATE	= 17, // >=0.59 beta10
+	//C2S_NEWNET_KEYS		= 13, // since Beta9
+	//C2S_NEWNET_CHECKSUM = 14, // since Beta9
 };
 
 // Server->Client
@@ -90,15 +87,11 @@ enum S2C_MESSAGES {
 	S2C_CHATCMDCOMPLLST	= 26, // since Beta7
 	S2C_REPORTDAMAGE	= 27, // since Beta9
 	S2C_HIDEWORM		= 28, // since Beta9
-	//S2C_NEWNET_KEYS		= 29, // since Beta9 - NewNet was never finished and later was removed
+	//S2C_NEWNET_KEYS		= 29, // since Beta9
 	S2C_TEAMSCOREUPDATE = 30, // >=beta9
 	S2C_FLAGINFO		= 31, // >=beta9
 	S2C_SETWORMPROPS	= 32, // >=beta9
 	S2C_SELECTWEAPONS	= 33, // >=beta9
-	S2C_GUSANOS			= 34, // >=0.59 beta1
-	S2C_PLAYSOUND		= 35, // >=0.59 beta1
-	S2C_GUSANOSUPDATE	= 36, // >=0.59 beta5
-	S2C_GAMEATTRUPDATE	= 37, // >=0.59 beta10
 };
 
 

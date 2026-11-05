@@ -12,28 +12,19 @@
 
 #include <string>
 #include "StringUtils.h" // for itoa
-#include "CodeAttributes.h"
 
 struct Version;
 extern const char* const fullGameName;
-INLINE const char* GetFullGameName() { return fullGameName; }
+inline const char* GetFullGameName() { return fullGameName; }
 const char* GetGameName();
 const Version& GetGameVersion();
-
-// The full version string as produced by get_version_full.sh,
-// including the "+git.HASH" suffix (and a ".dirty" marker for a modified tree),
-// e.g. "20260616.4+git.b547037".
-// Shown verbatim wherever the version is displayed (window title, menu, crash reports):
-// it is the exact build string, not reconstructed through Version,
-// so nothing is lost.
-const std::string& GetGameVersionStringFull();
 
 
 struct Version {
 	Version() { reset(); }
 	Version(const std::string& versionStr) { setByString(versionStr); }
 	
-	void reset() { gamename = "LieroX"; num = 0; subnum = 56; subsubnum = 0; revnum = 0; releasetype = RT_NORMAL; buildmetadata = ""; }
+	void reset() { gamename = "LieroX"; num = 0; subnum = 56; subsubnum = 0; revnum = 0; releasetype = RT_NORMAL; }
 	void setByString(const std::string& versionStr);
 	std::string asString() const;
 	std::string asHumanString() const;
@@ -50,20 +41,17 @@ struct Version {
 		RT_UNKNOWN, RT_ALPHA, RT_BETA, RT_RC, RT_NORMAL
 	} releasetype;
 	std::string gamename; // OpenLieroX
-	// SemVer build metadata after '+', e.g. "git.db202c4";
-	// provenance only, ignored when comparing.
-	std::string buildmetadata;
 
 };
 
 
-// The following functions are declared INLINE because they are used very often.
+// The following functions are declared inline because they are used very often.
 
-// For comparision, we ignore the following: revnum, gamename, buildmetadata
+// For comparision, we ignore the following: revnum, gamename
 // That means, a special revision of a baseversion should not change the behaviour (and it's only for debugging).
 // And another game like Hirudo should keep the same version-counting. We can start Hirudo at version 1.0 or 0.99.
 
-INLINE bool operator<(const Version& ver1, const Version& ver2) {
+inline bool operator<(const Version& ver1, const Version& ver2) {
 	if(ver1.num != ver2.num) return ver1.num < ver2.num;
 	if(ver1.subnum != ver2.subnum) return ver1.subnum < ver2.subnum;
 	if(ver1.releasetype != ver2.releasetype) return ver1.releasetype < ver2.releasetype;
@@ -71,7 +59,7 @@ INLINE bool operator<(const Version& ver1, const Version& ver2) {
 	return false;
 }
 
-INLINE bool operator==(const Version& ver1, const Version& ver2) {
+inline bool operator==(const Version& ver1, const Version& ver2) {
 	return
 	ver1.num == ver2.num &&
 	ver1.subnum == ver2.subnum &&
@@ -79,12 +67,22 @@ INLINE bool operator==(const Version& ver1, const Version& ver2) {
 	ver1.subsubnum == ver2.subsubnum;
 }
 
-INLINE bool operator>(const Version& ver1, const Version& ver2) { return ver2 < ver1; }
-INLINE bool operator<=(const Version& ver1, const Version& ver2) { return ver1 < ver2 || ver1 == ver2; }
-INLINE bool operator>=(const Version& ver1, const Version& ver2) { return ver2 < ver1 || ver1 == ver2; }
-INLINE bool operator!=(const Version& ver1, const Version& ver2) { return ! (ver1 == ver2); }
+inline bool operator>(const Version& ver1, const Version& ver2) { return ver2 < ver1; }
+inline bool operator<=(const Version& ver1, const Version& ver2) { return ver1 < ver2 || ver1 == ver2; }
+inline bool operator>=(const Version& ver1, const Version& ver2) { return ver2 < ver1 || ver1 == ver2; }
+inline bool operator!=(const Version& ver1, const Version& ver2) { return ! (ver1 == ver2); }
 
-INLINE Version OLXBetaVersion(int num, int subnum, int betaversion) {
+inline Version OLXBetaVersion(int betaversion) {
+	Version v;
+	v.gamename = fullGameName;
+	v.num = 0;
+	v.subnum = 57;
+	v.subsubnum = betaversion;
+	v.releasetype = Version::RT_BETA;
+	return v;
+}
+
+inline Version OLXBetaVersion(int num, int subnum, int betaversion) {
 	Version v;
 	v.gamename = fullGameName;
 	v.num = num;
@@ -94,17 +92,7 @@ INLINE Version OLXBetaVersion(int num, int subnum, int betaversion) {
 	return v;
 }
 
-INLINE Version OLXVersionBranchStart(int num, int subnum) {
-	Version v;
-	v.gamename = fullGameName;
-	v.num = num;
-	v.subnum = subnum;
-	v.subsubnum = 0;
-	v.releasetype = Version::RT_ALPHA; // lowest possible value
-	return v;	
-}
-
-INLINE Version OLXRcVersion(int num, int subnum, int rcversion) {
+inline Version OLXRcVersion(int num, int subnum, int rcversion) {
 	Version v;
 	v.gamename = fullGameName;
 	v.num = num;
@@ -112,6 +100,16 @@ INLINE Version OLXRcVersion(int num, int subnum, int rcversion) {
 	v.subsubnum = rcversion;
 	v.releasetype = Version::RT_RC;
 	return v;
+}
+
+inline Version OLXVersion(int num, int subnum, int subsubnum = 0) {
+	Version v;
+	v.gamename = fullGameName;
+	v.num = num;
+	v.subnum = subnum;
+	v.subsubnum = subsubnum;
+	v.releasetype = Version::RT_NORMAL;
+	return v;	
 }
 
 #endif

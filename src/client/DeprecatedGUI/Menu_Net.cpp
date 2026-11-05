@@ -16,7 +16,7 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "Error.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
@@ -42,6 +42,7 @@ enum {
 	mn_News,
 	mn_Chat,
 };
+
 
 // TODO: remove globals
 int		iNetMode = net_main;
@@ -97,15 +98,22 @@ bool Menu_NetInitialize(bool withSubMenu)
 	return true;
 }
 
+// Called from submenus
+void Menu_Net_AddTabBarButtons(CGuiLayout * layout)
+{
+	layout->Add( new CButton(BUT_INTERNET, tMenu->bmpButtons), mn_Internet, 75, 110, 95, 15 );
+	layout->Add( new CButton(BUT_LAN, tMenu->bmpButtons), mn_LAN, 190, 110, 40, 15 );
+	layout->Add( new CButton(BUT_HOST, tMenu->bmpButtons), mn_Host, 255, 110, 50, 15 );
+	layout->Add( new CButton(BUT_FAVOURITES, tMenu->bmpButtons), mn_Favourites, 330, 110, 105, 15 );
+	layout->Add( new CButton(BUT_NEWS, tMenu->bmpButtons), mn_News, 460, 110, 50, 15 );
+	layout->Add( new CButton(BUT_CHAT, tMenu->bmpButtons), mn_Chat, 535, 110, 50, 15 );
+}
 
 ///////////////////
 // Go to the host lobby
 void Menu_Net_GotoHostLobby()
 {
-	if(game.state != Game::S_Lobby) {
-		errors << "Menu_Net_HostGotoLobby called but we are not in lobby. game state = " << game.state << endl;
-		return;
-	}
+	notes << "Menu_Net_GotoHostLobby" << endl;
 
 	tMenu->iMenuType = MNU_NETWORK;
 	iNetMode = net_host;
@@ -119,100 +127,10 @@ void Menu_Net_GotoHostLobby()
 		Menu_RedrawMouse(true);
 	}
 
-	bSkipStart = true;
-
 	Menu_Net_HostGotoLobby();
-}
 
-
-///////////////////
-// Add the buttons for switching between the net menu tabs, called by each tab
-void Menu_Net_AddTabBarButtons(CGuiLayout * layout)
-{
-	struct Tab { int id; int image; int x; int w; int mode; };
-	static const Tab tabs[] = {
-		{ mn_Internet,   BUT_INTERNET,   75,  95, net_internet },
-		{ mn_LAN,        BUT_LAN,        190, 40, net_lan },
-		{ mn_Host,       BUT_HOST,       255, 50, net_host },
-		{ mn_Favourites, BUT_FAVOURITES, 330, 105, net_favourites },
-		{ mn_News,       BUT_NEWS,       460, 50, net_news },
-		{ mn_Chat,       BUT_CHAT,       535, 50, net_chat },
-	};
-
-	for (const Tab& tab : tabs) {
-		CButton * button = new CButton(tab.image, tMenu->bmpButtons);
-		// The current tab is drawn highlighted
-		button->setSelected(tab.mode == iNetMode);
-		layout->Add( button, tab.id, tab.x, 110, tab.w, 15 );
-	}
-}
-
-///////////////////
-// Close the current tab and open another one
-static void Menu_Net_GotoTab(int mode)
-{
-	CChatWidget::GlobalSetEnabled(false);
-
-	// Call a shutdown on all the highest net menu's
-	Menu_Net_MainShutdown();
-	Menu_Net_LANShutdown();
-	Menu_Net_NETShutdown();
-	Menu_Net_HostShutdown();
-	Menu_Net_FavouritesShutdown();
-	Menu_Net_NewsShutdown();
-	Menu_Net_ChatShutdown();
-
-	iNetMode = mode;
-
-	// Redraw the window section
-	DrawImageAdv(VideoPostProcessor::videoSurface().get(), tMenu->bmpBuffer, 20,140,  20,140,  620,340);
-
-	// Initialize the appropriate menu
-	switch(iNetMode) {
-		case net_lan:
-			Menu_Net_LANInitialize();
-			break;
-		case net_internet:
-			Menu_Net_NETInitialize();
-			break;
-		case net_host:
-			Menu_Net_HostInitialize();
-			break;
-		case net_favourites:
-			Menu_Net_FavouritesInitialize();
-			break;
-		case net_news:
-			Menu_Net_NewsInitialize();
-			break;
-		case net_chat:
-			Menu_Net_ChatInitialize();
-			break;
-	}
-}
-
-///////////////////
-// Switch the tab if one of the tab buttons was activated, called by each tab.
-// Returns true if the tab was switched, the caller must not touch its layout anymore.
-bool Menu_Net_ProcessTabBarButtons(gui_event_t *ev)
-{
-	if (!ev || ev->iEventMsg != BTN_CLICKED)
-		return false;
-
-	int mode;
-	switch (ev->iControlID) {
-		case mn_Internet:   mode = net_internet; break;
-		case mn_LAN:        mode = net_lan; break;
-		case mn_Host:       mode = net_host; break;
-		case mn_Favourites: mode = net_favourites; break;
-		case mn_News:       mode = net_news; break;
-		case mn_Chat:       mode = net_chat; break;
-		default:
-			return false;
-	}
-
-	PlaySoundSample(sfxGeneral.smpClick);
-	Menu_Net_GotoTab(mode);
-	return true;
+	SetQuitEngineFlag("Menu_Net_GotoHostLobby");
+	iSkipStart = true;
 }
 
 
@@ -226,18 +144,8 @@ void Menu_NetFrame()
 	//DrawImageAdv(VideoPostProcessor::videoSurface(), tMenu->bmpBuffer, 20,140,  20,140,  620,340);
 	//DrawImageAdv(VideoPostProcessor::videoSurface(), tMenu->bmpBuffer, 120,110, 120,110, 420,30);
 
-	// Continue in the chat tab if a chat popup was left open from a game
-	if (CChatWidget::GlobalEnabled() && iNetMode != net_chat &&
-		(iNetMode != net_host || iHostType == 0) && iNetMode != net_join)
-		Menu_Net_GotoTab(net_chat);
-
 	// Run the frame of the current menu screen
 	switch(iNetMode) {
-
-		// Main
-		case net_main:
-			Menu_Net_MainFrame(mouse);
-			break;
 
 		// Internet
 		case net_internet:
@@ -274,6 +182,78 @@ void Menu_NetFrame()
 			Menu_Net_ChatFrame(mouse);
 			break;
 	}
+}
+
+static void Menu_Net_MenuReset()
+{
+	// Call a shutdown on all the highest net menu's
+	Menu_Net_MainShutdown();
+	Menu_Net_LANShutdown();
+	Menu_Net_NETShutdown();
+	Menu_Net_HostShutdown();
+	Menu_Net_FavouritesShutdown();
+	Menu_Net_NewsShutdown();
+	Menu_Net_ChatShutdown();
+	// Redraw the window section
+	DrawImageAdv(VideoPostProcessor::videoSurface(), tMenu->bmpBuffer, 20,140,  20,140,  620,340);
+	CChatWidget::GlobalSetEnabled(false);
+}
+
+// Called from submenus
+bool Menu_Net_ProcessTabBarButtons(gui_event_t *ev)
+{
+	if(!ev || ev->iEventMsg != BTN_CLICKED)
+		return false;
+
+	bool changed = true;
+
+	switch(ev->iControlID) {
+
+		case mn_Internet:
+			iNetMode = net_internet;
+			Menu_Net_MenuReset();
+			Menu_Net_NETInitialize();
+			break;
+
+		case mn_LAN:
+			iNetMode = net_lan;
+			Menu_Net_MenuReset();
+			Menu_Net_LANInitialize();
+			break;
+
+		case mn_Host:
+			iNetMode = net_host;
+			Menu_Net_MenuReset();
+			Menu_Net_HostInitialize();
+			break;
+
+		case mn_Favourites:
+			iNetMode = net_favourites;
+			Menu_Net_MenuReset();
+			Menu_Net_FavouritesInitialize();
+			break;
+
+		case mn_News:
+			iNetMode = net_news;
+			Menu_Net_MenuReset();
+			Menu_Net_NewsInitialize();
+			break;
+
+		case mn_Chat:
+			iNetMode = net_chat;
+			Menu_Net_MenuReset();
+			Menu_Net_ChatInitialize();
+			break;
+
+		default:
+			changed = false;
+			break;
+	}
+
+	if (changed)
+		PlaySoundSample(sfxGeneral.smpClick);
+
+	return changed;
 }
 
 ////////////
@@ -327,31 +307,36 @@ void Menu_NetShutdown()
 	Menu_DisableNetEvents();
 }
 
-void Menu_Net_ServerList_Refresher() {
-	if(bDedicated) return; // not needed to do that
-
-	struct Refresher : Action {
-		Result handle() {
-			switch(iNetMode) {
-				case net_internet:
-					Menu_Net_NET_ServerList_Refresher();
-					break;
-				case net_lan:
-					Menu_Net_LAN_ServerList_Refresher();
-					break;
-				case net_favourites:
-					Menu_Net_Favourites_ServerList_Refresher();
-					break;
-				default:
-					// ignore
-					break;
-			}
-			return true;
-		}
-	};
-	mainQueue->push(new Refresher());
-}
-	
 }; // namespace DeprecatedGUI
 
+
+///////////////////
+// Go to the join lobby
+void GotoJoinLobby()
+{
+    notes << "GotoJoinLobby()" << endl;
+	
+	using namespace DeprecatedGUI;
+	
+	tMenu->iMenuType = MNU_NETWORK;
+	iNetMode = net_join;
+	
+	if(!bDedicated) {
+		
+		// Create the buffer
+		DrawImage(tMenu->bmpBuffer.get(),tMenu->bmpMainBack_common,0,0);
+		if (tMenu->tFrontendInfo.bPageBoxes)
+			Menu_DrawBox(tMenu->bmpBuffer.get(), 15,130, 625, 465);
+		Menu_DrawSubTitle(tMenu->bmpBuffer.get(),SUB_NETWORK);
+		Menu_RedrawMouse(true);
+		
+		Menu_Net_JoinGotoLobby();
+	} else {
+		if( DedicatedControl::Get() )
+			DedicatedControl::Get()->BackToClientLobby_Signal();
+	}
+	
+	SetQuitEngineFlag("GotoJoinLobby");
+	iSkipStart = true;
+}
 

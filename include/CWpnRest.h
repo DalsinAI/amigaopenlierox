@@ -17,17 +17,12 @@
 #ifndef __CWPNREST_H__
 #define __CWPNREST_H__
 
-#include <vector>
-#include <list>
-#include "Iter.h"
-#include "StringUtils.h" // stringcaseless
-
 class CGameScript;
 class CBytestream;
 
 
 // Weapon states
-enum WpnRestrictionState {
+enum {
     wpr_enabled = 0,
     wpr_bonus = 1,
     wpr_banned = 2
@@ -35,42 +30,29 @@ enum WpnRestrictionState {
 
 
 // Weapon Restriction structure
-class wpnrest_t { 
-public:
-
-	wpnrest_t( const std::string & _name = "", WpnRestrictionState _state = wpr_enabled ):
-		szName(_name), state(_state) { }
+class wpnrest_t { public:
 
 	std::string    szName;
-	union {
-		int nState;
-		WpnRestrictionState state;
-	};
+    int     nState;
 
-	bool operator < ( const wpnrest_t & rest ) const;
+    wpnrest_t   *psNext;
+    wpnrest_t   *psLink;        // For sorted array
 
 };
 
 
 // Weapon Restrictions class
 class CWpnRest {
-public:
-	struct WeaponName {
-		std::string name;
-		WeaponName(const std::string& n) : name(n) {}
-		operator std::string() const { return name; }
-		const char* c_str() const { return name.c_str(); }
-		bool operator<(const WeaponName& o) const { return stringcasecmp(name,o.name) < 0; }
-		bool operator==(const WeaponName& o) const { return stringcasecmp(name,o.name) == 0; }
-		bool operator!=(const WeaponName& o) const { return stringcasecmp(name,o.name) != 0; }
-	};
-
-	typedef std::map<WeaponName, WpnRestrictionState> WeaponList;
-
 private:
     // Attributes
-	WeaponList m_psWeaponList;
+
+    wpnrest_t   *m_psWeaponList;
+    wpnrest_t   *m_psSortedList;
+    int         m_nCount;
 	int			iCycleState;
+
+
+
 
 public:
     // Methods
@@ -78,34 +60,35 @@ public:
     // Constructor
     CWpnRest();
 
-    void        loadList(const std::string& szFilename, const std::string& moddir);
+    void        loadList(const std::string& szFilename);
     void        saveList(const std::string& szFilename);
     void        Shutdown();
 
-    void        updateList(const std::vector<std::string> & weaponList);
-	void        resetToEnabled();
-    void        resetVisible(const std::vector<std::string> & weaponList);
-    void        randomizeVisible(const std::vector<std::string> & weaponList);
-	void		cycleVisible(const std::vector<std::string> & weaponList);
+    void        updateList(CGameScript *pcGameS);
+    void        reset();
+    void        resetVisible(CGameScript *pcGameS);
+    void        randomizeVisible(CGameScript *pcGameS);
+	void		cycleVisible(CGameScript *pcGameS);
 
-    void        sendList(CBytestream *psByteS, const std::vector<std::string> & weaponList);
+    void        sendList(CBytestream *psByteS, CGameScript *pcGameS);
     void        readList(CBytestream *psByteS);
 
     bool        isEnabled(const std::string& szName);
 	bool        isBonus(const std::string& szName);
-	std::string findEnabledWeapon(const std::vector<std::string> & weaponList);
+	std::string findEnabledWeapon(CGameScript *pcGameS);
 
     int         getWeaponState(const std::string& szName);
 
-	Iterator<wpnrest_t>::Ref getList();
-	WpnRestrictionState   *findWeapon(const std::string& szName);
-	void		setWeaponState(const std::string& szName, WpnRestrictionState nState);
-    int         getNumWeapons() const;
-    static bool weaponExists(const std::string & weapon, const std::vector<std::string> & weaponList);
+    void        sortList();
+
+    wpnrest_t   *getList();
+    int         getNumWeapons();
+
 
 private:
     // Internal methods
 
+    wpnrest_t   *findWeapon(const std::string& szName);
     void        addWeapon(const std::string& szName, int nState);
 };
 

@@ -1,7 +1,6 @@
 // That's the same as svr_udp.php but needs no MySQL or PHP :)
 
 #include "svr_udp.h"
-#include <ctime>
 
 static bool quit = false;	// Signal here on Ctrl-C
 

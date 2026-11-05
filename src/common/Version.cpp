@@ -7,23 +7,16 @@
  code under LGPL
  */
 
-#ifndef ONLY_MACRODEF
 #include "Version.h"
 #include "LieroX.h"
 #include "Debug.h"
 #include "AuxLib.h"
-#include "CodeAttributes.h"
-#endif
 
 
 #include "Version_generated.h"
 
-// LX_VERSION is generated from get_version_full.sh into Version_generated.h
-// (see CMakeOlxVersion.cmake). If that generation didn't run, fail the build
-// rather than baking in a bogus version — a versionless binary should never
-// ship.
 #ifndef		LX_VERSION
-#	error	"LX_VERSION is not defined: Version_generated.h was not produced. The build must generate it from get_version_full.sh (see CMakeOlxVersion.cmake)."
+#	define		LX_VERSION	"0.58_rc5"
 #endif
 
 #define		GAMENAME			"OpenLieroX"
@@ -37,12 +30,7 @@ const char* GetGameName() {
 	return GAMENAME;
 }
 
-const std::string& GetGameVersionStringFull() {
-	static const std::string ver = LX_VERSION;
-	return ver;
-}
-
-INLINE void setByString__optionalPostCheck(const Version* version, const std::string& versionStr) {
+inline void setByString__optionalPostCheck(const Version* version, const std::string& versionStr) {
 #ifdef DEBUG
 	if(version->asString() != versionStr) {
 		notes << "WARNING: Version::setByString: '" << versionStr << "' get parsed as '" << version->asString() << "'" << endl;
@@ -51,24 +39,9 @@ INLINE void setByString__optionalPostCheck(const Version* version, const std::st
 }
 
 void Version::setByString(const std::string& versionStr) {
-	// Split off the SemVer build metadata (everything after the first '+', e.g. "git.db202c4").
-	// It is build provenance:
-	// kept for display and round-tripped by asString(),
-	// but not parsed into the num.subnum.subsubnum version,
-	// and ignored when comparing.
-	// Otherwise the git hash would leak into subsubnum
-	// and two builds of the same release would compare as different.
-	buildmetadata = "";
-	std::string cmpStr = versionStr;
-	size_t plus = cmpStr.find('+');
-	if(plus != std::string::npos) {
-		buildmetadata = cmpStr.substr(plus + 1);
-		cmpStr.erase(plus);
-	}
-
 	if(versionStr == "") { reset(); setByString__optionalPostCheck(this,versionStr); return; }
 
-	std::string tmp = cmpStr;
+	std::string tmp = versionStr;
 
 	size_t p = tmp.find_first_of(" /\\");
 	if(p == std::string::npos)
@@ -156,12 +129,6 @@ std::string Version::asString() const {
 		ret += itoa(revnum);
 	}
 
-	// SemVer build metadata, so the string round-trips through setByString.
-	if(!buildmetadata.empty()) {
-		ret += "+";
-		ret += buildmetadata;
-	}
-
 	return ret;
 }
 
@@ -182,13 +149,6 @@ std::string Version::asHumanString() const
 		case RT_UNKNOWN: ret += " "; break;
 		}
 		ret += itoa(subsubnum);
-	}
-
-	// Show the build provenance (git hash) in parentheses; helpful for dev builds.
-	if(!buildmetadata.empty()) {
-		ret += " (";
-		ret += buildmetadata;
-		ret += ")";
 	}
 
 	return ret;
@@ -216,11 +176,7 @@ const Version& GetGameVersion() {
 
 
 bool Version::isBanned() const {
-	if(*this == OLXBetaVersion(0,57,9)) return true; // too much different games with this branding around
-	if(*this == OLXBetaVersion(0,58,1)) return true; // TODO: ehm, what was it again?
-	if(releasetype == RT_ALPHA || releasetype == RT_BETA)
-		if(*this < GetGameVersion()) return true; // another earlier beta - dont trust it
-	return false;
+	return *this == OLXBetaVersion(9) || *this == OLXBetaVersion(0,58,1);
 }
 
 

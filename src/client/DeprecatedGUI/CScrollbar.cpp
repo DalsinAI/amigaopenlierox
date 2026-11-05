@@ -162,14 +162,14 @@ int CScrollbar::MouseDown(mouse_t *tMouse, int nDown)
 	for(int i=0; i<3; i++) {
 		if(tMouse->Down) {
 
-			if( nButtonsDown & SDL_BUTTON(i+1) ) {
+			if( nButtonsDown & SDL_BUTTON(i) ) {
 				if( fMouseNext[i] < tLX->currentTime ) {
 					Down = true;
 					fMouseNext[i] = tLX->currentTime + 0.05f;
 				}
 			} else {
 				Down = true;
-				nButtonsDown |= SDL_BUTTON(i+1);
+				nButtonsDown |= SDL_BUTTON(i);
 				fMouseNext[i] = tLX->currentTime + 0.25f;
 			}
 		}
@@ -272,7 +272,7 @@ void CScrollbar::UpdatePos()
 
 ///////////////////
 // Process a sent message
-uintptr_t CScrollbar::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
+DWORD CScrollbar::SendMessage(int iMsg, DWORD Param1, DWORD Param2)
 {
     switch( iMsg ) {
 

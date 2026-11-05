@@ -23,116 +23,16 @@
 #include "FindFile.h"
 #include "StringUtils.h"
 #include "FileUtils.h"
-#include "client/ClientConnectionRequestInfo.h" // WormJoinInfo
-#include "game/CWorm.h"
 
-typedef std::list<SmartPointer<profile_t> > ProfileList;
-static ProfileList tProfiles;
+profile_t	*tProfiles = NULL;
 
-
-static void	SaveProfile(FILE *fp, const SmartPointer<profile_t>& p);
-static void	LoadProfile(FILE *fp);
-
-
-static void AddDefaultHumanPlayer() {
-	std::string name = "OpenLieroXor";
-	if(tLXOptions && tLXOptions->sLastSelectedPlayer != "") {
-		SmartPointer<profile_t> p = FindProfile(tLXOptions->sLastSelectedPlayer);
-		if(!p.get())
-			name = tLXOptions->sLastSelectedPlayer;
-	}
-    // Add the default worm
-    AddProfile(name, "default.png", "", "", 100,100,255, PRF_HUMAN->toInt(),0);	
-}
-
-static void AddDefaultBotPlayers()
-{
-	// Pre-set cpu colours
-	static const Uint32 cpuColours[] = { 255,0,0,  0,255,0,  0,0,255,  255,0,255,  0,255,255,  128,128,128,
-		128,255,0,  0,128,255, 0,128,0 };
-	
-    // Pre-set cpu difficulties
-    static const int Diff[] = {AI_EASY, AI_MEDIUM, AI_MEDIUM, AI_HARD, AI_XTREME, AI_MEDIUM, AI_EASY};
-		
-	// Add 7 ai players
-	for(short i=0; i<7; i++)		
-		AddProfile("CPU "+itoa(i+1), "default.png", "", "", cpuColours[i*3], cpuColours[i*3+1], cpuColours[i*3+2], PRF_COMPUTER->toInt(), Diff[i]);
-}
-
-static void AddDefaultPlayers() {
-	AddDefaultHumanPlayer();
-	AddDefaultBotPlayers();
-}
-
-// The default set of local (split-screen) player profiles, matching the ones
-// bundled in cfg/players.dat.
-struct DefaultLocalProfile { const char* name; int r, g, b; };
-static const DefaultLocalProfile DefaultLocalProfiles[] = {
-	{ "OpenLieroXor",   0, 177,   0 }, // player 1 — green
-	{ "The Second",   255, 255, 255 }, // player 2 — white
-	{ "The Third",     20,  90, 255 }, // player 3 — strong blue
-	{ "The Fourth",   255, 220,   0 }, // player 4 — yellow
-};
-
-// Make sure each default local player profile exists, recreating any that are
-// missing (checked one by one, so a partially-present set is completed rather
-// than left alone). This runs on startup so users who deleted a profile — or
-// whose cfg/players.dat predates players 3 and 4 — still get ready-made worms
-// to assign to the local split-screen slots. Existing profiles are left as-is.
-void EnsureDefaultLocalPlayerProfiles() {
-	for(size_t i = 0; i < sizeof(DefaultLocalProfiles)/sizeof(DefaultLocalProfiles[0]); i++) {
-		const DefaultLocalProfile& d = DefaultLocalProfiles[i];
-		if(FindProfile(d.name).get())
-			continue; // this local player profile already exists — keep it
-		AddProfile(d.name, "default.png", "", "", d.r, d.g, d.b, PRF_HUMAN->toInt(), 0);
-		notes << "ProfileSystem: recreated missing local player profile '" << d.name << "'" << endl;
-	}
-}
-
-static void checkProfileSane(const SmartPointer<profile_t>& p) {
-	TrimSpaces(p->sName);
-	if(p->sName == "")
-		p->sName = "OpenLieroXor";
-}
-
-SmartPointer<profile_t> MainHumanProfile() {
-	if(tProfiles.empty())
-		AddDefaultHumanPlayer();
-	assert(!tProfiles.empty());
-	if((*tProfiles.begin())->iType != PRF_HUMAN->toInt())
-		AddDefaultHumanPlayer();
-
-	// try with last selected player if it is a human player
-	SmartPointer<profile_t> p = FindProfile(tLXOptions->sLastSelectedPlayer);
-	if(p.get() && p->iType == PRF_HUMAN->toInt()) {
-		checkProfileSane(p);
-		return p;
-	}
-	
-	// just take first human
-	assert(!tProfiles.empty());
-	p = *tProfiles.begin();
-	assert(p->iType == PRF_HUMAN->toInt());
-	checkProfileSane(p);
-	return p;
-}
-
-static std::pair<ProfileList::iterator,int> getFirstBotProf() {
-	int i = 0;
-	foreach(p, tProfiles) {
-		if((*p)->iType == PRF_COMPUTER->toInt())
-			return std::make_pair(p, i);
-		++i;
-	}
-	return std::make_pair(tProfiles.end(), -1);
-}
 
 ///////////////////
 // Load the profiles
 int LoadProfiles()
 {
-	tProfiles.clear();
-	
+	int		i;
+
 	//
 	// Open the file
 	//
@@ -190,28 +90,47 @@ int LoadProfiles()
 
 
 	// Load the profiles
-	for(int i=0; i<num; i++)
-		LoadProfile(fp);
+	for(i=0; i<num; i++)
+		LoadProfile(fp, i);
 
 	fclose(fp);
 
-	MainHumanProfile(); // this call will ensures that there is a human profile
-
-	if(getFirstBotProf().second < 0)
-		AddDefaultBotPlayers();
-	
 	return true;
 }
 
+
+///////////////////
+// Add the default players to the list
+void AddDefaultPlayers()
+{
+	short		i;
+	std::string	buf;
+
+	// Pre-set cpu colours
+	Uint32 cpuColours[] = { 255,0,0,  0,255,0,  0,0,255,  255,0,255,  0,255,255,  128,128,128,
+							128,255,0,  0,128,255, 0,128,0 };
+
+    // Pre-set cpu difficulties
+    int Diff[] = {AI_EASY, AI_MEDIUM, AI_MEDIUM, AI_HARD, AI_XTREME, AI_MEDIUM, AI_EASY};
+
+    // Add the default worm
+    AddProfile("worm", "default.png", "", "", 100,100,255, PRF_HUMAN->toInt(),0);
+
+	// Add 7 ai players
+	for(i=0; i<7; i++) {
+		buf = "CPU "+itoa(i+1);
+		
+		AddProfile(buf, "default.png", "", "", cpuColours[i*3], cpuColours[i*3+1], cpuColours[i*3+2], PRF_COMPUTER->toInt(), Diff[i]);
+	}
+}
 
 
 ///////////////////
 // Save the profiles
 void SaveProfiles()
 {
-	if(tProfiles.size() == 0)
-		// Profiles not loaded, don't write and empty file (and delete all user's prifiles!)
-		return;
+	profile_t	*p = tProfiles;
+	profile_t	*pf;
 
 
 	//
@@ -229,14 +148,23 @@ void SaveProfiles()
 	int ver = PROFILE_VERSION;
 	fwrite_endian_compat((ver), sizeof(int), 1, fp);
 
-	int num = (int)tProfiles.size();
-	fwrite_endian_compat(num, sizeof(int), 1, fp);
 
-	foreach(p, tProfiles)
+	// Count how many profiles we have
+	int Num=0;
+	for(;p;p=p->tNext)
+        Num++;
+
+	fwrite_endian_compat((Num), sizeof(int), 1, fp);
+
+
+	p = tProfiles;
+	for(; p; p = pf) {
+		pf = p->tNext;
+
 		// Save the profile
-		SaveProfile(fp, *p);
+		SaveProfile(fp, p);
+	}
 
-	fclose(fp);
 }
 
 
@@ -244,18 +172,70 @@ void SaveProfiles()
 // Shutdown & save the profiles
 void ShutdownProfiles()
 {
-	SaveProfiles();
-	tProfiles.clear();
+	if (!tProfiles)  // Profiles not loaded, don't write and empty file (and delete all user's prifiles!)
+		return;
+
+	profile_t	*p = tProfiles;
+	profile_t	*pf = NULL;
+
+
+	//
+	// Open the file
+	//
+	FILE *fp = OpenGameFile("cfg/players.dat","wb");
+	if(fp == NULL)  {
+		errors << "Could not open cfg/players.dat for writing" << endl;
+		return;
+	}
+
+	// ID & Version
+	fwrite("lx:profile", 32, fp);
+	
+	
+	int ver = PROFILE_VERSION;
+	fwrite_endian_compat((ver), sizeof(int), 1, fp);
+
+
+	// Count how many profiles we have
+	int Num=0;
+	for(;p;p=p->tNext)
+        Num++;
+
+	fwrite_endian_compat((Num), sizeof(int), 1, fp);
+
+
+	p = tProfiles;
+	for(; p; p = pf) {
+		pf = p->tNext;
+
+		// Save the profile
+		SaveProfile(fp, p);
+
+		// Free the actual profile
+		assert(p);
+		delete p;
+	}
+
+
+	fclose(fp);
+
+	tProfiles = NULL;
 }
 
 
 ///////////////////
 // Load a profile
-static void LoadProfile(FILE *fp)
+void LoadProfile(FILE *fp, int id)
 {
-	SmartPointer<profile_t> p(new profile_t);
-	if(p.get() == NULL)
+	profile_t	*p;
+
+	p = new profile_t();
+	if(p == NULL)
 		return;
+
+	p->iID = id;
+	p->tNext = NULL;
+
 
 	// Name
 	p->sName = freadfixedcstr(fp, 32);
@@ -284,17 +264,27 @@ static void LoadProfile(FILE *fp)
 	p->cSkin.Colorize(p->cSkin.getDefaultColor());
 	
 	// Weapons
-	p->sWeaponSlots.resize(5);
 	for(int i=0; i<5; i++)
 		p->sWeaponSlots[i] = freadfixedcstr(fp,64);
 
-	AddProfile(p);
+	// Add the profile onto the list
+	if(tProfiles) {
+		profile_t *pf = tProfiles;
+		for(;pf;pf = pf->tNext) {
+			if(pf->tNext == NULL) {
+				pf->tNext = p;
+				break;
+			}
+		}
+	}
+	else
+		tProfiles = p;
 }
 
 
 ///////////////////
 // Save a profile
-void SaveProfile(FILE *fp, const SmartPointer<profile_t>& p)
+void SaveProfile(FILE *fp, profile_t *p)
 {
 	// Name & Type
 	fwrite(p->sName,	32,	fp);
@@ -313,52 +303,64 @@ void SaveProfile(FILE *fp, const SmartPointer<profile_t>& p)
 
 	// Weapons		
 	for(int i=0; i<5; i++)
-		fwrite(p->getWeaponSlot(i),		64,	fp);
+		fwrite(p->sWeaponSlots[i],		64,	fp);
 }
 
 
 ///////////////////
 // Delete a profile
-void DeleteProfile(const SmartPointer<profile_t>& prof)
+void DeleteProfile(int id)
 {
-	foreach(p, tProfiles) {
-		if((*p).get() == prof.get()) {
-			tProfiles.erase(p);
-			return;
+	profile_t	*prv = NULL;
+	profile_t	*p = tProfiles;
+
+	// Find it's previous
+	for(; p; p=p->tNext) {
+
+		if(p->iID == id) {
+			
+			// Set the previous profiles next to my next one
+			// Thus removing me from the list
+			if(prv)
+				prv->tNext = p->tNext;
+			else
+				tProfiles = p->tNext;
+			
+			// Free me
+			delete p;
+
+			break;
 		}
+
+		prv = p;
 	}
-}
 
 
-int AddProfile(const SmartPointer<profile_t>& prof) {
-	if(prof.get() == NULL) {
-		errors << "AddProfile with NULL" << endl;
-		return -1;
-	}
-	if(prof->iType == PRF_HUMAN->toInt()) {
-		std::pair<ProfileList::iterator,int> i = getFirstBotProf();
-		tProfiles.insert(i.first, prof);
-		return i.second;
-	}
-	else if(prof->iType == PRF_COMPUTER->toInt()) {
-		tProfiles.push_back(prof);
-		return (int)tProfiles.size() - 1;
-	}
-	else
-		errors << "AddProfile " << prof->sName << " with undefined type " << prof->iType << endl;
-	return -1;
+	// Reset the id's
+	p = tProfiles;
+	int i=0;
+	for(;p;p = p->tNext)
+		p->iID = i++;
 }
+
 
 ///////////////////
 // Add a profile to the list
-int AddProfile(const std::string& name, const std::string& skin, const std::string& username, const std::string& password,  int R, int G, int B, int type, int difficulty)
+void AddProfile(const std::string& name, const std::string& skin, const std::string& username, const std::string& password,  int R, int G, int B, int type, int difficulty)
 {
-	SmartPointer<profile_t>	p(new profile_t());
-	if(p.get() == NULL)
-		return -1;
+	profile_t	*p;
 
+	p = new profile_t();
+	if(p == NULL)
+		return;
+
+	// Find a free id
+	int id = FindProfileID();
+
+	p->iID = id;
 	p->iType = type;
     p->nDifficulty = difficulty;
+	p->tNext = NULL;
 
 	p->sName = name;
 	p->cSkin.Change(skin);
@@ -372,109 +374,114 @@ int AddProfile(const std::string& name, const std::string& skin, const std::stri
 
 
 	// Default weapons
-	p->sWeaponSlots.resize(5);
 	p->sWeaponSlots[0] = "minigun";
 	p->sWeaponSlots[1] = "super shotgun";
 	p->sWeaponSlots[2] = "blaster";
 	p->sWeaponSlots[3] = "gauss gun";
 	p->sWeaponSlots[4] = "big nuke";
 
-	return AddProfile(p);
+
+	// Add the profile onto the list
+	if(tProfiles) {
+
+		profile_t *pf = tProfiles;
+		profile_t *prv = NULL;
+
+		for(;pf;pf = pf->tNext) {
+
+			// If we are human, we need to insert ourselves into the list before the ai players
+			if(p->iType == PRF_HUMAN->toInt()) {
+				if(pf->iType == PRF_COMPUTER->toInt()) {
+
+					p->tNext = pf;
+					if(prv)
+						prv->tNext = p;
+					else
+						// Must be first one
+						tProfiles = p;
+
+					break;
+				}
+			}
+
+
+			if(pf->tNext == NULL) {
+				
+				pf->tNext = p;
+				break;
+			}
+
+			prv = pf;
+		}
+	}
+	else
+		tProfiles = p;
+
+
+	// Reset the id's
+	p = tProfiles;
+	int i=0;
+	for(;p;p = p->tNext)
+		p->iID = i++;
 }
 
+
+///////////////////
+// Find a free profile id
+int FindProfileID()
+{
+	profile_t *p = tProfiles;
+
+	int id = -1;
+
+	for(; p; p=p->tNext)
+		id = p->iID;
+
+	return id+1;
+}
 
 
 ///////////////////
 // Get the profiles
-Iterator<SmartPointer<profile_t> >::Ref GetProfiles()
+profile_t *GetProfiles()
 {
-	MainHumanProfile(); // ensure that there is a human profile
-	return GetIterator(tProfiles);
+	return tProfiles;
 }
 
 
 ///////////////////
 // Find a profile based on id
-SmartPointer<profile_t> FindProfile(int id)
+profile_t *FindProfile(int id)
 {
-	if(id < 0) return NULL;
-	if((size_t)id >= tProfiles.size()) return NULL;
-	int i = 0;
-	foreach(p, tProfiles) {
-		if(i == id) return *p;
-		++i;
+	profile_t *p = tProfiles;
+
+	for(;p;p=p->tNext) {
+		if(p->iID == id)
+			return p;
 	}
+
 	return NULL;
 }
 
-SmartPointer<profile_t> FindProfile(const std::string& name) {
-	foreach(p, tProfiles) {
-		if((*p)->sName == name)
-			return *p;
+profile_t *FindProfile(const std::string& name) {
+	profile_t *p = tProfiles;
+
+	for(;p;p=p->tNext) {
+		if(p->sName == name)
+			return p;
 	}
+
 	return NULL;
 }
 
-int GetProfileId(const SmartPointer<profile_t>& prof) {
-	int i = 0;
-	foreach(p, tProfiles) {
-		if(p->get() == prof.get())
-			return i;
-		++i;
-	}
-	return -1;
-}
 
 std::string FindFirstCPUProfileName() {
-	ProfileList::iterator i = getFirstBotProf().first;
-	if(i != tProfiles.end()) return (*i)->sName;
+	profile_t *p = tProfiles;
 	
-	AddDefaultBotPlayers();
-	return FindFirstCPUProfileName();
-}
-
-
-
-SmartPointer<profile_t> profileFromWorm(CWorm* w) {
-	SmartPointer<profile_t> p(new profile_t);
-	p->iType = w->getType()->toInt();
-	p->sName = w->getName();
-	p->nDifficulty = w->getProfile().get() ? w->getProfile()->nDifficulty : AI_EASY;
-	p->R = w->getSkin().getDefaultColor().r;
-	p->G = w->getSkin().getDefaultColor().g;
-	p->B = w->getSkin().getDefaultColor().b;
-	p->iTeam = w->getTeam();
-	p->cSkin.Change(w->getSkin().getFileName());
-	p->cSkin.setDefaultColor(w->getSkin().getDefaultColor());
-	p->cSkin.ColorizeDefault();
-	return p;
-}
-
-SmartPointer<profile_t> profileFromWormJoinInfo(const WormJoinInfo& info) {
-	SmartPointer<profile_t> p(new profile_t);
-	p->iType = info.m_type ? info.m_type->toInt() : PRF_HUMAN->toInt();
-	p->sName = info.sName;
-	p->nDifficulty = AI_EASY;
-	p->R = info.skinColor.r;
-	p->G = info.skinColor.g;
-	p->B = info.skinColor.b;
-	p->iTeam = info.iTeam;
-	p->cSkin.Change(info.skinFilename);
-	p->cSkin.setDefaultColor(Color(p->R, p->G, p->B));
-	p->cSkin.ColorizeDefault();
-	return p;
-}
-
-
-std::string profile_t::getWeaponSlot(int i) {
-	if(i < 0) return "";
-	if((size_t)i >= sWeaponSlots.size()) return "";
-	return sWeaponSlots[i];
-}
-
-std::string& profile_t::writeWeaponSlot(int i) {
-	static std::string dummy;
-	if(i < 0) return dummy;
-	if((size_t)i >= sWeaponSlots.size()) return dummy;
-	return sWeaponSlots[i];
+	for(;p;p=p->tNext) {
+		if(p->iType == PRF_COMPUTER->toInt())
+			return p->sName;
+	}
+	
+	return "";
 }

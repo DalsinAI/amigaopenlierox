@@ -29,17 +29,11 @@ namespace DeprecatedGUI {
 
 
 // layout event structure
-struct gui_event_t {
+class gui_event_t { public:
 	int		iControlID;
 	int		iEventMsg;
 
 	CWidget	*cWidget;
-};
-
-enum {
-	gev_MouseWheel = -9999, // iControlID
-	gev_MouseWheelUp = 1, // iEventMsg
-	gev_MouseWheelDown = 2 // iEventMsg
 };
 
 // Errors
@@ -105,9 +99,6 @@ private:
 
 	
 public:
-	static bool isKeyboardNavigationUsed() { return bKeyboardNavigation; }
-	static void setKeyboardNavigationUsed(bool used) { bKeyboardNavigation = used; }
-
 	// Methods
 
 	void		Initialize(int LayoutID = -1);
@@ -115,7 +106,6 @@ public:
 	bool		Build();
 
 	void		Add(CWidget *widget, int id, int x, int y, int w, int h);
-	void		AddBack(CWidget *widget, int id, int x, int y, int w, int h);
 	void		FocusWidget(int id);
 	CWidget		*getWidget(int id);
     void        removeWidget(int id);
@@ -123,12 +113,7 @@ public:
 	void		Error(int ErrorCode, const std::string& text);
 
 	gui_event_t	*Process();
-	// Widget an arrow key would move focus to, or NULL for no navigation.
-	CWidget		*keyboardNavigationTarget(int keysym) const;
 	void		Draw(SDL_Surface * bmpDest);
-	// Shift every widget by (dx,dy). Used to center an in-game popup layout
-	// on a wider-than-640 screen (see VideoPostProcessor::popupCenterOffsetX).
-	void		moveWidgets(int dx, int dy);
 
 	void		Shutdown();
 
@@ -137,17 +122,22 @@ public:
 	CWidget		*getFocusedWidget()		{ return cFocused; }
 
 	// Messaging
-	uintptr_t		SendMessage(int iControl, int iMsg, uintptr_t Param1, uintptr_t Param2);
-	uintptr_t		SendMessage(int iControl, int iMsg, const std::string& sStr, uintptr_t Param);
-	uintptr_t		SendMessage(int iControl, int iMsg, std::string *sStr, uintptr_t Param);
+	DWORD		SendMessage(int iControl, int iMsg, DWORD Param1, DWORD Param2);
+	DWORD		SendMessage(int iControl, int iMsg, const std::string& sStr, DWORD Param);
+	DWORD		SendMessage(int iControl, int iMsg, std::string *sStr, DWORD Param);
 
 	// Variables
 	int			getID()		{ return iID; }
 	void		setID(int _id)	{ iID = _id; }
 
 	void		setTooltip(const SDL_Rect& keepArea, VectorD2<int> pos, const std::string& msg);
-	
+
+	static bool isKeyboardNavigationUsed() { return bKeyboardNavigation; }
+	static void setKeyboardNavigationUsed(bool used) { bKeyboardNavigation = used; }
 };
+
+extern CGuiLayout cGameMenuLayout;
+extern CGuiLayout cScoreLayout;
 
 } // namespace DeprecatedGUI
 

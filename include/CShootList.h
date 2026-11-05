@@ -59,14 +59,11 @@ struct shoot_t {
 	CVec	cPos;
 	CVec	cWormVel;
 	int		nAngle;
-	int		nRandom;
+	uchar	nRandom; // Actually it's a worm shot count
 	int		nSpeed;
 	int		nWormID;
 
-	int		devID;
 	bool	release;
-	
-	AbsTime spawnTime();
 };
 
 
@@ -129,8 +126,6 @@ public:
 	AbsTime		getStartTime()			{ return m_fStartTime; }
 	AbsTime		getLastWrite()			{ return m_fLastWrite; }
 
-	friend void test_CShootListSpeedRoundtrip();  // unit test: writeSingle/readSingle
-	friend void test_CShootListMultiRoundtrip();  // unit test: writeMulti/readMulti run length
 };
 
 

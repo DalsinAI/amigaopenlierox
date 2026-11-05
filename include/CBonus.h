@@ -68,7 +68,7 @@ public:
 
 	void	Spawn(CVec pos, int type, int weapon, CGameScript *gs);
 	
-	void	Draw(SDL_Surface * bmpDest, CViewport *v, bool showname);
+	void	Draw(SDL_Surface * bmpDest, CViewport *v, int showname);
 
 
 	// variables
@@ -86,6 +86,12 @@ public:
 	CVec&	velocity()			{ return vVelocity; }
 	float&	life()				{ return fLife; }
 	float&	flashTime()			{ return fFlashTime; }
+
+	// HINT: saves the current time of the simulation
+	// TODO: should be moved later to PhysicsEngine
+	// but it's not possible in a clean way until we have no simulateBonuses()
+	// there which simulates all bonuses together
+	AbsTime	fLastSimulationTime;
 
 };
 

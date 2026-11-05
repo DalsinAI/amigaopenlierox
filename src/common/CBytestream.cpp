@@ -27,9 +27,8 @@
 #include "MathLib.h"
 #include "CScriptableVars.h"
 #include "Debug.h"
-#include "Iter.h"
+#include "Iterator.h"
 #include "Utils.h"
-#include "util/CustomVar.h"
 
 
 void CBytestream::Test()
@@ -383,44 +382,23 @@ bool CBytestream::writeData(const std::string& value)
 	return true;
 }
 
-bool CBytestream::writeVar(const ScriptVar_t& var, const CustomVar* diffToOld) {
-	assert( var.type >= SVT_BOOL && var.type <= SVT_CustomWeakRefToStatic );
-	if(var.isCustomType()) {
-		assert(var.customVar() != NULL);
-		assert(var.customVar()->thisRef.classId != ClassId(-1));
-	}
-	if(diffToOld) {
-		assert(var.isCustomType());
-		assert(var.customVar()->thisRef.classId == diffToOld->thisRef.classId);
-	}
+bool CBytestream::writeVar(const ScriptVar_t& var) {
+	assert( var.type >= 0 && var.type <= 4 );
 	if(!writeByte( var.type )) return false;
 	switch( var.type ) {
-	case SVT_BOOL: return writeBool(var.toBool());
-	case SVT_INT32: return writeInt(var.toInt(), 4);
-	case SVT_UINT64: return writeUInt64((uint64_t)var);
-	case SVT_FLOAT: return writeFloat(var.toFloat());
-	case SVT_VEC2: {
-		writeFloat(CVec(var).x);
-		writeFloat(CVec(var).y);
-		return true;
+		case SVT_BOOL: return writeBool(var.b);
+		case SVT_INT: return writeInt(var.i, 4);
+		case SVT_FLOAT: return writeFloat(var.f);
+		case SVT_STRING: return writeString(var.s);
+		case SVT_COLOR: {
+			writeByte(var.c.r);
+			writeByte(var.c.g);
+			writeByte(var.c.b);
+			writeByte(var.c.a);
+			return true;
+		}
+		default: assert(false); return false;
 	}
-	case SVT_COLOR: {
-		writeByte(var.toColor().r);
-		writeByte(var.toColor().g);
-		writeByte(var.toColor().b);
-		writeByte(var.toColor().a);
-		return true;
-	}
-	case SVT_STRING: return writeString(var.toString());
-	case SVT_CUSTOM:
-	case SVT_CustomWeakRefToStatic:
-		return var.customVar()->ToBytestream(this, diffToOld);
-	case SVT_CALLBACK:
-	case SVT_DYNAMIC:
-		assert(false); // should not happen
-	}
-	assert(false); // should not happen
-	return false;
 }
 
 
@@ -583,10 +561,6 @@ bool CBytestream::readBit()
 // Get data from the bytestream
 std::string CBytestream::readData( size_t size )
 {
-	// Nothing left, and guards against pos being at/past the end:
-	// otherwise GetLength() - pos underflows and substr throws.
-	if( pos >= GetLength() )
-		return "";
 	size = MIN( size, GetLength() - pos );
 	size_t oldpos = pos;
 	pos += size;
@@ -594,55 +568,19 @@ std::string CBytestream::readData( size_t size )
 }
 
 bool CBytestream::readVar(ScriptVar_t& var) {
-	ScriptVarType_t type = (ScriptVarType_t)readByte();
-
-	switch( type ) {
-	case SVT_BOOL: var = ScriptVar_t(readBool()); return true;
-	case SVT_INT32: var = ScriptVar_t(readInt(4)); return true;
-	case SVT_UINT64: var = ScriptVar_t(readUInt64()); return true;
-	case SVT_FLOAT: var = ScriptVar_t(readFloat()); return true;
-	case SVT_VEC2: {
-		float x = readFloat();
-		float y = readFloat();
-		var = ScriptVar_t(CVec(x, y));
-		return true;
+	assert( var.type >= 0 && var.type <= 4 );
+	var.type = (ScriptVarType_t)readByte();
+	switch( var.type ) {
+		case SVT_BOOL: var.b = readBool(); break;
+		case SVT_INT: var.i = readInt(4); break;
+		case SVT_FLOAT: var.f = readFloat(); break;
+		case SVT_STRING: var.s = readString(); break;
+		case SVT_COLOR: var.c.r = readInt(1); var.c.g = readInt(1); var.c.b = readInt(1); var.c.a = readInt(1); break;
+		default:
+			warnings << "read var has invalid type" << endl;
+			var = ScriptVar_t();
 	}
-	case SVT_STRING: var = ScriptVar_t(readString()); return true;
-	case SVT_COLOR: {
-		Color c;
-		c.r = readInt(1);
-		c.g = readInt(1);
-		c.b = readInt(1);
-		c.a = readInt(1);
-		var = ScriptVar_t(c);
-		return true;
-	}
-	case SVT_CUSTOM:
-	case SVT_CustomWeakRefToStatic: {
-		if(var.isCustomType()) {
-			ClassId classId = readInt16();
-			if(classId != var.customVar()->thisRef.classId) {
-				errors << "read var: got invalid classId " << classId << " << for static CustomVar with classId " << var.customVar()->thisRef.classId << endl;
-				return false;
-			}
-			var.customVar()->fromBytestream(this, false);
-			return true;
-		}
-		else {
-			CustomVar::Ref custom = CustomVar::FromBytestream(this);
-			if(!custom) return false;
-			var = ScriptVar_t(custom);
-			return true;
-		}
-	}
-	case SVT_CALLBACK:
-	case SVT_DYNAMIC:
-		errors << "read var has not-supported type " << (int)type << endl;
-		return false;
-	}
-
-	errors << "read var has unknown type " << (int)type << endl;
-	return false;
+	return true;
 }
 
 
@@ -675,15 +613,7 @@ bool CBytestream::SkipString() {
 }
 
 bool CBytestream::Skip(size_t num) {
-	// Clamp to the end so pos never runs past the buffer
-	// (readData and others rely on pos <= GetLength()).
-	pos = MIN( pos + num, GetLength() );
-	return isPosAtEnd();
-}
-
-bool CBytestream::SkipVar() {
-	ScriptVar_t var;
-	readVar(var);
+	pos += num;
 	return isPosAtEnd();
 }
 
@@ -693,9 +623,15 @@ bool CBytestream::SkipVar() {
 size_t CBytestream::Read(NetworkSocket* sock) {
 	Clear();
 	char buf[4096];
-	int res = sock->Read(buf, sizeof(buf));
-	if(res > 0)
+	size_t len = 0;
+	int res; // MUST be signed, else an overflow can occur (ReadScoket can return -1!)
+	while(true) {
+		res = sock->Read(buf, sizeof(buf));
+		if(res <= 0) break;
 		Data.append(buf, res);
+		len += res;
+		if((size_t)res < sizeof(buf)) break;
+	}
 
 #ifdef DEBUG
 	// DEBUG: randomly drop packets to test network stability
@@ -708,7 +644,7 @@ size_t CBytestream::Read(NetworkSocket* sock) {
 	}*/
 #endif
 
-	return Data.size();
+	return len;
 }
 
 bool CBytestream::Send(NetworkSocket* sock) {

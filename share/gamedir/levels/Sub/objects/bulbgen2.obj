@@ -1,6 +1,0 @@
-invisible=1
-col_layer=-1
-
-on timer(2000,100)
- shoot_particles(bulb2flash.obj,1)
- remove()

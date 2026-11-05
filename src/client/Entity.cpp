@@ -22,11 +22,10 @@
 #include "MathLib.h"
 #include "FastVector.h"
 #include "CViewport.h"
-#include "game/CMap.h"
-#include "game/CWorm.h"
+#include "CMap.h"
+#include "CWorm.h"
 #include "Consts.h"
 #include "Geometry.h"
-#include "game/Game.h"
 
 typedef FastVector<entity_t,MAX_ENTITIES> Entities;
 Entities tEntities;
@@ -167,11 +166,6 @@ void SpawnEntity(int type, int type2, CVec pos, CVec vel, Color colour, SmartPoi
 			return;
 	}
 
-	if(type == ENT_GIB && img.get() == NULL) {
-		errors << "SpawnEntity: giblet without surface" << endl;
-		return;
-	}
-
 	entity_t *ent = tEntities.getNewObj();
 
 	// Are there any free entitiy slots?
@@ -207,7 +201,7 @@ void SpawnEntity(int type, int type2, CVec pos, CVec vel, Color colour, SmartPoi
 
 ///////////////////
 // Draw the entities
-void DrawEntities(SDL_Surface * bmpDest, CViewport *v)
+void DrawEntities(SDL_Surface * bmpDest, CViewport *v, bool wrapAround, int mapW, int mapH)
 {
 	CVec end;
 
@@ -215,17 +209,37 @@ void DrawEntities(SDL_Surface * bmpDest, CViewport *v)
 	int wy = v->GetWorldY();
 	int l = v->GetLeft();
 	int t = v->GetTop();
-
+	int viewW = v->GetWidth();
+	int viewH = v->GetHeight();
 
 	int x,y;
 	int x2,y2;
-		
+
+	mapW *= 2;
+	mapH *= 2;
+
 	for (Entities::Iterator::Ref e = tEntities.begin(); e->isValid(); e->next()) {
 
 		entity_t *ent = e->get();
 
-		x= int((ent->vPos.x - (float)wx)*2.0) + l;
-		y= int((ent->vPos.y - (float)wy)*2.0) + t;
+		x = (ent->vPos.x - wx) * 2;
+		y = (ent->vPos.y - wy) * 2;
+		if (wrapAround) {
+			x %= mapW;
+			y %= mapH;
+			if (x < 0)
+				x += mapW;
+			if (y < 0)
+				y += mapH;
+			if (wx * 2 + viewW >= mapW) {
+				x += mapW;
+			}
+			if (wy * 2 + viewH >= mapH) {
+				y += mapH;
+			}
+		}
+		x += l;
+		y += t;
 
 		// Clipping
 		if(ent->iType != ENT_BEAM && ent->iType != ENT_LASERSIGHT) {
@@ -319,7 +333,7 @@ void DrawEntities(SDL_Surface * bmpDest, CViewport *v)
 // Simulate the entities
 void SimulateEntities(TimeDiff dt)
 {
-	CMap* map = game.gameMap();
+	CMap* map = cClient->getMap();
 	if (!map) { // Weird
 		hints << "SimulateEntities gots no map" << endl;
 		return;
@@ -363,7 +377,14 @@ void SimulateEntities(TimeDiff dt)
 						case ENT_BLOOD: {
 							int x = (int)ent->vPos.x;
 							int y = (int)ent->vPos.y;
-							map->putColorTo(x, y, ent->iColour);
+							LOCK_OR_QUIT(map->GetImage());
+							PutPixel(map->GetImage().get(),x, y, ent->iColour.get(map->GetImage()->format));
+							UnlockSurface(map->GetImage());
+
+							x *= 2;
+							y *= 2;
+							DrawRectFill2x2(map->GetDrawImage().get(), x, y, ent->iColour);
+
 							ent->setUnused();
 							
 							break;
@@ -382,8 +403,10 @@ void SimulateEntities(TimeDiff dt)
 								int y = (int)ent->vPos.y-1;
 
 								// Safety
-								if (ent->bmpSurf.get())
-									map->putSurfaceTo(x,y,ent->bmpSurf.get(), (int)ent->iRotation*4, 8, 4, 4);
+								if (ent->bmpSurf.get()) {
+									DrawImageAdv(map->GetImage().get(),ent->bmpSurf,(int)ent->iRotation*4,8,x,y,4,4);
+									DrawImageStretch2(map->GetDrawImage().get(),map->GetImage(),x,y,x*2,y*2,4,4);
+								}
 
 								ent->setUnused();
 							}
@@ -456,7 +479,7 @@ void SimulateEntities(TimeDiff dt)
 				if(ent->fExtra > 0.1f) {
 					int col = GetRandomInt(1);
 					static const int colour[] = {128,200};
-					SpawnEntity(ENT_BLOOD,0,ent->vPos,GetRandomVec(),Color(colour[col],0,0),NULL);
+					SpawnEntity(ENT_BLOOD,0,ent->vPos,CVec(GetRandomNum(),GetRandomNum()),Color(colour[col],0,0),NULL);
 					ent->fExtra = 0;
 				}
 				ent->fExtra += dt;
@@ -504,7 +527,8 @@ void EntityEffect::Process()
 		case ENTE_SPARKLE_DOT:
 			for( int i = 0; i < _amount; i++ )
 			{
-				CVec spread = GetRandomVec() * _speed;
+				float angle = GetRandomPosNum() / 180.0f * (float)PI;
+				CVec spread = CVec( sinf(angle), cosf(angle) ) * _speed;
 				// _radius here is gravitation
 				SpawnEntity(ENT_SPARKLE, _fade, pos, vel + spread + CVec(0, _radius), Color(), NULL);
 			}
@@ -513,8 +537,10 @@ void EntityEffect::Process()
 		case ENTE_SPARKLE_RANDOM:
 			for( int i = 0; i < _amount; i++ )
 			{
-				const CVec spread = GetRandomVec() * _speed;
-				const CVec randPos = GetRandomVec() * _radius;
+				const float angle1 = GetRandomPosNum() / 180.0f * (float)PI;
+				const CVec spread = CVec( sinf(angle1), cosf(angle1) ) * _speed;
+				const float angle2 = GetRandomPosNum() / 180.0f * (float)PI;
+				const CVec randPos = CVec( sinf(angle2), cosf(angle2) ) * _radius;
 				SpawnEntity(ENT_SPARKLE, _fade, pos + randPos, vel + spread, Color(), NULL);
 			}
 			break;

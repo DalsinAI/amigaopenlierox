@@ -13,8 +13,6 @@
  LX56 projectile simulation:
  http://openlierox.svn.sourceforge.net/viewvc/openlierox/src/client/CClient_Game.cpp?revision=1&view=markup&pathrev=1
  
- LX56 Ninjarope simulation:
- http://openlierox.svn.sf.net/viewvc/openlierox/src/client/CNinjaRope.cpp?revision=1&view=markup&pathrev=1
  
  */
 
@@ -23,350 +21,434 @@
 #include "ProfileSystem.h"
 #include "Physics.h"
 #include "CGameScript.h"
+#include "Frame.h"
 #include "MathLib.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Entity.h"
 #include "CBonus.h"
 #include "CClient.h"
-#include "OLXConsole.h"
+#include "console.h"
 #include "Debug.h"
 #include "CServer.h"
 #include "FlagInfo.h"
 #include "ProjectileDesc.h"
 #include "WeaponDesc.h"
 #include "PhysicsLX56.h"
-#include "sound/SoundsBase.h"
-#include "game/Sounds.h"
-#include "game/Game.h"
 
 
 // defined in PhysicsLX56_Projectiles
 void LX56_simulateProjectiles(Iterator<CProjectile*>::Ref projs);
 
-// Default LX56PhysicsFPS is 84.
-static int _getCurrentLX56PhysicsFPS() {
-	if(game.isServer())
-		return gameSettings[FT_LX56PhysicsFPS];
-	else if(cClient->getGameLobby()[FT_ForceSameLX56PhysicsFPS])
-		return cClient->getGameLobby()[FT_LX56PhysicsFPS];
-	else // each client can have its own custom FPS
-		return gameSettings[FT_LX56PhysicsFPS]; // this is the client side config
-	return 84;
-}
-
-int getCurrentLX56PhysicsFPS() {
-	return MAX(_getCurrentLX56PhysicsFPS(), 1);
-}
-
-static float getNinjaropePrecision() {
-	if(cClient->getServerVersion() >= OLXBetaVersion(0,57,4))
-		return (float)cClient->getGameLobby()[FT_NinjaropePrecision];
-	else
-		return 0; // like LX56
-}
+// TODO: clean up this code!
 
 
-static bool m_inited = false;
+
+class PhysicsLX56 : public PhysicsEngine {
+public:
+	bool m_inited;
 
 // ---------
+	PhysicsLX56() : m_inited(false) {}
+	virtual ~PhysicsLX56() { uninitGame(); }
 
-std::string PhysicsEngine::name() { return "LX56 physics"; }
+	virtual std::string name() { return "LX56 physics"; }
 
-void PhysicsEngine::initGame() { m_inited = true; }
-void PhysicsEngine::uninitGame() { m_inited = false; }
-bool PhysicsEngine::isInitialised() { return m_inited; }
+	virtual void initGame() { m_inited = true; }
+	virtual void uninitGame() { m_inited = false; }
+	virtual bool isInitialised() { return m_inited; }
 
-
-static void simulateNinjarope(float dt, CWorm* owner);
-static void simulateWormWeapon(float dt, CWorm* worm);
 
 // -----------------------------
 // ------ worm -----------------
 
-// Check collisions with the level
-// HINT: it directly manipulates vPos!
-static bool moveAndCheckWormCollision(AbsTime currentTime, float dt, CWorm* worm, CVec pos, CVec *vel, CVec vOldPos, bool jump ) {
-	static const int maxspeed2 = 10; // this should not be too high as we could run out of the game.gameMap() without checking else
+	// Check collisions with the level
+	// HINT: it directly manipulates vPos!
+	bool moveAndCheckWormCollision(AbsTime currentTime, float dt, CWorm* worm, CVec pos, CVec *vel, CVec vOldPos, bool jump ) {
+		static const int maxspeed2 = 10; // this should not be too high as we could run out of the cClient->getMap() without checking else
 
-	// Can happen when starting a game
-	if (!game.gameMap())
-		return false;
-	CMap* map = game.gameMap();
+		// Can happen when starting a game
+		if (!cClient->getMap())
+			return false;
 
-	// check if the vel is really too high (or infinity), in this case just ignore
-	if( (*vel*dt*worm->speedFactor()).GetLength2() > (float)map->GetWidth() * (float)map->GetHeight() )
-		return true;
+		// check if the vel is really too high (or infinity), in this case just ignore
+		if( (*vel*dt*worm->speedFactor()).GetLength2() > (float)cClient->getMap()->GetWidth() * (float)cClient->getMap()->GetHeight() )
+			return true;		
+		
+		// If the worm is going too fast, divide the speed by 2 and perform 2 collision checks
+		// TODO: is this still needed? we call this function with a fixed dt
+		// though perhaps it is as with higher speed the way we have to check is longer
+		if( (*vel * dt * worm->speedFactor()).GetLength2() > maxspeed2 && dt > 0.001f ) {
+			dt /= 2;
+			if(moveAndCheckWormCollision(currentTime, dt,worm,pos,vel,vOldPos,jump)) return true;
+			return moveAndCheckWormCollision(currentTime, dt,worm,worm->getPos(),vel,vOldPos,jump);
+		}
 
-	// If the worm is going too fast, divide the speed by 2 and perform 2 collision checks
-	// TODO: is this still needed? we call this function with a fixed dt
-	// though perhaps it is as with higher speed the way we have to check is longer
-	if( (*vel * dt * worm->speedFactor()).GetLength2() > maxspeed2 && dt > 0.001f ) {
-		dt /= 2;
-		if(moveAndCheckWormCollision(currentTime, dt,worm,pos,vel,vOldPos,jump)) return true;
-		return moveAndCheckWormCollision(currentTime, dt,worm,worm->getPos(),vel,vOldPos,jump);
-	}
+		bool wrapAround = cClient->getGameLobby()->features[FT_InfiniteMap];
+		CVec prevWormPos = worm->pos();
+		pos += *vel * dt * worm->speedFactor();
+		if(wrapAround) {
+			FMOD(pos.x, (float)cClient->getMap()->GetWidth());
+			FMOD(pos.y, (float)cClient->getMap()->GetHeight());
+		}
+		worm->pos() = pos;
+		
+		
+		int x = (int)pos.x;
+		int y = (int)pos.y;
+		short clip = 0; // 0x1=left, 0x2=right, 0x4=top, 0x8=bottom
+		bool coll = false;
+		bool check_needed = cClient->getMap()->GetCollisionFlag(x, y, wrapAround) != 0;
 
-	bool wrapAround = cClient->getGameLobby()[FT_InfiniteMap];
-	pos += *vel * dt * worm->speedFactor();
-	if(wrapAround) {
-		FMOD(pos.x, (float)map->GetWidth());
-		FMOD(pos.y, (float)map->GetHeight());
-	}
-	worm->pos() = pos;
-
-
-	int x = (int)pos.x;
-	int y = (int)pos.y;
-	short clip = 0; // 0x1=left, 0x2=right, 0x4=top, 0x8=bottom
-	bool coll = false;
-
-	if(y >= 0 && (uint)y < map->GetHeight()) {
-		for(x=-3;x<4;x++) {
-			// Optimize: pixelflag++
-
-			// Left side clipping
-			if(!wrapAround && (pos.x+x <= 2)) {
-				clip |= 0x01;
-				worm->pos().write().x = 5;
-				coll = true;
-				if(fabs(vel->x) > 40)
-					vel->x *=  -0.4f;
-				else
-					vel->x=(0);
-				continue; // Note: This was break in LX56, but continue is really better here
-			}
-
-			// Right side clipping
-			if(!wrapAround && (pos.x+x >= map->GetWidth())) {
-				worm->pos().write().x = (float)map->GetWidth() - 5;
-				coll = true;
-				clip |= 0x02;
-				if(fabs(vel->x) > 40)
-					vel->x *= -0.4f;
-				else
-					vel->x=(0);
-				continue; // Note: This was break in LX56, but continue is really better here
-			}
-
-			int posx = (int)pos.x + x; if(wrapAround) { posx %= (int)map->GetWidth(); if(posx < 0) posx += map->GetWidth(); }
-			if(!(map->GetPixelFlag(posx,y) & PX_EMPTY)) {
-				coll = true;
-
-				// NOTE: Be carefull that you don't do any float->int->float conversions here.
-				// This has some *huge* effect. People reported it as high ceil friction.
-				if(x<0) {
+		if(check_needed && y >= 0 && (uint)y < cClient->getMap()->GetHeight()) {
+			for(x=-3;x<4;x++) {
+				// Optimize: pixelflag++
+				
+				// Left side clipping
+				if(!wrapAround && (pos.x+x <= 2)) {
 					clip |= 0x01;
-					worm->pos().write().x = pos.x + x + 4;
-				}
-				else {
-					clip |= 0x02;
-					worm->pos().write().x = pos.x + x - 4;
+					worm->pos().x=( 5 );
+					coll = true;
+					if(fabs(vel->x) > 40)
+						vel->x *=  -0.4f;
+					else
+						vel->x=(0);
+					continue; // Note: This was break in LX56, but continue is really better here
 				}
 
-				// Bounce
-				if(fabs(vel->x) > 40)
-					vel->x *= -0.4f;
-				else
-					vel->x=(0);
+				// Right side clipping
+				if(!wrapAround && (pos.x+x >= cClient->getMap()->GetWidth())) {
+					worm->pos().x=( (float)cClient->getMap()->GetWidth() - 5 );
+					coll = true;
+					clip |= 0x02;
+					if(fabs(vel->x) > 40)
+						vel->x *= -0.4f;
+					else
+						vel->x=(0);
+					continue; // Note: This was break in LX56, but continue is really better here
+				}
+
+				int posx = (int)pos.x + x; if(wrapAround) { posx %= (int)cClient->getMap()->GetWidth(); if(posx < 0) posx += cClient->getMap()->GetWidth(); }
+				if(!(cClient->getMap()->GetPixelFlag(posx,y) & PX_EMPTY)) {
+					coll = true;
+
+					// NOTE: Be carefull that you don't do any float->int->float conversions here.
+					// This has some *huge* effect. People reported it as high ceil friction.
+					if(x<0) {
+						clip |= 0x01;
+						worm->pos().x = pos.x + x + 4;
+					}
+					else {
+						clip |= 0x02;
+						worm->pos().x = pos.x + x - 4;
+					}
+
+					// Bounce
+					if(fabs(vel->x) > 40)
+						vel->x *= -0.4f;
+					else
+						vel->x=(0);
+				}
 			}
 		}
-	}
 
-	// In case of this, it could be that we need to do a FMOD. Just do it to be sure.
-	if(wrapAround) {
-		FMOD(pos.x, (float)map->GetWidth());
-	}
+		// In case of this, it could be that we need to do a FMOD. Just do it to be sure.
+		if(check_needed && wrapAround) {
+			FMOD(pos.x, (float)cClient->getMap()->GetWidth());
+		}
+		
+		worm->setOnGround( false );
 
-	worm->setOnGround( false );
+		bool hit = false;
+		x = (int)pos.x;
 
-	bool hit = false;
-	x = (int)pos.x;
+		if(check_needed && x >= 0 && (uint)x < cClient->getMap()->GetWidth()) {
+			for(y=5;y>-5;y--) {
+				// Optimize: pixelflag + Width
 
-	if(x >= 0 && (uint)x < map->GetWidth()) {
-		for(y=5;y>-5;y--) {
-			// Optimize: pixelflag + Width
+				// Top side clipping
+				if(!wrapAround && (pos.y+y <= 1)) {
+					worm->pos().y=( 6 );
+					coll = true;
+					clip |= 0x04;
+					if(fabs(vel->y) > 40)
+						vel->y *= -0.4f;
+					else
+						vel->y = (0);
+					
+					// it was also break in LX56. this makes a huge difference when bouncing against the bottom.
+					break;
+				}
 
-			// Top side clipping
-			if(!wrapAround && (pos.y+y <= 1)) {
-				worm->pos().write().y = 6;
-				coll = true;
-				clip |= 0x04;
-				if(fabs(vel->y) > 40)
-					vel->y *= -0.4f;
-				else
-					vel->y = (0);
-
-				// it was also break in LX56. this makes a huge difference when bouncing against the bottom.
-				break;
-			}
-
-			// Bottom side clipping
-			if(!wrapAround && (pos.y+y >= map->GetHeight())) {
-				worm->pos().write().y = (float)map->GetHeight() - 5;
-				clip |= 0x08;
-				coll = true;
-				worm->setOnGround( true );
-				if(fabs(vel->y) > 40)
-					vel->y *= -0.4f;
-				else
-					vel->y=(0);
-				continue; // Note: This was break in LX56, but continue is really better here
-			}
-
-			int posy = (int)pos.y + y; if(wrapAround) { posy %= (int)map->GetHeight(); if(posy < 0) posy += map->GetHeight(); }
-			if(!(map->GetPixelFlag(x,posy) & PX_EMPTY)) {
-				coll = true;
-
-				if(!hit && !jump) {
-					if(fabs(vel->y) > 40 && ((vel->y > 0 && y>0) || (vel->y < 0 && y<0)))
+				// Bottom side clipping
+				if(!wrapAround && (pos.y+y >= cClient->getMap()->GetHeight())) {
+					worm->pos().y=( (float)cClient->getMap()->GetHeight() - 5 );
+					clip |= 0x08;
+					coll = true;
+					worm->setOnGround( true );
+					if(fabs(vel->y) > 40)
 						vel->y *= -0.4f;
 					else
 						vel->y=(0);
+					continue; // Note: This was break in LX56, but continue is really better here
 				}
 
-				hit = true;
-				worm->setOnGround( true );
+				int posy = (int)pos.y + y; if(wrapAround) { posy %= (int)cClient->getMap()->GetHeight(); if(posy < 0) posy += cClient->getMap()->GetHeight(); }
+				if(!(cClient->getMap()->GetPixelFlag(x,posy) & PX_EMPTY)) {
+					coll = true;
 
-				// NOTE: Be carefull that you don't do any float->int->float conversions here.
-				// This has some *huge* effect. People reported it as high ceil friction.
-				if(y<0) {
-					clip |= 0x04;
-					worm->pos().write().y = pos.y + y + 5;
-				}
-				else {
-					clip |= 0x08;
-					worm->pos().write().y = pos.y + y - 5;
+					if(!hit && !jump) {
+						if(fabs(vel->y) > 40 && ((vel->y > 0 && y>0) || (vel->y < 0 && y<0)))
+							vel->y *= -0.4f;
+						else
+							vel->y=(0);
+					}
+
+					hit = true;
+					worm->setOnGround( true );
+
+					// NOTE: Be carefull that you don't do any float->int->float conversions here.
+					// This has some *huge* effect. People reported it as high ceil friction.
+					if(y<0) {
+						clip |= 0x04;
+						worm->pos().y = pos.y + y + 5;
+					}
+					else {
+						clip |= 0x08;
+						worm->pos().y = pos.y + y - 5;
+					}
+
+					//if(y>3 && !jump) {
+						//vVelocity.y=(-10);
+						//Velocity.y=(0);
+					//	break;
+					//}
 				}
 			}
 		}
+		
+		// In case of this, it could be that we need to do a FMOD. Just do it to be sure.
+		if(check_needed && wrapAround) {
+			FMOD(pos.y, (float)cClient->getMap()->GetHeight());			
+		}
+		
+		// If we are stuck in left & right or top & bottom, just don't move in that direction
+		if ((clip & 0x01) && (clip & 0x02))
+			worm->pos().x = vOldPos.x;
+
+		// HINT: when stucked horizontal we move slower - it's more like original LX
+		if ((clip & 0x04) && (clip & 0x08))  {
+			worm->pos().y = vOldPos.y;
+			if (!worm->getWormState()->bJump)  // HINT: this is almost exact as old LX
+				worm->pos().x = vOldPos.x;
+		}
+
+		// If we collided with the ground and we were going pretty fast, make a bump sound
+		if(coll) {
+			if( fabs(vel->x) > 30 && (clip & 0x01 || clip & 0x02) )
+				StartSound( sfxGame.smpBump, worm->pos(), worm->getLocal(), -1, worm );
+			else if( fabs(vel->y) > 30 && (clip & 0x04 || clip & 0x08) )
+				StartSound( sfxGame.smpBump, worm->pos(), worm->getLocal(), -1, worm );
+		}
+
+		if (wrapAround && worm->getNinjaRope()->isReleased()) {
+			if (worm->pos().x > prevWormPos.x + cClient->getMap()->GetWidth() / 2)
+				worm->getNinjaRope()->hookPos().x += cClient->getMap()->GetWidth();
+			if (worm->pos().x < prevWormPos.x - cClient->getMap()->GetWidth() / 2)
+				worm->getNinjaRope()->hookPos().x -= cClient->getMap()->GetWidth();
+			if (worm->pos().y > prevWormPos.y + cClient->getMap()->GetHeight() / 2)
+				worm->getNinjaRope()->hookPos().y += cClient->getMap()->GetHeight();
+			if (worm->pos().y < prevWormPos.y - cClient->getMap()->GetHeight() / 2)
+				worm->getNinjaRope()->hookPos().y -= cClient->getMap()->GetHeight();
+		}
+
+		return coll;
 	}
 
-	// In case of this, it could be that we need to do a FMOD. Just do it to be sure.
-	if(wrapAround) {
-		FMOD(pos.y, (float)map->GetHeight());
-	}
+// TODO: this function does not behave exactly as the above one (still some bugs probably), fix this in beta 10 as it is faster than the above
+/*bool moveAndCheckWormCollision(AbsTime currentTime, float dt, CWorm* worm, CVec pos, CVec *vel, CVec vOldPos, int jump ) {
+		static const int maxspeed2 = 10; // this should not be too high as we could run out of the cClient->getMap() without checking else
 
-	// If we are stuck in left & right or top & bottom, just don't move in that direction
-	if ((clip & 0x01) && (clip & 0x02))
-		worm->pos().write().x = vOldPos.x;
+		// Can happen when starting a game
+		if (!cClient->getMap())
+			return false;
 
-	// HINT: when stucked horizontal we move slower - it's more like original LX
-	if ((clip & 0x04) && (clip & 0x08))  {
-		worm->pos().write().y = vOldPos.y;
-		if (!worm->tState.get().bJump)  // HINT: this is almost exact as old LX
-			worm->pos().write().x = vOldPos.x;
-	}
+		// check if the vel is really too high (or infinity), in this case just ignore
+		if( (*vel*dt*worm->speedFactor()).GetLength2() > (float)cClient->getMap()->GetWidth() * (float)cClient->getMap()->GetHeight() )
+			return true;
 
-	// If we collided with the ground and we were going pretty fast, make a bump sound
-	if(coll) {
-		if( fabs(vel->x) > 30 && (clip & 0x01 || clip & 0x02) )
-			StartSound( sfxGame.smpBump, worm->pos(), worm->getLocal(), -1 );
-		else if( fabs(vel->y) > 30 && (clip & 0x04 || clip & 0x08) )
-			StartSound( sfxGame.smpBump, worm->pos(), worm->getLocal(), -1 );
-	}
+		// If the worm is going too fast, divide the speed by 2 and perform 2 collision checks
+		// TODO: is this still needed? we call this function with a fixed dt
+		// though perhaps it is as with higher speed the way we have to check is longer
+		if( (*vel * dt * worm->speedFactor()).GetLength2() > maxspeed2 && dt > 0.001f ) {
+			dt /= 2;
+			if(moveAndCheckWormCollision(currentTime, dt,worm,pos,vel,vOldPos,jump)) return true;
+			return moveAndCheckWormCollision(currentTime, dt,worm,worm->getPos(),vel,vOldPos,jump);
+		}
 
-	return coll;
-}
+		// Handle infinite map
+		const bool wrapAround = cClient->getGameLobby()->features[FT_InfiniteMap];
+		pos += *vel * dt * worm->speedFactor();
+		if(wrapAround) {
+			FMOD(pos.x, (float)cClient->getMap()->GetWidth());
+			FMOD(pos.y, (float)cClient->getMap()->GetHeight());
+		}
+		CMap *map = cClient->getMap();
+		worm->pos() = pos;
+		
+		worm->setOnGround(false);
+
+		// Check for collision
+		CMap::CollisionInfo coll = map->StaticCollisionCheck(pos, 7, 7, wrapAround);
+
+		// Left or right
+		if (coll.left || coll.right)  {
+			if (fabs(vel->x) > 40)
+				vel->x *= -0.4f;
+			else
+				vel->x = 0;
+
+			// If we collided with the ground and we were going pretty fast, make a bump sound
+			if (fabs(vel->x) > 30)
+				StartSound(sfxGame.smpBump, worm->pos(), worm->getLocal(), -1, worm);
+
+			// Adjust the position
+			worm->pos().x = (float)coll.moveToX;
+		}
+
+		// Top or bottom
+		if (coll.top || coll.bottom)  {
+			worm->setOnGround(true);
+
+			if (fabs(vel->y) > 40)
+				vel->y *= -0.4f;
+			else
+				vel->y = 0;
+
+			// If we collided with the ground and we were going pretty fast, make a bump sound
+			if (fabs(vel->y) > 30)
+				StartSound(sfxGame.smpBump, worm->pos(), worm->getLocal(), -1, worm);
+
+			// Adjust the position
+			worm->pos().y = (float)coll.moveToY;
+		}
+			
+		// If we are stuck in left & right or top & bottom, just don't move in that direction
+		if (coll.left && coll.right)
+			worm->pos().x = vOldPos.x;
+
+		// HINT: when stucked horizontal we move slower - it's more like original LX
+		if (coll.top && coll.bottom)  {
+			worm->pos().y = vOldPos.y;
+			if (!worm->getWormState()->bJump)  // HINT: this is almost exact as old LX
+				worm->pos().x = vOldPos.x;
+		}
+		
+		return coll.occured;
+	}*/
 
 
-void PhysicsEngine::simulateWorm(CWorm* worm, bool local) {
-	if(game.gameScript()->gusEngineUsed()) return;
+	virtual void simulateWorm(CWorm* worm, CWorm* worms, bool local) {
+		AbsTime simulationTime = GetPhysicsTime();
+		warpSimulationTimeForDeltaTimeCap(worm->fLastSimulationTime, tLX->fDeltaTime, tLX->fRealDeltaTime);
+		static const TimeDiff orig_dt = LX56PhysicsDT;
+		const float dt = (bool)cClient->getGameLobby()->features[FT_GameSpeedOnlyForProjs] ? orig_dt.seconds() : (orig_dt.seconds() * (float)cClient->getGameLobby()->features[FT_GameSpeed]);
+		const TimeDiff wpnDT = orig_dt * (float)cClient->getGameLobby()->features[FT_GameSpeed]; // wpnDT could be different from dt
+		if(worm->fLastSimulationTime + orig_dt > simulationTime) return;
 
-	// TODO: Later, we should have a message bus for input-events which is filled
-	// by goleft/goright/stopleft/stopright/shoot/etc signals. These signals are handled in here.
-	// Though the key/mouse event handling (what CWorm::getInput() is doing atm)
-	// is then handled in the InputEngine and not called from here because
-	// the PhysicEngine should not care about when the key/mouse events are handled.
+		// TODO: Later, we should have a message bus for input-events which is filled
+		// by goleft/goright/stopleft/stopright/shoot/etc signals. These signals are handled in here.
+		// Though the key/mouse event handling (what CWorm::getInput() is doing atm)
+		// is then handled in the InputEngine and not called from here because
+		// the PhysicEngine should not care about when the key/mouse events are handled.
 
-	// TODO: count the amount of shootings
-	// The problem is that we eventually count one shoot-press twice or also the
-	// other way around, twice shoot-presses only once.
-	// To solve this in a clean way, we really need this message bus. A dirty way
-	// to solve it would be to send wormstate-updates more often if needed
-	// with some checks here. (In the end, also the clean way would result in more
-	// worm updates.)
+		// TODO: count the amount of shootings
+		// The problem is that we eventually count one shoot-press twice or also the
+		// other way around, twice shoot-presses only once.
+		// To solve this in a clean way, we really need this message bus. A dirty way
+		// to solve it would be to send wormstate-updates more often if needed
+		// with some checks here. (In the end, also the clean way would result in more
+		// worm updates.)
 
-	// get input max once a frame (and not at all if we don't simulate this frame)
-	// TODO: This is not the case anymore. Is this bad?
+		// get input max once a frame (and not at all if we don't simulate this frame)
+
+			/*
+				Only get input for this worm on certain conditions:
+				1) This worm is a local worm (ie, owned by me)
+				2) We're not in a game menu
+				3) We're not typing a message
+				4) weapons selected
+			*/
+
+		if(cClient && local && !cClient->isGameMenu() && !cClient->isChatTyping() && !cClient->isGameOver() && !Con_IsVisible() && worm->getWeaponsReady()) {
+			int old_weapon = worm->getCurrentWeapon();
+
+			worm->getInput();
+			
+			if (worm->isShooting() || old_weapon != worm->getCurrentWeapon())  // The weapon bar is changing
+				cClient->shouldRepaintInfo() = true;
+		}
+
+		const gs_worm_t *wd = worm->getGameScript()->getWorm();
+		worm_state_t *ws = worm->getWormState();
+
+
+	simulateWormStart:
 	
-		/*
-			Only get input for this worm on certain conditions:
-			1) This worm is a local worm (ie, owned by me)
-			2) We're not in a game menu
-			3) We're not typing a message
-			4) weapons selected
-		*/
+		if(worm->fLastSimulationTime + orig_dt > simulationTime) return;
+		worm->fLastSimulationTime += TimeDiff(orig_dt);
 
-	if(cClient && local && !cClient->isGameMenu() && !cClient->isChatTyping() && !game.gameOver && !Con_IsVisible() && worm->bWeaponsReady) {
-		int old_weapon = worm->getCurrentWeapon();
 
-		worm->getInput();
+		// If we're seriously injured (below 15% health) and visible, bleed
+		// HINT: We have to check the visibility for everybody as we don't have entities for specific teams/worms.
+		// If you want to make that better, you would have to give the CViewport to simulateWorm (but that would be really stupid).
+		if(worm->getHealth() < 15 && worm->isVisibleForEverybody()) {
+			if(simulationTime > worm->getLastBlood() + 2.0f) {
+				worm->setLastBlood( worm->fLastSimulationTime );
 
-		if (worm->isShooting() || old_weapon != worm->getCurrentWeapon())  // The weapon bar is changing
-			cClient->shouldRepaintInfo() = true;
-	}
-
-	const worm_state_t *ws = &worm->tState.get();
-
-	if(!worm->getAlive()) return;
-	
-	// We expect that this gets called with this fixed FPS.
-	// Gamespeed multiplicators or other things are handled from the outside.
-	float dt = LX56PhysicsDT.seconds();
-
-	// If we're seriously injured (below 15% health) and visible, bleed
-	// HINT: We have to check the visibility for everybody as we don't have entities for specific teams/worms.
-	// If you want to make that better, you would have to give the CViewport to simulateWorm (but that would be really stupid).
-	if(worm->getHealth() < 15 && worm->isVisibleForEverybody()) {
-		if(GetPhysicsTime() > worm->getLastBlood() + 2.0f) {
-			worm->setLastBlood( GetPhysicsTime() );
-
-			const float amount = ((float)tLXOptions->iBloodAmount / 100.0f) * 20;
-			for(short i=0;i<amount;i++) {
-				SpawnEntity(ENT_BLOOD,0,worm->getPos(),GetRandomVec()*100,Color(200,0,0),NULL);
-				SpawnEntity(ENT_BLOOD,0,worm->getPos(),GetRandomVec()*100,Color(180,0,0),NULL);
+				const float amount = ((float)tLXOptions->iBloodAmount / 100.0f) * 10;
+				for(short i=0;i<amount;i++) {
+					const CVec v = CVec(GetRandomNum(), GetRandomNum()) * 30;
+					SpawnEntity(ENT_BLOOD,0,worm->getPos(),v,Color(200,0,0),NULL);
+					SpawnEntity(ENT_BLOOD,0,worm->getPos(),v,Color(180,0,0),NULL);
+				}
 			}
 		}
-	}
 
 
-	// Process the carving
-	if(ws->bCarve) {
-		const CVec dir = worm->getMoveDirection();
-		worm->incrementDirtCount( CarveHole(worm->getPos() + dir*4) );
-		//cClient->SendCarve(vPos + dir*4);
-	}
+		// Process the carving
+		if(ws->bCarve) {
+			const CVec dir = worm->getMoveDirection();
+			worm->incrementDirtCount( CarveHole(worm->getPos() + dir*4) );
+			//cClient->SendCarve(vPos + dir*4);
+		}
 
-	static const float	fFrameRate = 7.5f;
-	if(ws->bMove)
-		worm->frame() += fFrameRate * dt;
+		static const float	fFrameRate = 7.5f;
+		if(ws->bMove)
+			worm->frame() += fFrameRate * dt;
 
-	if(worm->frame() >= 3.0f || !ws->bMove)
-		worm->frame() = 0.0f;
-	if(worm->frame() < 0)
-		worm->frame() = 2.99f;
+		if(worm->frame() >= 3.0f || !ws->bMove)
+			worm->frame() = 0.0f;
+		if(worm->frame() < 0)
+			worm->frame() = 2.99f;
 
-	// Process the ninja rope
-	if(worm->getNinjaRope()->isReleased()) {
-		simulateNinjarope( dt, worm );
-		worm->velocity() += worm->getNinjaRope()->GetForce() * dt;
-	}
+		// Process the ninja rope
+		if(worm->getNinjaRope()->isReleased() && worms) {
+			simulateNinjarope( dt, worm, worms );
+			// TODO: move 'getForce' here?
+			worm->velocity() += worm->getNinjaRope()->GetForce(worm->getPos()) * dt;
+		}
 
-	if(!(bool)cClient->getGameLobby()[FT_GusanosWormPhysics]) {
 		// Process the moving
 		if(ws->bMove) {
-			const bool onGround = worm->isOnGround();
-			const float speed = onGround ? (float)cClient->getGameLobby()[FT_WormGroundSpeed] : (float)cClient->getGameLobby()[FT_WormAirSpeed];
-			const float maxspeed = onGround ? (float)cClient->getGameLobby()[FT_WormMaxGroundMoveSpeed] : (float)cClient->getGameLobby()[FT_WormMaxAirMoveSpeed];
-
+			const float speed = worm->isOnGround() ? wd->GroundSpeed : wd->AirSpeed;
 			if(worm->getMoveDirectionSide() == DIR_RIGHT) {
 				// Right
-				if(worm->velocity().get().x < maxspeed)
-					worm->velocity().write().x += speed * dt * 90.0f;
+				if(worm->velocity().x < 30)
+					worm->velocity().x += speed * dt * 90.0f;
 			} else {
 				// Left
-				if(worm->velocity().get().x > -maxspeed)
-					worm->velocity().write().x -= speed * dt * 90.0f;
+				if(worm->velocity().x > -30)
+					worm->velocity().x -= speed * dt * 90.0f;
 			}
 		}
 
@@ -375,28 +457,24 @@ void PhysicsEngine::simulateWorm(CWorm* worm, bool local) {
 		bool jumped = false;
 		{
 			const bool onGround = worm->CheckOnGround();
-			const float jumpForce = cClient->getGameLobby()[FT_WormJumpForce];
-
 			if( onGround )
 				worm->setLastAirJumpTime(AbsTime());
 			if(ws->bJump && ( onGround || worm->canAirJump() ||
-				( bool(cClient->getGameLobby()[FT_RelativeAirJump]) && GetPhysicsTime() >
-					worm->getLastAirJumpTime() + float( cClient->getGameLobby()[FT_RelativeAirJumpDelay] ) ) ))
+				( bool(cClient->getGameLobby()->features[FT_RelativeAirJump]) && GetPhysicsTime() > 
+					worm->getLastAirJumpTime() + float( cClient->getGameLobby()->features[FT_RelativeAirJumpDelay] ) ) )) 
 			{
 				if( onGround )
-					worm->velocity().write().y = jumpForce;
+					worm->velocity().y = wd->JumpForce;
 				else {
 					// GFX effect, as in TeeWorlds (we'll change velocity after that)
 					SpawnEntity(ENT_SPARKLE, 10, worm->getPos() + CVec( 0, 4 ), worm->velocity() + CVec( 0, 40 ), Color(), NULL );
 					SpawnEntity(ENT_SPARKLE, 10, worm->getPos() + CVec( 2, 4 ), worm->velocity() + CVec( 20, 40 ), Color(), NULL );
 					SpawnEntity(ENT_SPARKLE, 10, worm->getPos() + CVec( -2, 4 ), worm->velocity() + CVec( -20, 40 ), Color(), NULL );
 
-					if( !(bool)cClient->getGameLobby()[FT_JumpToAimDir] && worm->canAirJump() && worm->velocity().get().y > jumpForce ) // Negative Y coord = moving up
-						worm->velocity().write().y = jumpForce; // Absolute velocity - instant air jump
-					else {
-						CVec dir = (bool)cClient->getGameLobby()[FT_JumpToAimDir] ? -worm->getFaceDirection() : CVec(0.0f,1.0f);
-						worm->velocity() += dir * jumpForce; // Relative velocity - relative air jump
-					}
+					if( worm->canAirJump() && worm->velocity().y > wd->JumpForce ) // Negative Y coord = moving up
+						worm->velocity().y = wd->JumpForce; // Absolute velocity - instant air jump
+					else
+						worm->velocity().y += wd->JumpForce; // Relative velocity - relative air jump
 				}
 				worm->setLastAirJumpTime(GetPhysicsTime());
 				worm->setOnGround( false );
@@ -406,316 +484,378 @@ void PhysicsEngine::simulateWorm(CWorm* worm, bool local) {
 
 		{
 			// Air drag (Mainly to dampen the ninja rope)
-			const float Drag = cClient->getGameLobby()[FT_WormAirFriction];
+			const float Drag = wd->AirFriction;
 
 			if(!worm->isOnGround())	{
-				worm->velocity().write().x -= SQR(worm->velocity().get().x) * SIGN(worm->velocity().get().x) * Drag * dt;
-				worm->velocity().write().y += -SQR(worm->velocity().get().y) * SIGN(worm->velocity().get().y) * Drag * dt;
+				worm->velocity().x -= SQR(worm->velocity().x) * SIGN(worm->velocity().x) * Drag * dt;
+				worm->velocity().y += -SQR(worm->velocity().y) * SIGN(worm->velocity().y) * Drag * dt;
 			}
 		}
-
+				
 		// Gravity
-		worm->velocity().write().y += (float)cClient->getGameLobby()[FT_WormGravity] * dt;
+		worm->velocity().y += wd->Gravity*dt;
 
 		{
-			const float friction = cClient->getGameLobby()[FT_WormFriction];
+			float friction = cClient->getGameLobby()->features[FT_WormFriction];
 			if(friction > 0) {
 				static const float wormSize = 5.0f;
 				static const float wormMass = (wormSize/2) * (wormSize/2) * (float)PI;
 				static const float wormDragCoeff = 0.1f; // Note: Never ever change this! (Or we have to make this configureable)
-				applyFriction(worm->velocity().write(), dt, wormSize, wormMass, wormDragCoeff, friction);
+				applyFriction(worm->velocity(), dt, wormSize, wormMass, wormDragCoeff, friction);
 			}
 		}
-
+		
+		//resetFollow(); // reset follow here, projectiles will maybe re-enable it...
 
 		// Check collisions and move
-		moveAndCheckWormCollision( GetPhysicsTime(), dt, worm, worm->getPos(), &worm->velocity().write(), worm->getPos(), jumped );
+		moveAndCheckWormCollision( simulationTime, dt, worm, worm->getPos(), &worm->velocity(), worm->getPos(), jumped );
 
 
 		// Ultimate in friction
 		if(worm->isOnGround()) {
-			worm->velocity().write().x *= 1.0f - float(cClient->getGameLobby()[FT_WormGroundFriction]);
+			worm->velocity().x *= 1.0f - float(cClient->getGameLobby()->features[FT_WormGroundFriction]);
+
+			//vVelocity = vVelocity * CVec(/*wd->GroundFriction*/ 0.9f,1);        // Hack until new game script is done
 
 			// Too slow, just stop
-			if(fabs(worm->velocity().get().x) < (float)cClient->getGameLobby()[FT_WormGroundStopSpeed] && !ws->bMove)
-				worm->velocity().write().x = 0;
+			if(fabs(worm->velocity().x) < 5 && !ws->bMove)
+				worm->velocity().x = 0;
+		}
+
+		simulateWormWeapon(wpnDT, worm);
+
+
+		// Fill in the info for sending
+		if(local) {
+			ws->iAngle = (int)worm->getAngle();
+			ws->iFaceDirectionSide = worm->getFaceDirectionSide();
+			ws->iX = (int)worm->getPos().x;
+			ws->iY = (int)worm->getPos().y;
+		}
+
+		goto simulateWormStart;
+	}
+
+	virtual void simulateWormWeapon(CWorm* worm) {
+		// we use deltatime here and not realdeltatime because we want to have it the same way as the call from simulateWorm
+		TimeDiff dt = tLX->fDeltaTime * (float)cClient->getGameLobby()->features[FT_GameSpeed];
+		simulateWormWeapon(dt, worm);
+	}
+
+	void simulateWormWeapon(TimeDiff dt, CWorm* worm) {
+		// Weird
+		if (worm->getCurrentWeapon() < 0 || worm->getCurrentWeapon() >= 5) {
+			warnings("WARNING: SimulateWeapon: iCurrentWeapon is bad\n");
+			return;
+		}
+
+		wpnslot_t *Slot = worm->getWeapon(worm->getCurrentWeapon());
+
+		if(!Slot->Weapon) return;
+
+		// Slot should still do the reloading even without enabled wpn, thus uncommented this check.
+		//if(!Slot->Enabled) return;
+		
+		if(Slot->LastFire > 0)
+			Slot->LastFire -= dt.seconds();
+		
+		if(Slot->Reloading) {
+			if(worm->getLoadingTime() == 0)
+				Slot->Charge = 1;
+			else
+				Slot->Charge += fabs((float)dt.seconds()) * (Slot->Weapon->Recharge * (1.0f/worm->getLoadingTime()));
+
+			if(Slot->Charge >= 1) {
+				Slot->Charge = 1;
+				Slot->Reloading = false;
+			}
 		}
 	}
 
-	// Gusanos worm physics
-	else {
-		worm->jumping = ws->bJump;
-		worm->movingLeft = ws->bMove && worm->getMoveDirectionSide() == DIR_LEFT;
-		worm->movingRight = ws->bMove && worm->getMoveDirectionSide() == DIR_RIGHT;
-
-		CGameObject::ScopedGusCompatibleSpeed scopedSpeed(*worm);
-
-		VectorD2<float> next = worm->pos() + worm->velocity();
-
-		VectorD2<long> inext(static_cast<long>(next.x), static_cast<long>(next.y));
-
-		worm->calculateAllReactionForces(next, inext);
-
-		worm->processJumpingAndNinjaropeControls();
-		worm->processPhysics();
-		worm->processMoveAndDig();
-
-		worm->tState.write().bJump = worm->jumping; // we may have overwritten this
+	virtual void simulateProjectiles(Iterator<CProjectile*>::Ref projs) {
+		LX56_simulateProjectiles(projs);
 	}
 
-	simulateWormWeapon(dt, worm);
+	void simulateNinjarope(float dt, CWorm* owner, CWorm *worms) {
+		CNinjaRope* rope = owner->getNinjaRope();
+		CVec playerpos = owner->getPos();
 
-	worm->posRecordings.push_back(worm->getPos());
-}
+		const bool wrapAround = cClient->getGameLobby()->features[FT_InfiniteMap];
 
-static void simulateWormWeapon(float dt, CWorm* worm) {
-	if(worm->tWeapons.size() == 0) return;
+		rope->updateOldHookPos();
 
-	// Without FT_GameSpeedOnlyForProjs, we apply the gamespeed multiplicator logic outside.
-	if((bool)cClient->getGameLobby()[FT_GameSpeedOnlyForProjs])
-		dt *= (float)cClient->getGameLobby()[FT_GameSpeed];
-	
-	wpnslot_t *Slot = worm->writeCurWeapon();
-	if(!Slot->weapon()) return;
-	
-	// Slot should still do the reloading even without enabled wpn, thus uncommented this check.
-	//if(!Slot->Enabled) return;
+		if(!rope->isReleased())
+			return;
 
-	if(Slot->LastFire > 0)
-		Slot->LastFire -= dt;
+		const bool firsthit = !rope->isAttached();
+		CVec force = rope->isShooting() ? CVec(0,100) : CVec(0,150);
 
-	if(Slot->Reloading) {
-		if((int)cClient->getGameLobby()[FT_LoadingTime] == 0)
-			Slot->Charge = 1.f;
-		else
-			Slot->Charge += dt * (Slot->weapon()->Recharge * (1.0f/((int)cClient->getGameLobby()[FT_LoadingTime] * 0.01f)));
-
-		if(Slot->Charge >= 1.f) {
-			Slot->Charge = 1.f;
-			Slot->Reloading = false;
-		}
-	}
-}
-
-void PhysicsEngine::simulateProjectiles(Iterator<CProjectile*>::Ref projs) {
-	if(game.gameScript()->gusEngineUsed()) return;
-	LX56_simulateProjectiles(projs);
-}
-
-static void simulateNinjarope(float dt, CWorm* owner) {
-	CNinjaRope* rope = &owner->cNinjaRope.write();
-	CVec playerpos = owner->getPos();
-
-	const bool wrapAround = cClient->getGameLobby()[FT_InfiniteMap];
-
-	if(!rope->isReleased())
-		return;
-
-	const bool firsthit = !rope->isAttached();
-	CVec force = rope->isShooting() ?
-		CVec(0.0f, (float)cClient->getGameLobby()[FT_RopeGravity]) :
-		CVec(0.0f, (float)cClient->getGameLobby()[FT_RopeFallingGravity]);
-
-	// dt is fixed, but for very high speed, this could be inaccurate.
-	// We use the limit 5 here to have it very unpropable to shoot through a wall.
-	// In most cases, dt his halfed once, so this simulateNinjarope is
-	// like in LX56 with 200FPS.
-	if((rope->hookVelocity() + force*dt).GetLength2() * dt * dt * getNinjaropePrecision() > 5) {
-		simulateNinjarope( dt/2, owner );
-		simulateNinjarope( dt/2, owner );
-		return;
-	}
-
-	// Still flying in the air
-	if(rope->isShooting()) {
-
-		// Gravity
-		rope->hookVelocity() += force*dt;
-		rope->hookPos() += rope->hookVelocity() * dt;
-
-		const float length2 = (playerpos - rope->hookPos()) . GetLength2();
-
-		// Check if it's too long
-		const float ropeMaxLength = (float)(int)cClient->getGameLobby()[FT_RopeMaxLength];
-		if(length2 > ropeMaxLength * ropeMaxLength) {
-			rope->hookVelocity() = CVec(0,0);
-			rope->setShooting( false );
-		}
-	}
-	// Falling
-	else if(!rope->isShooting() && !rope->isAttached()) {
-
-		// Going towards the player
-		const float length2 = (playerpos - rope->hookPos()) . GetLength2();
-		const float ropeRestLength = (float)(int)cClient->getGameLobby()[FT_RopeRestLength];
-		if(length2 > ropeRestLength * ropeRestLength) {
-
-			// Pull the hook back towards the player
-			CVec d = playerpos - rope->hookPos();
-			if(length2) d *= (float)(1.0f/sqrt(length2)); // normalize
-
-			force += (d*10000)*dt;
+		// dt is fixed, but for very high speed, this could be inaccurate.
+		// We use the limit 5 here to have it very unpropable to shoot through a wall.
+		// In most cases, dt his halfed once, so this simulateNinjarope is
+		// like in LX56 with 200FPS.
+		if((rope->getHookVel() + force*dt).GetLength2() * dt * dt > 5) {
+			simulateNinjarope( dt/2, owner, worms );
+			simulateNinjarope( dt/2, owner, worms );
+			return;
 		}
 
-		rope->hookVelocity() += force * dt;
-		rope->hookPos() += rope->hookVelocity() * dt;
-	}
+		// Still flying in the air
+		if(rope->isShooting()) {
 
+			// Gravity
+			rope->hookVelocity() += force*dt;
+			rope->hookPos() += rope->hookVelocity() * dt;
 
-	bool outsideMap = false;
+			const float length2 = (playerpos - rope->hookPos()) . GetLength2();
 
-	// Hack to see if the hook went out of the game.gameMap()
-	if(!rope->isPlayerAttached() && !wrapAround)
-		if(
-			rope->hookPos().get().x <= 0 || rope->hookPos().get().y <= 0 ||
-			rope->hookPos().get().x >= game.gameMap()->GetWidth()-1 ||
-			rope->hookPos().get().y >= game.gameMap()->GetHeight()-1) {
-		rope->Attach();
-
-		// Make the hook stay at an edge
-		rope->hookPos().write().x = ( MAX((float)0, rope->hookPos().get().x) );
-		rope->hookPos().write().y = ( MAX((float)0, rope->hookPos().get().y) );
-
-		rope->hookPos().write().x = ( MIN(game.gameMap()->GetWidth()-(float)1, rope->hookPos().get().x) );
-		rope->hookPos().write().y = ( MIN(game.gameMap()->GetHeight()-(float)1, rope->hookPos().get().y) );
-
-		outsideMap = true;
-	}
-
-
-	// Check if the hook has hit anything on the game.gameMap()
-	if(!rope->isPlayerAttached()) {
-		rope->setAttached( false );
-
-		VectorD2<long> wrappedHookPos = rope->hookPos().get();
-		MOD(wrappedHookPos.x, (long)game.gameMap()->GetWidth());
-		MOD(wrappedHookPos.y, (long)game.gameMap()->GetHeight());
-
-		const Material& px = game.gameMap()->getMaterial((uint)wrappedHookPos.x, (uint)wrappedHookPos.y);
-		if(!px.particle_pass || outsideMap) {
-			if(!outsideMap && !px.can_hook) {
+			// Check if it's too long
+			if(length2 > rope->getMaxLength() * rope->getMaxLength()) {
 				rope->hookVelocity() = CVec(0,0);
 				rope->setShooting( false );
 			}
-			else {
-				rope->Attach();
+		}
+		// Failing
+		else if(!rope->isShooting() && !rope->isAttached()) {
 
-				if(px.destroyable && firsthit) {
-					Color col = game.gameMap()->getColorAt(wrappedHookPos.x, wrappedHookPos.y);
+			// Going towards the player
+			const float length2 = (playerpos - rope->hookPos()) . GetLength2();
+			if(length2 > rope->getRestLength() * rope->getRestLength()) {
+
+				// Pull the hook back towards the player
+				CVec d = playerpos - rope->hookPos();
+				if(length2) d *= (float)(1.0f/sqrt(length2)); // normalize
+
+				force += (d*10000)*dt;
+			}
+
+			rope->hookVelocity() += force * dt;
+			rope->hookPos() += rope->hookVelocity() * dt;
+		}
+
+		
+		bool outsideMap = false;
+
+		// Hack to see if the hook went out of the cClient->getMap()
+		if(!rope->isPlayerAttached() && !wrapAround &&
+			(	rope->hookPos().x <= 0 || rope->hookPos().y <= 0 ||
+				rope->hookPos().x >= cClient->getMap()->GetWidth()-1 ||
+				rope->hookPos().y >= cClient->getMap()->GetHeight()-1)) {
+			rope->setShooting( false );
+			rope->setAttached( true );
+
+			// Make the hook stay at an edge
+			rope->hookPos().x = ( MAX((float)0, rope->hookPos().x) );
+			rope->hookPos().y = ( MAX((float)0, rope->hookPos().y) );
+
+			rope->hookPos().x = ( MIN(cClient->getMap()->GetWidth()-(float)1, rope->hookPos().x) );
+			rope->hookPos().y = ( MIN(cClient->getMap()->GetHeight()-(float)1, rope->hookPos().y) );
+
+			outsideMap = true;
+		}
+
+
+		// Check if the hook has hit anything on the cClient->getMap()
+		if(!rope->isPlayerAttached()) {
+			rope->setAttached( false );
+
+			// float to long will truncate towards zero, so if we had x = 5.5,
+			// and the level width is 8, and x is wrapped around to 5.5 - 8 = -2.5,
+			// then for x = 5.5: ((long)x % width) == 5, and for x = -2.5: ((long)x % width) == 6
+			// floorf() does not have this truncating error, it always truncates towards minus infinity.
+			VectorD2<long> wrappedHookPos(floorf(rope->hookPos().x), floorf(rope->hookPos().y));
+			MOD(wrappedHookPos.x, (long)cClient->getMap()->GetWidth());
+			MOD(wrappedHookPos.y, (long)cClient->getMap()->GetHeight());
+			
+			LOCK_OR_QUIT(cClient->getMap()->GetImage());
+			uchar px = outsideMap ? PX_ROCK : cClient->getMap()->GetPixelFlag(wrappedHookPos.x, wrappedHookPos.y);
+			if((px & PX_ROCK || px & PX_DIRT || outsideMap)) {
+				rope->setShooting( false );
+				rope->setAttached( true );
+				rope->hookVelocity() = CVec(0,0);
+
+				if(firsthit && !outsideMap) {
+					// Move rope hook to the center of the pixel, so adding/removing map width/height
+					// will not mess up the rope coordinate due to floating point error accumulation on infinite level
+					rope->hookPos().x = floorf(rope->hookPos().x) + 0.5f;
+					rope->hookPos().y = floorf(rope->hookPos().y) + 0.5f;
+				}
+
+				if((px & PX_DIRT) && firsthit) {
+					Color col = Color(cClient->getMap()->GetImage()->format, GetPixel(cClient->getMap()->GetImage().get(), wrappedHookPos.x, wrappedHookPos.y));
 					for( short i=0; i<5; i++ )
-						SpawnEntity(ENT_PARTICLE,0, rope->hookPos() + CVec(0,2), GetRandomVec()*40,col,NULL);
+						SpawnEntity(ENT_PARTICLE,0, rope->hookPos() + CVec(0,2), CVec(GetRandomNum()*40,GetRandomNum()*40),col,NULL);
+				}
+			}
+			UnlockSurface(cClient->getMap()->GetImage());
+		}
+
+		// Check if the hook has hit another worm
+		if(!rope->isAttached() && !rope->isPlayerAttached()) {
+
+			for(short i=0; i<MAX_WORMS; i++) {
+				// Don't check against the worm if they aren't used, dead, a flag or the ninja rope was shot by the worm
+				if(!worms[i].isUsed())
+					continue;
+				if(!worms[i].getAlive())
+					continue;
+				if(worms[i].getID() == owner->getID())
+					continue;
+				if(!worms[i].isVisible(owner))
+					continue;
+
+				CVec dist = worms[i].getPos() - rope->hookPos();
+				if( wrapAround ) {
+					FMOD(dist.x, (float)cClient->getMap()->GetWidth());
+					FMOD(dist.y, (float)cClient->getMap()->GetHeight());
+				}
+				if( dist.GetLength2() < 25 ) {
+					rope->AttachToPlayer(&worms[i], owner);
+					break;
+				}
+			}
+		}
+
+		// Put the hook where the worm is
+		else if(rope->isAttached() && rope->isPlayerAttached()) {
+
+			// If the worm has been killed, or dropped, or became invisible in H&S - drop the hook
+			if(	!rope->getAttachedPlayer() || 
+				!rope->getAttachedPlayer()->isUsed() || 
+				!rope->getAttachedPlayer()->getAlive() ||
+				!rope->getAttachedPlayer()->isVisible(owner) ) 
+			{
+				rope->UnAttachPlayer();
+			} else {
+				CVec prevHookPos = rope->hookPos();
+				rope->hookPos() = rope->getAttachedPlayer()->getPos();
+				if( wrapAround ) {
+					while (rope->hookPos().x > prevHookPos.x + cClient->getMap()->GetWidth() / 2)
+						rope->hookPos().x -= cClient->getMap()->GetWidth();
+					while (rope->hookPos().x < prevHookPos.x - cClient->getMap()->GetWidth() / 2)
+						rope->hookPos().x += cClient->getMap()->GetWidth();
+					while (rope->hookPos().y > prevHookPos.y + cClient->getMap()->GetHeight() / 2)
+						rope->hookPos().y -= cClient->getMap()->GetHeight();
+					while (rope->hookPos().y < prevHookPos.y - cClient->getMap()->GetHeight() / 2)
+						rope->hookPos().y += cClient->getMap()->GetHeight();
 				}
 			}
 		}
 	}
 
-	rope->checkForWormAttachment();
-}
-
 
 // --------------------
 // ---- Bonus ---------
 
-static void colideBonus(CBonus* bonus, int x, int y) {
-	bonus->velocity() = CVec(0,0);
-	bonus->pos().y = (float)y - 2;
-}
-
-static void simulateBonus(CBonus* bonus) {
-	// We expect that this gets called with this fixed FPS.
-	// Gamespeed multiplicators or other things are handled from the outside.
-	float dt = LX56PhysicsDT.seconds();
-
-	int x,  y;
-	int mw, mh;
-	int px, py;
-
-
-	bonus->life() += dt;
-	if(bonus->life() > BONUS_LIFETIME-3) {
-		bonus->flashTime() += dt;
-
-		if(bonus->flashTime() > 0.3f)
-			bonus->flashTime() = 0;
+	void colideBonus(CBonus* bonus, int x, int y) {
+		bonus->velocity() = CVec(0,0);
+		bonus->pos().y = (float)y - 2;
 	}
 
-	//
-	// Position & Velocity
-	//
-	bonus->velocity().y += 80 * dt;
-	bonus->pos() += bonus->velocity() * dt;
+	void simulateBonus(CBonus* bonus) {
+		AbsTime simulationTime = GetPhysicsTime();	
+		warpSimulationTimeForDeltaTimeCap(bonus->fLastSimulationTime, tLX->fDeltaTime, tLX->fRealDeltaTime);
+		static const float orig_dt = LX56PhysicsDT.seconds();
+		const float dt = (bool)cClient->getGameLobby()->features[FT_GameSpeedOnlyForProjs] ? orig_dt : (orig_dt * (float)cClient->getGameLobby()->features[FT_GameSpeed]);
+
+	simulateBonusStart:
+		if(bonus->fLastSimulationTime + orig_dt > simulationTime) return;
+		bonus->fLastSimulationTime += TimeDiff(orig_dt);
+
+		int x,  y;
+		int mw, mh;
+		int px, py;
 
 
-	//
-	// Check if we are hitting the ground
-	//
+		bonus->life() += dt;
+		if(bonus->life() > BONUS_LIFETIME-3) {
+			bonus->flashTime() += dt;
 
-
-	px = (int)bonus->pos().x;
-	py = (int)bonus->pos().y;
-
-	// Initialize
-	x = px-2;
-	y = py-2;
-
-
-	mw = game.gameMap()->GetWidth();
-	mh = game.gameMap()->GetHeight();
-
-	for(y=py-2; y<=py+2; y++) {
-
-		// Clipping
-		if(y<0)
-			continue;
-		if(y>=mh) {
-			if( cClient->getGameLobby()[FT_InfiniteMap] )
-				bonus->pos().y -= (float)mh;
-			else
-				colideBonus(bonus, x,y);
-			return;
+			if(bonus->flashTime() > 0.3f)
+				bonus->flashTime() = 0;
 		}
 
-		// TODO: do we need to lock pixel flags here?
+		//
+		// Position & Velocity
+		//
+		bonus->velocity().y += 80 * dt;
+		bonus->pos() += bonus->velocity() * dt;
 
-		for(x=px-2; x<=px+2; x++) {
+
+		//
+		// Check if we are hitting the ground
+		//
+
+
+		px = (int)bonus->pos().x;
+		py = (int)bonus->pos().y;
+
+		// Initialize
+		x = px-2;
+		y = py-2;
+
+
+		mw = cClient->getMap()->GetWidth();
+		mh = cClient->getMap()->GetHeight();
+
+		for(y=py-2; y<=py+2; y++) {
 
 			// Clipping
-			if(x<0) {
+			if(y<0)
 				continue;
-			}
-			if(x>=mw) {
-				colideBonus(bonus, x,y); // TODO: should not happen, remove that (bonus doesn't move horizontally). And why checking only right map border, not left one?
+			if(y>=mh) {
+				if( cClient->getGameLobby()->features[FT_InfiniteMap] )
+					bonus->pos().y -= (float)mh;
+				else
+					colideBonus(bonus, x,y);
 				return;
 			}
+			
+			// TODO: do we need to lock pixel flags here?
+			const uchar *pf = cClient->getMap()->GetPixelFlags() + y*mw + px-2;
 
-			if(game.gameMap()->GetPixelFlag(x,y) & (PX_DIRT|PX_ROCK)) {
-				colideBonus(bonus, x,y);
-				return;
+			for(x=px-2; x<=px+2; x++) {
+
+				// Clipping
+				if(x<0) {
+					pf++;
+					continue;
+				}
+				if(x>=mw) {
+					colideBonus(bonus, x,y); // TODO: should not happen, remove that (bonus doesn't move horizontally). And why checking only right map border, not left one?
+					return;
+				}
+
+				if(*pf & PX_DIRT || *pf & PX_ROCK) {
+					colideBonus(bonus, x,y);
+					return;
+				}
+
+				pf++;
 			}
 		}
+
+		goto simulateBonusStart;
 	}
-}
 
-void PhysicsEngine::simulateBonuses(CBonus* bonuses, size_t count) {
-	if(game.gameScript()->gusEngineUsed()) return;
+	virtual void simulateBonuses(CBonus* bonuses, size_t count) {
+		if(!cClient->getGameLobby()->bBonusesOn)
+			return;
 
-	if(!cClient->getGameLobby()[FT_Bonuses])
-		return;
+		if(!cClient->getMap()) return;
 
-	if(!game.gameMap()) return;
+		CBonus *b = bonuses;
 
-	CBonus *b = bonuses;
+		for(size_t i=0; i < count; i++,b++) {
+			if(!b->getUsed())
+				continue;
 
-	for(size_t i=0; i < count; i++,b++) {
-		if(!b->getUsed())
-			continue;
-
-		simulateBonus(b);
+			simulateBonus(b);
+		}
 	}
-}
 
+};
 
-PhysicsEngine* PhysicsEngine::Get() {
-	static PhysicsEngine engine;
-	return &engine;
+PhysicsEngine* CreatePhysicsEngineLX56() {
+	return new PhysicsLX56();
 }

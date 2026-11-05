@@ -16,7 +16,7 @@
 
 #include "LieroX.h"
 #include "FindFile.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
@@ -94,11 +94,10 @@ void Menu_Net_NewsFrame(int mouse)
 
 	// Process & Draw the gui
 	ev = cNews.Process();
-	cNews.Draw( VideoPostProcessor::videoSurface().get() );
+	cNews.Draw( VideoPostProcessor::videoSurface() );
 
 	if (Menu_Net_ProcessTabBarButtons(ev))
 		return;
-
 
 	// Process any events
 	if(ev) {
@@ -136,7 +135,7 @@ void Menu_Net_NewsFrame(int mouse)
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 }; // namespace DeprecatedGUI

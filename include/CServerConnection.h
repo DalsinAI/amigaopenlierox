@@ -23,7 +23,7 @@
 #include "CBytestream.h"
 #include "CShootList.h"
 #include "Consts.h"
-#include "olx-types.h"
+#include "types.h"
 #include "Version.h"
 #include "FileDownload.h"
 #include "IpToCountryDB.h"
@@ -32,7 +32,6 @@ class CChannel;
 class CWorm;
 class GameServer;
 class CServerNetEngine;
-struct GameState;
 
 
 // Client rights on a server
@@ -70,9 +69,12 @@ private:
 	GameServer 	*server;
 	CServerNetEngine *cNetEngine;
 	
+	// Local Worms (pointers to specific CServer::cWorms)
+	uint		iNumWorms;
+	CWorm		*cLocalWorms[MAX_PLAYERS];
+
 	bool		bGameReady;
 	bool		bMuted;
-	bool		m_gusLoggedIn;
 
 	int			iNetSpeed;
 	int			iNetStatus;
@@ -82,11 +84,9 @@ private:
 	CBytestream	bsUnreliable;
 
 	CShootList	cShootList;
-public:
-	GameState*	gameState;
-private:
 
     AbsTime       fZombieTime;
+	TimeDiff		fSendWait;
 	AbsTime		fLastUpdateSent;
 
 	ClientRights tRights;
@@ -106,7 +106,10 @@ public:
 
 	void		Clear();
 	void 		MinorClear();
+	int			Initialize();
 	void		Shutdown();
+
+	void		RemoveWorm(int id);
 
 	// Variables
 	CChannel	*getChannel()				{ return cNetChan; }
@@ -137,10 +140,15 @@ public:
 	
 	CBytestream	*getUnreliable()			{ return &bsUnreliable; }
 
-	bool		OwnsWorm(int id);
+	int			OwnsWorm(int id);
+	int			getNumWorms()				{ return iNumWorms; }
+	void		setNumWorms(int _w)			{ iNumWorms = _w; }
 
-	bool		getGameReady();
-	void		setGameReady(bool _g);
+	CWorm		*getWorm(int w)				{ return cLocalWorms[w]; }
+	void		setWorm(int i, CWorm *w)	{ cLocalWorms[i] = w; }
+
+	bool		getGameReady()				{ return bGameReady; }
+	void		setGameReady(bool _g)		{ bGameReady = _g; }
 
 	AbsTime		getLastReceived()			{ return fLastReceived; }
 	void		setLastReceived(const AbsTime& _l)	{ fLastReceived = _l; }
@@ -177,8 +185,6 @@ public:
 	void		setLocalClient(bool _l)	{ bLocalClient = _l; }	
 	
 	int			getConnectionArrayIndex();
-
-	bool&		gusLoggedIn() { return m_gusLoggedIn; }
 	
 	IpInfo ipInfo();
 	std::string getAddrAsString();

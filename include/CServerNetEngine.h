@@ -12,7 +12,7 @@
 #ifndef __CSERVER_NET_ENGINE_H__
 #define __CSERVER_NET_ENGINE_H__
 
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "CVec.h"
 
 class GameServer;
@@ -53,7 +53,7 @@ public:
 	void		 ParseSendFile(CBytestream *bs);
 
 	bool		 ParseChatCommand(const std::string& message);
-	
+
 	// Sending
 	
 	void		SendPacket(CBytestream *bs);
@@ -73,7 +73,7 @@ public:
 	void SendClientReady(CServerConnection* receiver); // If Receiver != NULL we're sending to worm connected during game
 	void SendWormsOut(const std::list<byte>& ids);
 	void SendWormDied(CWorm *Worm);
-	void SendWeapons(CWorm* w = NULL);
+	void SendWeapons();
 	void SendSpawnWorm(CWorm *Worm, CVec pos);
 	virtual void SendHideWorm(CWorm *worm, int forworm, bool show = false, bool immediate = false);
 	virtual void SendTeamScoreUpdate() {}
@@ -82,8 +82,7 @@ public:
 	static bool isWormPropertyDefault(CWorm* worm);
 	virtual void SendSelectWeapons(CWorm* worm);
 	virtual void SendUpdateWorm(CWorm* w);
-	void SendPlaySound(const std::string& name);
-		
+	
 	int getConnectionArrayIndex();
 	
 protected:
@@ -171,7 +170,7 @@ public:
 	virtual void SendSelectWeapons(CWorm* worm);
 	virtual void SendUpdateWorm(CWorm* w);
 	
-	static void WriteFeatureSettings(CBytestream* bs, const Version& compatVer);
+	static void WriteFeatureSettings(CBytestream* bs);
 
 protected:
 	virtual void WritePrepareGame(CBytestream *bs);
@@ -181,6 +180,5 @@ private:
     AbsTime fLastDamageReportSent;
     std::map< std::pair< int, int >, float > cDamageReport;
 };
-
 
 #endif  //  __CSERVER_NET_ENGINE_H__

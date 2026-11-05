@@ -21,7 +21,8 @@
 #include "StringUtils.h"
 #include "Cursor.h"
 #include "Timer.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
+#include "AuxLib.h"
 
 
 namespace DeprecatedGUI {
@@ -117,7 +118,7 @@ void CListview::Draw(SDL_Surface * bmpDest)
 			col = tColumns;
 
 			// Find the max height
-			int h = MAX(tLX->cFont.GetHeight(), item->iHeight);
+			int h = MAX(tMenu->iListItemHeight, item->iHeight);
 
 			if(y + h >= 480) break; // TODO: seems that it crashs without this (test by commenting out the next line)
 			if(y >= iY + iHeight) break;
@@ -360,7 +361,7 @@ lv_item_t* CListview::AddItem(const std::string& sIndex, int iIndex, Color iColo
 	item->tNext = NULL;
 	item->bSelected = false;
 	item->tSubitems = NULL;
-	item->iHeight = tLX->cFont.GetHeight();			// Text height
+	item->iHeight = tMenu->iListItemHeight;			// Text height
 	item->iColour = iColour;
 	item->iBgColour = tLX->clBlack;
 	item->iBgColour.a = SDL_ALPHA_TRANSPARENT;
@@ -609,9 +610,7 @@ void CListview::RemoveItem(int iIndex)
 			tLastItem = i;
 	}
 
-	tSelected = tItems;
-	if(tSelected)
-		tSelected->bSelected = true;
+	tSelected = NULL;
 
 	// Adjust the scrollbar
 	//cScrollbar.setMax( cScrollbar.getMax()-1 );
@@ -831,6 +830,7 @@ void CListview::Clear()
 	tItems = NULL;
 	tLastItem = NULL;
 	tSelected = NULL;
+	tPreviousMouseSelection = NULL;
 	tFocusedSubWidget = NULL;
 	tMouseOverSubWidget = NULL;
 	holdedWidget = NULL;
@@ -1085,6 +1085,35 @@ int	CListview::MouseDown(mouse_t *tMouse, int nDown)
 	if(tMouse->X < iX || tMouse->X > iX+iWidth-18)
 		return LV_NONE;
 
+	// Finger drag
+	if (tMouse->FirstDown)  {
+		bFingerDragged = false;
+		iFingerDraggedPos = tMouse->Y;
+	}
+
+	if (tMenu->bFingerDrag && tMouse->Down && bGotScrollbar) {
+		int clickDist = tMenu->iListItemHeight;
+		if (abs(iFingerDraggedPos - tMouse->Y) > clickDist) {
+			bFingerDragged = true;
+		}
+		if (bFingerDragged) {
+			int clicks = (tMouse->Y - iFingerDraggedPos) / clickDist;
+			while (clicks > 0) {
+				clicks--;
+				iFingerDraggedPos += clickDist;
+				cScrollbar.MouseWheelUp(tMouse);
+				bNeedsRepaint = true;
+			}
+			while (clicks < 0) {
+				clicks++;
+				iFingerDraggedPos -= clickDist;
+				cScrollbar.MouseWheelDown(tMouse);
+				bNeedsRepaint = true;
+			}
+			return LV_NONE;
+		}
+	}
+
 	//
 	// Column headers
 	//
@@ -1101,9 +1130,12 @@ int	CListview::MouseDown(mouse_t *tMouse, int nDown)
 
 		// Is any of the columns grabbed? Move it
 		if (iGrabbed > 0)  {
+			int x = iX+4;
+
 			// Get the column
 			for (i=0;i != iGrabbed && col;i++) {
 				prev = col;
+				x+=col->iWidth-2;
 				col = col->tNext;
 			}
 
@@ -1286,6 +1318,11 @@ int	CListview::MouseUp(mouse_t *tMouse, int nDown)
 		return LV_NONE;
 	}
 
+	if (bFingerDragged) {
+		bFingerDragged = false;
+		return LV_NONE;
+	}
+
 	// Column headers
 	if (!bOldStyle && tColumns)  {
 		if( tMouse->Y >= iY+2 && tMouse->Y <= iY+2+tLX->cFont.GetHeight()+1 && tLX->currentTime-fLastMouseUp >= 0.15f && iGrabbed <= 0)  {
@@ -1407,6 +1444,11 @@ int	CListview::MouseUp(mouse_t *tMouse, int nDown)
 
 			if(event != LV_DOUBLECLK)
 				fLastMouseUp = tLX->currentTime;
+
+			if (tSelected == tPreviousMouseSelection && tSelected != NULL && event == LV_CHANGED) {
+				event = LV_ENTER; // Click selected row for text lists to perform an action
+			}
+			tPreviousMouseSelection = tSelected;
 
 			return event;
 		}
@@ -1655,7 +1697,13 @@ int CListview::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate
 	}
 
 	// Enter
-	if (isActivationKey(keysym)) {
+	if (keysym == SDLK_RETURN ||
+		keysym == SDLK_KP_ENTER ||
+		keysym == SDLK_LALT ||
+		keysym == SDLK_LCTRL ||
+		keysym == SDLK_LSHIFT ||
+		keysym == SDLK_x ||
+		keysym == SDLK_z) {
 		iLastChar = SDLK_RETURN;
 		PlaySoundSample(sfxGeneral.smpClick);
 		return LV_ENTER;
@@ -1759,7 +1807,7 @@ lv_subitem_t *CListview::getCurSubitem(int index)
 
 ///////////////////
 // This widget is send a message
-uintptr_t CListview::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
+DWORD CListview::SendMessage(int iMsg, DWORD Param1, DWORD Param2)
 {
 	std::string s = "";
 
@@ -1793,7 +1841,7 @@ uintptr_t CListview::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
         // Return the current item
         case LVM_GETCURITEM:
             if(tSelected)
-                return (uintptr_t)tSelected;
+                return (DWORD)tSelected; // TODO: 64bit unsafe (pointer cast)
             return 0;
 
 		// Set the old-style property
@@ -1814,7 +1862,7 @@ uintptr_t CListview::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
 	return 0;
 }
 
-uintptr_t CListview::SendMessage(int iMsg, const std::string& sStr, uintptr_t Param)
+DWORD CListview::SendMessage(int iMsg, const std::string& sStr, DWORD Param)
 {
 	switch (iMsg)  {
 
@@ -1836,7 +1884,7 @@ uintptr_t CListview::SendMessage(int iMsg, const std::string& sStr, uintptr_t Pa
 }
 
 
-uintptr_t CListview::SendMessage(int iMsg, std::string *sStr, uintptr_t Param)
+DWORD CListview::SendMessage(int iMsg, std::string *sStr, DWORD Param)
 {
 	switch (iMsg)  {
 

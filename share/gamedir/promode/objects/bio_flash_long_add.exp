@@ -1,6 +1,0 @@
-sprite = bio_add.png
-blender=add
-alpha = 150
-dest_alpha = 0
-timeout = 50
-rock_hidden = 0

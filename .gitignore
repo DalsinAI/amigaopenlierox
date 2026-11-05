@@ -2,17 +2,18 @@ build/msvc*/obj
 build/msvc*/Debug
 build/msvc*/Release
 build/Xcode/build
-build/cmake
+src/breakpad/external/src/*/*/*/build
+src/breakpad/external/src/*/*/build
 *.ncb
 *.suo
 *.vcproj.*.user
 *.mode1v3
 *.mode2v3
 *.pbxuser
+*.user
+*.user.*
 xcuserdata
 xcshareddata
-nbproject
-*.xcworkspace
 
 *.kdev*
 Doxyfile
@@ -21,39 +22,9 @@ CMakeFiles
 CMakeScripts
 Makefile
 cmake_install.cmake
-*.cmake.user
-CMakeLists.txt.user*
-/openlierox.cbp
-
-# CLion JetBrains IDE
-# It just uses CMake - don't add the temporary stuff.
-/.idea
-
 bin
 *~
-.*.swp
-.history*
-*.autosave
 *.build
-*.o
-libopenlierox_pch_dephelp.a
-*-build
-/build-*
-
-# Ninja + generated files from a local cmake build into ./build
-.ninja_deps
-.ninja_log
-*.ninja
-olx-version-include
-
-# macOS .app packaging output (.github/workflows/package-macos.sh)
-/mac-stage
-/openlierox_*_macos.zip
-
-# Temp file used while downloading the SDL gamepad mapping DB at build time
-# (CMakeOlxCommon.cmake). The committed copy share/gamedir/gamecontrollerdb.txt
-# is tracked.
-/share/gamedir/gamecontrollerdb.txt.tmp
 
 # this one is automatically created by CMake
 gamedecompiler.xcodeproj
@@ -62,7 +33,6 @@ gamedecompiler.xcodeproj
 *.pdb
 *.pyc
 *.log
-*.dSYM
 
 configure-stamp
 build-stamp
@@ -71,16 +41,6 @@ PrecompiledHeader.*
 
 distrib
 
-# Android port build artefacts (clones, gradle/cmake intermediates)
-build/android/deps
-build/android/output/
-build/android/.gradle/
-*.claude
-
-__pycache__
-*.pyc
-.pytest_cache
-
-# Offscreen menu-render dev output
-.render-home/
-.render-out/
+# AmigaOS 3 port: build output and the packaged drawer (make -f amiga/Makefile.amigaos)
+/build/amigaos/
+/dist/

@@ -4,7 +4,6 @@
 #include <string>
 #include <list>
 #include <vector>
-#include <stdint.h>
 #include "Color.h" // for Color
 #include "StringBuf.h"
 #include "StyleVar.h"
@@ -22,7 +21,7 @@ public:
 	class Attribute  {
 	public:
 		Attribute() : iPriority(DEFAULT_PRIORITY) {}
-		Attribute(const std::string& name, const std::string& val, uint32_t priority, bool important = false) : 
+		Attribute(const std::string& name, const std::string& val, size_t priority, bool important = false) : 
 			sName(name), bImportant(important), iPriority(priority) { setValue(val); }
 	public:
 		// Attribute value
@@ -58,7 +57,7 @@ public:
 		std::string sValue;
 		std::vector<Value> tParsedValue;
 		bool bImportant;
-		uint32_t iPriority;
+		size_t iPriority;
 
 	public:
 		Attribute& operator=(const Attribute& a2)  {
@@ -83,9 +82,9 @@ public:
 		void setName(const std::string& name)	{ sName = name; }
 		void setValue(const std::string& value);
 		void setImportant(bool i)				{ bImportant = i; }
-		void setPriority(uint32_t p)				{ iPriority = p; }
+		void setPriority(size_t p)				{ iPriority = p; }
 
-		uint32_t getPriority() const		{ return bImportant ? iPriority + 1 : iPriority; }
+		size_t getPriority() const		{ return bImportant ? iPriority + 1 : iPriority; }
 		bool isImportant() const		{ return bImportant; }
 		const std::string& getName() const	{ return sName; }
 		const std::string& getUnparsedValue() const	{ return sValue; }
@@ -229,7 +228,7 @@ public:
 		const std::string& cl, const std::string& pscl, const Selector::Context& context) const;
 	void addSelector(Selector& s);
 	bool parse(const std::string& css, const std::string& path);
-	bool parseInSelector(Selector& sel, const std::string& css, uint32_t priority);  // Used for parsing <tag style="css here">
+	bool parseInSelector(Selector& sel, const std::string& css, size_t priority);  // Used for parsing <tag style="css here">
 	void clear();
 	const std::list<Selector>& getSelectors()		{ return tSelectors; }
 	

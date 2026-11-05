@@ -16,7 +16,7 @@
 #include <set>
 #include "DeprecatedGUI/CChatWidget.h"
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
@@ -435,9 +435,7 @@ void CChatWidget::GlobalProcessAndDraw(SDL_Surface * bmpDest)
 {
 	if( ! globalChat )
 	{
-		// Center the chat popup on a wider-than-640 local game (offset 0 for
-		// network games, which are already presented centered).
-		int setupX = 30 + VideoPostProcessor::get()->popupCenterOffsetX();
+		int setupX = 30;
 		int setupY = 100;
 		int setupW = 580;
 		int setupH = 280;

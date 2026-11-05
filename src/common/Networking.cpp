@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <atomic>
 
 #include <curl/curl.h>
 
@@ -199,34 +198,12 @@ static const NLaddress* getNLaddr(const NetworkAddr& addr) {
 // ------------------------------------------------------------------------
 
 
-
-
 #ifndef WIN32
-// SIGPIPE fires when a write to a closed socket or pipe would otherwise kill us.
-// The handler runs in signal context, so it must be async-signal-safe:
-// it only bumps a counter.
-// It must not log here -- the logging path takes a mutex and writes to stdout,
-// and when the SIGPIPE came from a stdout write that recursed into a stack overflow.
-// ReportPendingSigpipe() emits the warning later, from the main loop.
-static volatile sig_atomic_t sigpipeCount = 0;
-static void sigpipe_handler(int) {
-	++sigpipeCount;
-	signal(SIGPIPE, sigpipe_handler); // re-arm where signal() resets the disposition
+static void sigpipe_handler(int i) {
+	warnings << "got SIGPIPE, ignoring..." << endl;
+	signal(SIGPIPE, sigpipe_handler);
 }
 #endif
-
-// Runs on the main/game loop, where logging is safe.
-// Reports any SIGPIPEs that the handler recorded since the last call.
-void ReportPendingSigpipe() {
-#ifndef WIN32
-	static sig_atomic_t reported = 0;
-	const sig_atomic_t cur = sigpipeCount;
-	if(cur != reported) {
-		warnings << "got SIGPIPE (" << (int)(cur - reported) << "), ignoring" << endl;
-		reported = cur;
-	}
-#endif
-}
 
 
 /*
@@ -318,24 +295,11 @@ bool InitNetworkSystem() {
     	return false;
     }
 
-#if defined(__EMSCRIPTEN__)
-    // Browsers can't open raw UDP sockets, so NL_IP fails immediately.
-    // HawkNL ships an in-process NL_LOOP_BACK driver that routes
-    // packets between sockets opened in the same process — perfect
-    // for local client+server gameplay, which is the only mode the
-    // wasm build supports.
-    if(!nlSelectNetwork(NL_LOOP_BACK)) {
-        SystemError("could not select loopback network");
-        nlSystemUseChangeLock.endWriteAccess();
-        return false;
-    }
-#else
     if(!nlSelectNetwork(NL_IP)) {
         SystemError("could not select IP-based network");
 		nlSystemUseChangeLock.endWriteAccess();
 		return false;
     }
-#endif
 
 	bNetworkInited = true;
 	
@@ -343,8 +307,7 @@ bool InitNetworkSystem() {
 	dnsCache6 = new ThreadVar<dnsCacheT>();
 
 #if !defined(WIN32) && !defined(__ANDROID__)
-	// Catch SIGPIPE so a broken socket/pipe write does not kill us.
-	// The handler only records it; ReportPendingSigpipe() logs it safely later.
+	//sigignore(SIGPIPE);
 	signal(SIGPIPE, sigpipe_handler);
 #endif
 	
@@ -561,7 +524,7 @@ static void nlPrepareClose(NLsocket socket) {
 struct NetworkSocket::EventHandler {
 	struct SharedData {
 		Mutex mutex;
-		std::atomic<bool> quitSignal;
+		bool quitSignal;
 		NetworkSocket* sock;
 		NLint nlGroup;
 		
@@ -648,7 +611,7 @@ NetworkSocket::EventHandler::EventHandler(NetworkSocket* sock) {
 			return false;			
 		}
 		
-		Result handle() {
+		int handle() {
 			const int maxFPS = tLXOptions ? tLXOptions->nMaxFPS : 100;
 			TimeDiff max_frame_time = TimeDiff(MAX(0.01f, (maxFPS > 0) ? 1.0f/(float)maxFPS : 0.0f));
 			AbsTime lastTime = GetTime();
@@ -672,13 +635,13 @@ NetworkSocket::EventHandler::EventHandler(NetworkSocket* sock) {
 				lastTime = curTime;
 			}
 			
-			return true;
+			return 0;
 		}
 	};
 	
 	sharedData = new SharedData(sock);
-	threadPool->start(new EventHandlerThread(sharedData, NL_READ_STATUS), "socket " + itoa(sock->m_socket->sock) + " read event checker");
-	threadPool->start(new EventHandlerThread(sharedData, NL_ERROR_STATUS), "socket " + itoa(sock->m_socket->sock) + " error event checker");
+	threadPool->start(new EventHandlerThread(sharedData, NL_READ_STATUS), "socket " + itoa(sock->m_socket->sock) + " read event checker", true);
+	threadPool->start(new EventHandlerThread(sharedData, NL_ERROR_STATUS), "socket " + itoa(sock->m_socket->sock) + " error event checker", true);
 }
 
 NetworkSocket::NetworkSocket() : m_type(NST_INVALID), m_state(NSS_NONE), m_withEvents(false), m_socket(NULL) {
@@ -855,7 +818,7 @@ void NetworkSocket::Close() {
 	
 	struct CloseSocketWorker : Task {
 		NLsocket sock;
-		Result handle() {
+		int handle() {
 			nlSystemUseChangeLock.startReadAccess();
 			int ret = -1;
 			if(bNetworkInited) { // only do that if we have the network system still up
@@ -865,13 +828,13 @@ void NetworkSocket::Close() {
 				ret = (nlClose(sock) != NL_FALSE) ? 0 : -1;
 			}
 			nlSystemUseChangeLock.endReadAccess();
-			return ret == 0 ? true : false;
+			return ret;
 		}
 	};
 	CloseSocketWorker* worker = new CloseSocketWorker();
 	worker->name = "close socket";
 	worker->sock = m_socket->sock;
-	taskManager->start(worker, TaskManager::QT_GlobalQueue);
+	taskManager->start(worker);
 	
 	m_socket->sock = NL_INVALID;
 	m_type = NST_INVALID;
@@ -1325,7 +1288,7 @@ bool GetNetAddrFromNameAsync(const std::string& name)
 		std::string addr_name;
 		NetworkAddr address4, address6;
 		
-		Result handle() {
+		int handle() {
 			getNLaddr(address4)->valid = NL_FALSE;
 			getNLaddr(address6)->valid = NL_FALSE;
 			if(GetAddrFromNameAsync_Internal(addr_name.c_str(), getNLaddr(address4), getNLaddr(address6))) {
@@ -1345,7 +1308,7 @@ bool GetNetAddrFromNameAsync(const std::string& name)
 			Mutex::ScopedLock l(PendingDnsQueriesMutex);
 			PendingDnsQueries.erase(addr_name);
 			
-			return true;
+			return 0;
 		}
 	};
 	GetAddrFromNameAsync_Executer* data = new GetAddrFromNameAsync_Executer();
@@ -1353,7 +1316,7 @@ bool GetNetAddrFromNameAsync(const std::string& name)
 	data->name = "GetNetAddrFromNameAsync for " + name;
 	data->addr_name = name;
 
-	taskManager->start(data, TaskManager::QT_NoQueue);
+	taskManager->start(data, false);
     return true;
 }
 

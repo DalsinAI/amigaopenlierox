@@ -16,9 +16,6 @@
 #include <Carbon/Carbon.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreServices/CoreServices.h>
-// This confused Boost. Comes from <AssertMacros.h>
-#undef check
-#undef __Check
 #endif
 
 #ifdef WIN32
@@ -26,8 +23,13 @@
 #include <shellapi.h>
 #endif
 
+#ifdef __ANDROID__
+#include <SDL/SDL_android.h>
+#endif
+
 #include "Debug.h"
 #include "LieroX.h"
+#include "AuxLib.h"
 
 
 void OpenLinkInExternBrowser(const std::string& url) {
@@ -52,6 +54,22 @@ void OpenLinkInExternBrowser(const std::string& url) {
 #elif defined(WIN32)
 	ShellExecute(NULL, "open", url.c_str(), NULL, NULL, SW_MAXIMIZE);
 	
+#elif defined(__ANDROID__)
+
+	struct OpenBrowser: public Action
+	{
+		std::string url;
+		OpenBrowser(std::string url): url(url) { }
+		int handle()
+		{
+			SDL_ANDROID_OpenExternalWebBrowser(url.c_str());
+			return true;
+		}
+	};
+	doActionInMainThread( new OpenBrowser(url) );
+
+#elif defined(__amigaos__)
+	warnings << "no web browser to open " << url << " in the Amiga port" << endl;
 #else
 	std::string browser = "";
 		

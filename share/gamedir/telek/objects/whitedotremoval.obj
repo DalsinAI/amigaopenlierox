@@ -1,6 +1,0 @@
-sprite = dotremoverhella.png
-col_layer = -1
-render_layer = 5
-
-on timer(2)
- remove()

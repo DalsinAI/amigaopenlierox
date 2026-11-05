@@ -19,53 +19,17 @@
 #include "Debug.h"
 #include "CClient.h"
 #include "Options.h" // for controls_t
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "MathLib.h"
-#ifndef DEDICATED_ONLY
-#include "sound/sfx.h"
-#include "TouchControls.h"
-#endif
+#include "Touchscreen.h"
 
 
-CViewport& CViewport::operator=(const CViewport& o) {
-	shutdown();
-
-	bUsed = o.bUsed;
-
-	Left = o.Left;
-	Top = o.Top;
-	VirtWidth = o.VirtWidth;
-	VirtHeight = o.VirtHeight;
-	Width = o.Width;
-	Height = o.Height;
-	WorldX = o.WorldX;
-	WorldY = o.WorldY;
-
-	m_origTargetWorm = o.m_origTargetWorm;
-	pcTargetWorm = o.pcTargetWorm;
-	nType = o.nType;
-	bSmooth = o.bSmooth;
-	fTimer = o.fTimer;
-
-	if(bUsed) {
-#ifndef DEDICATED_ONLY
-		m_listener = new Listener();
-		sfx.registerListener(m_listener);
-#endif
-	}
-
-	return *this;
-}
 
 
 ///////////////////
 // Setup the viewport
 void CViewport::Setup(int l, int t, int vw, int vh, int type)
 {
-	shutdown();
-	
-	bUsed = true;
-
 	Left = l;
 	Top = t;
 	VirtWidth = vw;
@@ -77,23 +41,6 @@ void CViewport::Setup(int l, int t, int vw, int vh, int type)
     pcTargetWorm = NULL;
     nType = type;
 	bSmooth = false;
-	
-#ifndef DEDICATED_ONLY
-	m_listener = new Listener();
-	sfx.registerListener(m_listener);
-#endif
-}
-
-void CViewport::shutdown() {
-	bUsed = false;
-#ifndef DEDICATED_ONLY
-	if (m_listener)  {
-		sfx.removeListener(m_listener);
-		delete m_listener;
-		m_listener = NULL;
-	}
-#endif
-	gusReset();
 }
 
 
@@ -115,13 +62,8 @@ void CViewport::setupInputs(const PlyControls& Inputs)
 
 ///////////////////
 // Process a viewport
-void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGameMode)
+void CViewport::Process(CWorm *pcWormList, CViewport *pcViewList, int MWidth, int MHeight, int iGameMode)
 {    
-	if(!bUsed) {
-		errors << "Unused CViewport process" << endl;
-		return;
-	}
-	
 	int hx = Width/2;
 	int hy = Height/2;
 
@@ -136,11 +78,11 @@ void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGam
 			//notes << "find new worm for viewport because we have currently none" << endl;
             
             // Try and find a living worm first
-            CWorm *t = findTarget(pcViewList, true);
+            CWorm *t = findTarget(pcWormList, pcViewList, true);
 
             // If no living worms, try a dead worm (but still in the game)
             if(!t)
-                t = findTarget(pcViewList, false);
+                t = findTarget(pcWormList, pcViewList, false);
 
             if(t) {
                 pcTargetWorm = t;
@@ -194,11 +136,11 @@ void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGam
                 if( tLX->currentTime > fTimer ) {
 
                     // Try and find a living worm first
-                    CWorm *t = findTarget(pcViewList, true);
+                    CWorm *t = findTarget(pcWormList, pcViewList, true);
 
                     // If no living worms, try a dead worm (but still in the game)
                     if(!t)
-                        t = findTarget(pcViewList, false);
+                        t = findTarget(pcWormList, pcViewList, false);
 
                     if(t) {
                         pcTargetWorm = t;
@@ -236,39 +178,52 @@ void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGam
 
     // Action
 	case VW_ACTIONCAM: {
+        short i,j;
         // Finds a group of worms and smoothly moves around to show the whole group of players in a fight
 
         pcTargetWorm = NULL;
         
         // Generate a score for each worm depending on closeness of other worms
         // The worm with the lowest score is used as a focus point        
-		std::map<int,float> fScores;
+        float fScores[MAX_WORMS];
+        for(i=0; i<MAX_WORMS; i++)
+            fScores[i] = -1;
         
         // Go through all permutations of the worms
-		for_each_iterator(CWorm*, w1, game.aliveWorms()) {
-            // Set a zero score because we are at least alive and well
-            fScores[w1->get()->getID()] = 0;
+        for(i=0; i<MAX_WORMS; i++) {
+            if( !pcWormList[i].isUsed() || !pcWormList[i].getAlive() || pcWormList[i].getLives() == WRM_OUT )
+                continue;
             
-			for_each_iterator(CWorm*, w2, game.aliveWorms())
-                fScores[w1->get()->getID()] += CalculateDistance(w1->get()->getPos(), w2->get()->getPos());
+            // Set a zero score because we are at least alive and well
+            fScores[i] = 0;
+            
+            for(j=0; j<MAX_WORMS; j++) {
+                if( !pcWormList[j].isUsed() || !pcWormList[j].getAlive() || pcWormList[j].getLives() == WRM_OUT )
+                    continue;
+                
+                fScores[i] += CalculateDistance(pcWormList[i].getPos(), pcWormList[j].getPos());
+            }
         }
         
-        int focusWormId = -1;
+        CWorm *pcFocus = NULL;
         float lowest = 99999;
         
-		foreach(s, fScores) {
-            if( focusWormId < 0 || s->second < lowest ) {
-                focusWormId = s->first;
-                lowest = s->second;
+        for(i=0; i<MAX_WORMS; i++) {
+            if( !pcWormList[i].isUsed() || !pcWormList[i].getAlive() || pcWormList[i].getLives() == WRM_OUT )
+                continue;
+            
+            if( fScores[i] < lowest ) {
+                pcFocus = &pcWormList[i];
+                lowest = fScores[i];
             }
         }
         
         // No focus point? Leave
-        if( focusWormId < 0 )
+        if( !pcFocus )
             return;
         
         // The focus worm is our target
-        tgtPos = game.wormById(focusWormId)->getPos();
+        tgtPos = pcFocus->getPos();
         
         CVec dir = tgtPos - curPos;
         float l = NormalizeVector(&dir);
@@ -313,26 +268,6 @@ void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGam
 	}	// switch
 
 
-	// Keep our own worm centered on screen even at the map borders, which means
-	// skipping the clamping for the follow viewport (the area beyond the map edge
-	// is left as background). This is enabled either explicitly via the option, or
-	// automatically while touchscreen controls are active, so the on-screen
-	// controls can't end up covering our worm against a map edge.
-	bool centerScreen = tLXOptions->bAlwaysCenterWorm;
-#ifndef DEDICATED_ONLY
-	if( TouchControls::IsActive() )
-		centerScreen = true;
-#endif
-	const bool centerOwnWorm = centerScreen && nType == VW_FOLLOW && pcTargetWorm;
-
-	// Before the worm has spawned (e.g. during weapon selection) it has no real
-	// position yet (defaults to ~0,0), so centering on it would dump us in the
-	// off-map corner. Instead, center the view on the middle of the map.
-	if( centerOwnWorm && !pcTargetWorm->haveSpawnedOnce() ) {
-		WorldX = (MWidth - Width) / 2;
-		WorldY = (MHeight - Height) / 2;
-	}
-
 	// Shake the viewport a bit
 	if(bShaking) {
 		if(tLX->currentTime - fShakestart > 0.2f) {
@@ -342,13 +277,11 @@ void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGam
 		else {
 
             // Don't shake the action/freelook cam
-            if( nType != VW_ACTIONCAM && nType != VW_FREELOOK &&
-            	( cClient->getGameLobby()[FT_ScreenShaking] ) ) {
+            if( nType != VW_ACTIONCAM && nType != VW_FREELOOK && 
+            	( cClient->getGameLobby()->features[FT_ScreenShaking] ) ) {
 
-                // Clamp it to the edges, then shake. So we can still see shaking near edges.
-                // Skip when centering our own worm, so the centering isn't broken at borders.
-                if( !centerOwnWorm )
-                    Clamp(MWidth, MHeight);
+                // Clamp it to the edges, then shake. So we can still see shaking near edges
+                Clamp(MWidth, MHeight);
 
 			    // Shake
 			    WorldX += (int)(GetRandomNum() * (float)iShakeAmount);
@@ -357,24 +290,24 @@ void CViewport::Process(CViewport *pcViewList, int MWidth, int MHeight, int iGam
 		}
 	}
 
-	// Clamp it (unless we are centering our own spawned worm).
-	if( !centerOwnWorm )
-		Clamp(MWidth, MHeight);
-
-#ifndef DEDICATED_ONLY
-	m_listener->pos = Vec((float)WorldX, (float)WorldY) + Vec((float)(Width/2), (float)(Height/2));
-#endif
+	// Clamp it
+	Clamp(MWidth, MHeight);
 }
 
 
 ///////////////////
 // Find a target worm
-CWorm *CViewport::findTarget(CViewport *pcViewList, bool bAlive)
+CWorm *CViewport::findTarget(CWorm *pcWormList, CViewport *pcViewList, bool bAlive)
 {
     // Find a worm that isn't already a target by another viewport
-	for_each_iterator(CWorm*, w, game.worms()) {
+    for( short w=0; w<MAX_WORMS; w++ ) {
+        if( !pcWormList[w].isUsed() )
+            continue;
+        if( pcWormList[w].getLives() == WRM_OUT )
+            continue;
+
         // If the worm isn't alive, and we want a living worm, skip the worm
-        if( !w->get()->getAlive() && bAlive )
+        if( !pcWormList[w].getAlive() && bAlive )
             continue;
 
         short viewcount = 0;
@@ -389,14 +322,14 @@ CWorm *CViewport::findTarget(CViewport *pcViewList, bool bAlive)
 
             CWorm *t = pcViewList[v].getTarget();
             if(t) {
-                if( w->get()->getID() == t->getID() )
+                if( pcWormList[w].getID() == t->getID() )
                     viewcount++;
             }
         }
 
         // If this worm was in none of the viewports, use the worm
         if( !viewcount )
-            return w->get();
+            return &pcWormList[w];
     }
 
     // No good target
@@ -418,16 +351,25 @@ void CViewport::Clamp(int MWidth, int MHeight)
 {
 	// If we have FT_InfiniteMap set, we don't want to clamp the viewport.
 	// We are drawing the map (and everything) tiled together then.
-	if(!cClient->getGameLobby()[FT_InfiniteMap]) {
-		if(MWidth >= Width)
-			WorldX = CLAMP(WorldX, 0, MWidth-Width);
-		else
-			WorldX = 0;
-		if(MHeight >= Height)
-			WorldY = CLAMP(WorldY, 0, MHeight-Height);
-		else
-			WorldY = 0;
+	if(cClient->getGameLobby()->features[FT_InfiniteMap]) {
+		return;
 	}
+
+	if (GetTouchscreenControlsShown()) {
+		// Always center viewport on the player when using touchscren
+		WorldX = CLAMP(WorldX, -Width/2, MWidth-Width/2);
+		WorldY = CLAMP(WorldY, -Height/2, MHeight-Height/2);
+		return;
+	}
+
+	if(MWidth >= Width)
+		WorldX = CLAMP(WorldX, 0, MWidth-Width);
+	else
+		WorldX = 0;
+	if(MHeight >= Height)
+		WorldY = CLAMP(WorldY, 0, MHeight-Height);
+	else
+		WorldY = 0;
 }
 
 

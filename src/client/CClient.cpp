@@ -19,11 +19,11 @@
 #include "CClient.h"
 #include "CBonus.h"
 #include "DeprecatedGUI/Menu.h"
-#include "OLXConsole.h"
+#include "console.h"
 #include "FindFile.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/CBar.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Error.h"
 #include "Protocol.h"
 #include "StringUtils.h"
@@ -46,19 +46,14 @@
 #include "CServerConnection.h"
 #include "CServerNetEngine.h"
 #include "FlagInfo.h"
-#include "game/CMap.h"
+#include "CMap.h"
 #include "DedicatedControl.h"
-#include "OLXCommand.h"
-#include "gusanos/network.h"
-#include "game/Mod.h"
-#include "gusanos/gusgame.h"
-#include "game/Game.h"
-#include "game/Level.h"
-#include "game/ServerList.h"
-#include "CGameScript.h"
-#include "client/ClientConnectionRequestInfo.h"
+#include "Command.h"
+
 #include <zip.h> // For unzipping downloaded mod
-#include "game/GameState.h"
+
+
+
 
 
 ///////////////////
@@ -67,7 +62,7 @@ void CClient::Clear()
 {
 
 #ifdef DEBUG
-	if (cBonuses)  {
+	if (cRemoteWorms || cBonuses)  {
 #ifdef _MSC_VER
 		__asm int 3; // Breakpoint
 #endif
@@ -75,29 +70,36 @@ void CClient::Clear()
 	}
 #endif
 
-	tGameInfo = EngineSettings();
+	tGameInfo = tLXOptions->tGameInfo; // TODO: is it ok to copy the serverside features? shouldn't we perhaps set some initial GameInfo?
+	tGameInfo.fTimeLimit = -100;
 	otherGameInfo.clear();
-
-	if(serverGameState)
-		delete serverGameState;
-	serverGameState = new GameState;
-
+	iNumWorms = 0;
+	for(int i=0;i<MAX_PLAYERS;i++)
+	{
+		cLocalWorms[i] = NULL;
+		tProfiles[i] = NULL;
+	}
+	cRemoteWorms = NULL;
 	cProjectiles.clear();
 	projPosMap.clear();
+	cMap = NULL;
 	bMapGrabbed = false;
 	if( cNetChan )
 		delete cNetChan;
 	cNetChan = NULL;
 	iNetStatus 	 = NET_DISCONNECTED;
-	outstandingPackets.clear();
 	reconnectingAmount = 0;
 	bsUnreliable.Clear();
 	iChat_Numlines = 0;
+	iScorePlayers = 0;
 	cBonuses = NULL;
+	bUpdateScore = true;
+	fLastScoreUpdate = AbsTime();
 	cChatList = NULL;
 	bmpIngameScoreBg = NULL;
 	bCurrentSettings = false;
 	bLocalClient = false;
+	fServertime = TimeDiff();
 	
 	tGameLog = NULL;
 	iLastVictim = -1;
@@ -108,7 +110,10 @@ void CClient::Clear()
 
 	cChatbox.Clear();
 
+	bGameReady = false;
+	bGameRunning = false;
 	bReadySent = false;
+	bGameOver = false;
 	bGameMenu = false;
     bViewportMgr = false;
 	//tGameLobby.bSet = false;
@@ -116,8 +121,10 @@ void CClient::Clear()
 
 	bBadConnection = false;
 	bServerError = false;
+    bClientError = false;
 	bChat_Typing = false;
 	fLastReceived = AbsTime::Max();
+	fSendWait = 0;
 	fLastUpdateSent = AbsTime();
 
 
@@ -129,9 +136,10 @@ void CClient::Clear()
 	// HINT: gamescript is shut down by the cache
 
 	cShootList.Shutdown();
+	cWeaponRestrictions.Shutdown();
 
     for(int i=0; i<NUM_VIEWPORTS; i++) {
-        cViewports[i].shutdown();
+        cViewports[i].setUsed(false);
 		cViewports[i].setTarget(NULL);
         cViewports[i].setID(i);
 		cViewports[i].SetWorldX(0);
@@ -154,6 +162,8 @@ void CClient::Clear()
 	sSpectatorViewportMsg = "";
 	bWaitingForMap = false;
 	bWaitingForMod = false;
+	bHaveMap = false;
+	bHaveMod = false;
 }
 
 
@@ -162,9 +172,14 @@ void CClient::Clear()
 void CClient::MinorClear()
 {
 	iNetStatus = NET_CONNECTED;
+	bGameReady = false;
+	bGameRunning = false;
 	bReadySent = false;
+	bGameOver = false;
 	bGameMenu = false;
     bViewportMgr = false;
+	bUpdateScore = true;
+	fLastScoreUpdate = AbsTime();
 	bCurrentSettings = false;
 	bWaitingForMap = false;
 	bWaitingForMod = false;
@@ -177,21 +192,31 @@ void CClient::MinorClear()
 
 	bBadConnection = false;
 	bServerError = false;
+    bClientError = false;
 	bChat_Typing = false;
 	fLastReceived = AbsTime::Max();
+	fServertime = TimeDiff();
+
+	fSendWait = 0;
 
 	iChat_Numlines = 0;
 	if(!bDedicated)
 		cChatList->InitializeChatBox();
-	
+
+	int i;
+	for(i=0; i<MAX_WORMS; i++)  {
+		cRemoteWorms[i].resetAngleAndDir();
+		cRemoteWorms[i].Unprepare();
+	}
+
 	cProjectiles.clear();
 	projPosMap.clear();
 
-	for(int i=0; i<MAX_BONUSES; i++)
+	for(i=0; i<MAX_BONUSES; i++)
 		cBonuses[i].setUsed(false);
 
-    for(int i=0; i<NUM_VIEWPORTS; i++)  {
-		cViewports[i].shutdown();
+    for(i=0; i<NUM_VIEWPORTS; i++)  {
+        cViewports[i].setUsed(false);
 		cViewports[i].setTarget(NULL);
 		cViewports[i].SetWorldX(0);
 		cViewports[i].SetWorldY(0);
@@ -202,24 +227,28 @@ void CClient::MinorClear()
 	sSpectatorViewportMsg = "";
 	
 	if(m_flagInfo)
-		m_flagInfo->reset();	
+		m_flagInfo->reset();
+	
+	for(int i = 0; i < 4; ++i)
+		iTeamScores[i] = 0;
 }
 
 /*
 void CClient::ReinitLocalWorms() {
 	// Initialize the local worms
-	iNumWorms = getGameLobby()->iNumPlayers;
+	iNumWorms = tGameInfo.iNumPlayers;
 
 	for(uint i=0;i<iNumWorms;i++) {
 		cLocalWorms[i] = NULL;
-		tProfiles[i] = getGameLobby()->cPlayers[i];
+		tProfiles[i] = tGameInfo.cPlayers[i];
 	}
 }
 */
 CClient::CClient() {
 	// TODO: merge this with Clear()
 	//notes << "cl:Constructor" << endl;
-	serverGameState = NULL;
+	cRemoteWorms = NULL;
+	cMap = NULL;
 	m_flagInfo = NULL;
 	cBonuses = NULL;
 	bmpBoxBuffer = NULL;
@@ -231,8 +260,11 @@ CClient::CClient() {
 	cWeaponBar1 = NULL;
 	cWeaponBar2 = NULL;
 	cDownloadBar = NULL;
+	bGameReady = false;
 	bMapGrabbed = false;
 	cChatList = NULL;
+	bUpdateScore = true;
+	fLastScoreUpdate = AbsTime();
 	bShouldRepaintInfo = true;
 	bCurrentSettings = false;
 	tMapDlCallback = NULL;
@@ -254,6 +286,7 @@ CClient::CClient() {
 	bTeamChat = false;
 	fChat_BlinkTime = 0;
 	bChat_CursorVisible = true;
+	bClientError = false;
 	iNetSpeed = 3;
 	fLastUpdateSent = AbsTime();
 	tSocket = new NetworkSocket();
@@ -266,8 +299,11 @@ CClient::CClient() {
 	
 	//fProjDrawTime = 0;
 	//fProjSimulateTime = 0;
-		
+	
+	fSendWait = 0;
+	
 	bMuted = false;
+	bRepaintChatbox = true;
 		
 	fLastFileRequest = tLX->currentTime;
 	
@@ -277,10 +313,7 @@ CClient::CClient() {
 	bDlError = false;
 	sDlError = "";
 	iDlProgress = 0;
-
-	bHaveMap = true;
-	bHaveMod = true;
-
+	
 	Clear();
 }
 
@@ -298,6 +331,8 @@ void CClient::setPing(int _p) { cNetChan->setPing(_p); }
 // Initialize the client
 int CClient::Initialize()
 {
+	uint i;
+
 	// Shutdown & clear any old client data
 	Shutdown();
 	Clear();
@@ -305,9 +340,30 @@ int CClient::Initialize()
 	iNetSpeed = tLXOptions->iNetworkSpeed;
 
 	// Local/host games use instant speed
-	if(game.isServer())
+	if(tLX->iGameType != GME_JOIN)
 		iNetSpeed = NST_LOCAL;
+
+
+	//ReinitLocalWorms();
 	
+	// Initialize the remote worms
+	cRemoteWorms = new CWorm[MAX_WORMS];
+	if(cRemoteWorms == NULL) {
+		SetError("Error: Out of memory!\ncl::Initialize() " + itoa(__LINE__));
+		return false;
+	}
+
+	// Set id's
+	for(i=0;i<MAX_WORMS;i++) {
+		cRemoteWorms[i].Init();
+		cRemoteWorms[i].setID(i);
+		cRemoteWorms[i].setTagIT(false);
+		cRemoteWorms[i].setTagTime(TimeDiff(0));
+		cRemoteWorms[i].setTeam(0);
+		cRemoteWorms[i].setUsed(false);
+		cRemoteWorms[i].setClient(NULL); // Local worms won't get server connection owner
+	}
+
 	// Set our version to the current game version
 	// HINT: this function is called only for the local client, not for server's client
 	setClientVersion(GetGameVersion());
@@ -321,7 +377,7 @@ int CClient::Initialize()
 
 
 	// Open a new socket
-	if( game.isClient() ) {
+	if( tLX->iGameType == GME_JOIN ) {
 		tSocket->OpenUnreliable( tLXOptions->iNetworkPort );	// Open socket on port from options in hopes that user forwarded that port on router
 	}
 	if(!tSocket->isOpen()) {	// If socket won't open that's not error - open another one on random port
@@ -332,6 +388,10 @@ int CClient::Initialize()
 		return false;
 	}
 
+	// Initialize the drawing
+	if(!InitializeDrawing())
+		return false;
+
 	if(bDedicated)
 		cChatList = NULL;
 	else {
@@ -340,6 +400,10 @@ int CClient::Initialize()
 		if (!cChatList)
 			return false;
 		cChatList->InitializeChatBox();
+		cChatList->Setup(0,	tInterfaceSettings.ChatBoxX,
+							tInterfaceSettings.ChatBoxY,
+							tInterfaceSettings.ChatBoxW, // A little hack because of replacing CListview with CBrowser to put the scrollbar on the correct place
+							tInterfaceSettings.ChatBoxH);
 	}
 	// Clear the network channel
 	//cNetChan.Clear();
@@ -352,28 +416,6 @@ int CClient::Initialize()
 	m_flagInfo = new FlagInfo();
 	
 	return true;
-}
-
-static log_worm_t logFromWorm(CWorm* w) {
-	log_worm_t l;
-	l.bLeft = false;
-	l.iID = w->getID();
-	l.sName = w->getName();
-	l.sSkin = w->getSkin().getFileName();
-	l.iKills = 0;
-	l.iLives = cClient->getGameLobby()[FT_Lives];
-	l.iSuicides = 0;
-	l.iTeamKills = 0;
-	l.iTeamDeaths = 0;
-	l.bTagIT = false;
-	if (cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->generalGameType == GMT_TEAMS)
-		l.iTeam = w->getTeam();
-	else
-		l.iTeam = -1;
-	l.fTagTime = 0.0f;
-	l.fTimeLeft = 0.0f;
-	l.iType = w->getType()->toInt();
-	return l;
 }
 
 ///////////////////
@@ -389,16 +431,47 @@ void CClient::StartLogging(int num_players)
 		errors("Out of memory while allocating log\n");
 		return;
 	}
+	tGameLog->tWorms = NULL;
 	tGameLog->fGameStart = tLX->currentTime;
+	tGameLog->iNumWorms = num_players;
 	tGameLog->iWinner = -1;
 	tGameLog->sGameStart = GetDateTime();
 	tGameLog->sServerName = szServerName;
 	NetAddrToString(cNetChan->getAddress(), tGameLog->sServerIP);
 
+	// Allocate log worms
+	int i;
+	tGameLog->tWorms = new log_worm_t[num_players];
+	if (!tGameLog->tWorms)
+		return;
 
 	// Initialize the log worms
-	for_each_iterator(CWorm*, w, game.worms())
-		tGameLog->tWorms[w->get()->getID()] = logFromWorm(w->get());
+	int j = 0;
+	for (i=0; i < MAX_WORMS; i++)  {
+		if (cRemoteWorms[i].isUsed())  {
+			tGameLog->tWorms[j].bLeft = false;
+			tGameLog->tWorms[j].iID = cRemoteWorms[i].getID();
+			tGameLog->tWorms[j].sName = cRemoteWorms[i].getName();
+			tGameLog->tWorms[j].sSkin = cRemoteWorms[i].getSkin().getFileName();
+			tGameLog->tWorms[j].iKills = 0;
+			tGameLog->tWorms[j].iLives = tGameInfo.iLives;
+			tGameLog->tWorms[j].iSuicides = 0;
+			tGameLog->tWorms[j].iTeamKills = 0;
+			tGameLog->tWorms[j].iTeamDeaths = 0;
+			tGameLog->tWorms[j].bTagIT = false;
+			if (tGameInfo.iGeneralGameType == GMT_TEAMS)
+				tGameLog->tWorms[j].iTeam = cRemoteWorms[i].getTeam();
+			else
+				tGameLog->tWorms[j].iTeam = -1;
+			tGameLog->tWorms[j].fTagTime = 0.0f;
+			tGameLog->tWorms[j].fTimeLeft = 0.0f;
+			tGameLog->tWorms[j].iType = cRemoteWorms[i].getType()->toInt();
+			j++;
+
+			if (j >= num_players)
+				break;
+		}
+	}
 }
 
 
@@ -562,8 +635,9 @@ void CClient::FinishMapDownloads()
 	// Check that the file exists and is ok
 	std::string levelname = CMap::GetLevelName(sMapDownloadName);
 	if (levelname != "")  {
-		if (getGameLobby()[FT_Map].as<LevelInfo>()->path == sMapDownloadName)  {
-			getGameLobby().overwrite[FT_Map] = infoForLevel(sMapDownloadName); // reset to add levelname if possible
+		if (tGameInfo.sMapFile == sMapDownloadName)  {
+			bHaveMap = true;
+			tGameInfo.sMapName = levelname;
 			if (tMapDlCallback)
 				tMapDlCallback();
 		}
@@ -576,17 +650,23 @@ void CClient::FinishMapDownloads()
 			cHttpDownloader->RemoveFileDownload(sMapDownloadName);
 
 		// If playing, load the map
-		if (game.state >= Game::S_Preparing && bWaitingForMap)  {
-			if (game.gameMap() && game.gameMap()->getCreated())  {
+		if (iNetStatus == NET_PLAYING || (iNetStatus == NET_CONNECTED && bWaitingForMap))  {
+			if (cMap && cMap->getCreated())  {
 				hints << "Finished map downloading but another map is already loaded." << endl;
 				return;
 			}
 
+			if (!cMap)  {
+				warnings << "In game and cMap is not allocated." << endl;
+				cMap = new CMap;
+			}
+
 			notes << "Loading just downloaded map " << sMapDownloadName << endl;
-			if (NegResult r = game.loadMap())  {  // Load the map
+			if (!cMap->Load("levels/" + sMapDownloadName))  {  // Load the map
 				// Weird
-				bServerError = true;
-				strServerErrorMsg = "Could not load the downloaded map! " + r.res.humanErrorMsg;
+				errors << "Could not load the downloaded map!" << endl;
+				Disconnect();
+				GotoNetMenu();
 			}
 		}
 	}
@@ -606,18 +686,20 @@ void CClient::FinishModDownloads()
 
 		zip * zipfile = zip_open( Utf8ToSystemNative(fname).c_str(), 0, NULL );
 		if( zipfile == NULL ) {
-			if (game.state == Game::S_Playing || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
-				bServerError = true;
-				strServerErrorMsg = "Cannot access the downloaded mod! zip_open failed.";
+			warnings("Cannot access the downloaded mod!\n");
+			if (iNetStatus == NET_PLAYING || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
+				Disconnect();
+				GotoNetMenu();
 			}
 			return;
 		}
 
 		if( zip_name_locate(zipfile, (sModDownloadName + "/script.lgs").c_str(), ZIP_FL_NOCASE) == -1 )
 		{
-			if (game.state == Game::S_Playing || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
-				bServerError = true;
-				strServerErrorMsg = "Cannot access the downloaded mod! zip_name_locate failed.";
+			warnings("Cannot access the downloaded mod!\n");
+			if (iNetStatus == NET_PLAYING || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
+				Disconnect();
+				GotoNetMenu();
 			}
 			return;
 		}
@@ -635,7 +717,7 @@ void CClient::FinishModDownloads()
 			if( fileInZip == NULL || fileWrite == NULL )
 				continue;
 			char buf[4096];
-			ssize_t readed;
+			int readed;
 			while( ( readed = zip_fread(fileInZip, buf, sizeof(buf)) ) > 0 )
 				fwrite( buf, 1, readed, fileWrite );
 			fclose(fileWrite);
@@ -646,17 +728,19 @@ void CClient::FinishModDownloads()
 	}
 
 	// Check that the script.lgs file is available
-	if (!infoForMod(sModDownloadName).valid)  {
-		if (game.state == Game::S_Playing || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
-			bServerError = true;
-			strServerErrorMsg = "Cannot access the downloaded mod! mod cannot be loaded.";
+	if (!IsFileAvailable(sModDownloadName + "/script.lgs", false))  {
+		warnings("Cannot access the downloaded mod!\n");
+
+		if (iNetStatus == NET_PLAYING || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
+			Disconnect();
+			GotoNetMenu();
 		}
 
 		return;
 	}
 
 	// Update the lobby
-	if (getGameLobby()[FT_Mod].as<ModInfo>()->path == sModDownloadName)  {
+	if (tGameInfo.sModDir == sModDownloadName)  {
 		bDownloadingMod = false;
 		bHaveMod = true;
 		if (tModDlCallback)
@@ -664,24 +748,30 @@ void CClient::FinishModDownloads()
 	}
 
 	// Load the mod if playing
-	if (game.isClient() && (game.state == Game::S_Playing || (iNetStatus == NET_CONNECTED && bWaitingForMod)))  {
+	if (iNetStatus == NET_PLAYING || (iNetStatus == NET_CONNECTED && bWaitingForMod))  {
 		bWaitingForMod = false;
 
-		if (game.gameScript() && game.gameScript()->GetNumWeapons() > 0)  {
+		if (cGameScript->GetNumWeapons() > 0)  {
 			hints("Finished downloading the mod but another mod is already loaded.\n");
 			return;
 		}
 
-		if (stringcaseequal(getGameLobby()[FT_Mod].as<ModInfo>()->name, sModDownloadName))  {
-			if(NegResult r = game.loadMod()) {
-				bServerError = true;
-				strServerErrorMsg = "Could not load the downloaded mod: " + r.res.humanErrorMsg;
+		if (stringcaseequal(tGameInfo.sModName, sModDownloadName))  {
+			if (cGameScript->Load(sModDownloadName) != GSE_OK)  {
+				errors("Could not load the downloaded mod.\n");
+				Disconnect();
+				GotoNetMenu();
 				return;
 			}
-			bWaitingForMod = false;			
+			bWaitingForMod = false;
+			
+			// Initialize the weapon selection
+			for (size_t i = 0; i < iNumWorms; i++)
+				cLocalWorms[i]->initWeaponSelection();
 		} else {
-			bServerError = true;
-			strServerErrorMsg = "The downloaded mod (" + sModDownloadName + ") is not the one we are waiting for (" + getGameLobby()[FT_Mod].as<ModInfo>()->name.get() +")";
+			warnings("The downloaded mod is not the one we are waiting for.\n");
+			Disconnect();
+			GotoNetMenu();
 			return;
 		}
 	}
@@ -731,13 +821,13 @@ void CClient::ProcessMapDownloads()
 			sDlError = sMapDownloadName + " downloading error: " + error.sErrorMsg;
 
 			if (bWaitingForMap)  {
-				bServerError = true;
-				strServerErrorMsg = "Download error: " + sDlError;
+				Disconnect();
+				GotoNetMenu();
 				return;
 			}
 
 			// HTTP failed, let's try UDP
-			if( getServerVersion() > OLXBetaVersion(0,57,4) )
+			if( getServerVersion() > OLXBetaVersion(4) )
 			{
 				iDownloadMethod = DL_UDP;
 				bDownloadingMap = true;
@@ -766,7 +856,7 @@ void CClient::ProcessMapDownloads()
 	}
 
   	// UDP file download used for maps and mods - we can download map via HTTP and mod via UDP from host
-	if( getServerVersion() < OLXBetaVersion(0,57,4) || iNetStatus == NET_DISCONNECTED )  {
+	if( getServerVersion() < OLXBetaVersion(4) || iNetStatus == NET_DISCONNECTED )  {
 		if (tMapDlCallback && bDownloadingMap)  {
 			bDownloadingMap = false;
 			tMapDlCallback();
@@ -793,14 +883,14 @@ void CClient::ProcessMapDownloads()
 
 				// If waiting for the map ingame, just quit
 				if (bWaitingForMap)  {
-					bServerError = true;
-					strServerErrorMsg = "Download error: " + sDlError;
+					Disconnect();
+					GotoNetMenu();
 					return;
 				}
 			}
 		}
 		
-		if( getUdpFileDownloader()->getFilename() == "levels/" + getGameLobby()[FT_Map].as<LevelInfo>()->path.get() ) {
+		if( getUdpFileDownloader()->getFilename() == "levels/" + getGameLobby()->sMapFile ) {
 			bDownloadingMap = true;
 			iDownloadMethod = DL_UDP;
 		}
@@ -867,13 +957,13 @@ void CClient::ProcessModDownloads()
 			sDlError = sModDownloadName + ".zip" + " downloading error: " + error.sErrorMsg;
 
 			if (bWaitingForMod)  {
-				bServerError = true;
-				strServerErrorMsg = "Download error: " + sDlError;
+				Disconnect();
+				GotoNetMenu();
 				return;
 			}
 
 			// HTTP failed, let's try UDP
-			if( getServerVersion() > OLXBetaVersion(0,57,4) )
+			if( getServerVersion() > OLXBetaVersion(4) )
 			{
 				iDownloadMethod = DL_UDP;
 				bDownloadingMod = true;
@@ -902,7 +992,7 @@ void CClient::ProcessModDownloads()
 		return;
 
   	// Can we download anything at all?
-	if( getServerVersion() < OLXBetaVersion(0,57,4) || iNetStatus == NET_DISCONNECTED )  {
+	if( getServerVersion() < OLXBetaVersion(4) || iNetStatus == NET_DISCONNECTED )  {
 		if (tModDlCallback)  {
 			bDownloadingMod = false;
 			tModDlCallback();
@@ -924,8 +1014,8 @@ void CClient::ProcessModDownloads()
 			tModDlCallback();
 
 		if (bWaitingForMod)  {
-			bServerError = true;
-			strServerErrorMsg = "UDP file download aborted but still waiting for mod.";
+			Disconnect();
+			GotoNetMenu();
 			return;
 		}
 	}
@@ -950,8 +1040,8 @@ void CClient::ProcessModDownloads()
 
 				// If waiting for the map ingame, just quit
 				if (bWaitingForMod)  {
-					bServerError = true;
-					strServerErrorMsg = "Mod download error: connection timeout";
+					Disconnect();
+					GotoNetMenu();
 					return;
 				}
 			}
@@ -979,31 +1069,50 @@ void CClient::ProcessModDownloads()
 // Main frame
 void CClient::Frame()
 {
+	if(bGameRunning) {
+		fServertime += tLX->fRealDeltaTime;
+	}
+
+	ReadPackets();
+
+	ProcessMapDownloads();
+	ProcessModDownloads();
+	ProcessUdpUploads();
+
+	SimulateHud();
+
 	// could be that some console command wants to quit
-	if(!tLX || game.state <= Game::S_Lobby)
+	if(!tLX || tLX->bQuitEngine || tLX->bQuitGame)
 		return;
 	
 	if(
-		(game.state == Game::S_Playing) &&
+		(bGameRunning || iNetStatus == NET_PLAYING) &&
 		!bWaitingForMap &&
 		!bWaitingForMod &&
-		game.gameMap() &&
-		game.gameMap()->isLoaded() &&
-		game.gameScript())
+		cMap &&
+		cMap->isLoaded() &&
+		cGameScript.get())
 	{
 		Simulation();
 	}
+
+	SendPackets();
+
+	// Connecting process
+	if (bConnectingBehindNat)
+		ConnectingBehindNAT();
+	else
+		Connecting();
 }
 
 ///////////////////
 // Read the packets
 bool CClient::ReadPackets()
 {	
+	CBytestream		bs;
 	bool anythingNew = false;
-
-	while(true) {
-		CBytestream bs;
-		if(!bs.Read(tSocket)) break;
+	
+	while(bs.Read(tSocket)) {
 		anythingNew = true;
 		
 		// each bs.Read reads the next UDP packet and resets the bs
@@ -1033,37 +1142,18 @@ bool CClient::ReadPackets()
 		}		
 		
 		// Parse the packet - process continuously in case we've received multiple logical packets on new CChannel
-		while(true) {
-			if(!cNetChan->Process(&bs))
-				break;
-			outstandingPackets.push_back(bs);
+		while( cNetChan->Process(&bs) )
+		{
+			while( cNetEngine->ParsePacket(&bs) ) { }
 			bs.Clear();
 		}
 	}
 
-	while(!outstandingPackets.empty()) {
-		anythingNew = true;
-		CBytestream& bs = outstandingPackets.front();
-		while(true) {
-			// The game state changed. Maybe we want to prepare the game. This is done in
-			// the next frame in the main loop, so skip everything for now and first prepare.
-			if(game.state.ext.updated)
-				return true;
-			if(!cNetEngine->ParsePacket(&bs))
-				break;
-		}
-		outstandingPackets.pop_front();
-	}
-
 	// Check if our connection with the server timed out
-	if(game.state == Game::S_Playing && cNetChan->getLastReceived() + TimeDiff((float)LX_CLTIMEOUT) < tLX->currentTime && game.isClient()) {
+	if(iNetStatus == NET_PLAYING && cNetChan->getLastReceived() + TimeDiff((float)LX_CLTIMEOUT) < tLX->currentTime && tLX->iGameType == GME_JOIN) {
 		// AbsTime out
 		bServerError = true;
 		strServerErrorMsg = "Connection with server timed out";
-
-		// send disconnect. maybe the server still gets that
-		if(cNetEngine)
-			cNetEngine->SendDisconnect();
 
 		// Stop any file downloads
 		if (bDownloadingMap && cHttpDownloader)
@@ -1081,12 +1171,9 @@ bool CClient::ReadPackets()
 // Send the packets
 void CClient::SendPackets(bool sendPendingOnly)
 {
-	if(game.isClient()) // in server mode, we call this from CServer::SendPackets
-		network.olxSend(sendPendingOnly);
-
 	if(!sendPendingOnly) {
 		// Playing packets
-		if(game.state >= Game::S_Preparing)
+		if(iNetStatus == NET_PLAYING || bGameReady)
 		{
 			cNetEngine->SendWormDetails();
 			cNetEngine->SendReportDamage();	// It sends only if someting is queued
@@ -1095,13 +1182,13 @@ void CClient::SendPackets(bool sendPendingOnly)
 
 		// Send every second
 		// TODO: move this somewhere else
-		if ((game.state >= Game::S_Preparing)  && (tLX->currentTime - fMyPingRefreshed).seconds() > 1) {
+		if ((iNetStatus == NET_PLAYING || (iNetStatus == NET_CONNECTED && bGameReady))  && (tLX->currentTime - fMyPingRefreshed).seconds() > 1) {
 			CBytestream ping;
 
 			// TODO: move this out here
 			ping.Clear();
 			ping.writeInt(-1,4);
-			if(cServerVersion >= OLXBetaVersion(0,57,8))
+			if(cServerVersion >= OLXBetaVersion(8))
 				ping.writeString("lx::time"); // request for servertime
 			else
 				ping.writeString("lx::ping");
@@ -1120,46 +1207,71 @@ void CClient::SendPackets(bool sendPendingOnly)
 #endif
 	}
 	
-	if(game.state == Game::S_Playing || iNetStatus == NET_CONNECTED)
+	if(iNetStatus == NET_PLAYING || iNetStatus == NET_CONNECTED)
 		cNetChan->Transmit(&bsUnreliable);
+
+
+	if(!sendPendingOnly) {
+		if (iNetStatus == NET_CONNECTED && bGameReady && bReadySent)
+		{
+			bool serverThinksWeAreNotReadyWhenWeAre = false;
+			for(unsigned int i=0;i<iNumWorms;i++)
+			{
+				// getGameReady = what server thinks. getWeaponsReady = what we know.
+				serverThinksWeAreNotReadyWhenWeAre |= !cLocalWorms[i]->getGameReady() && cLocalWorms[i]->getWeaponsReady();
+			}
+
+
+			// ready as in localclient == ready, server thinks we are not.
+			if (serverThinksWeAreNotReadyWhenWeAre)
+			{
+				fSendWait += tLX->fDeltaTime;
+				if (fSendWait.seconds() > 1.0) {
+					notes << "CClient::SendPackets: Server thinks that ";
+					for(unsigned int i=0;i<iNumWorms;i++) {
+						if(!cLocalWorms[i]->getGameReady() && cLocalWorms[i]->getWeaponsReady())
+							notes << "; " << i << ":" << cLocalWorms[i]->getName();
+					}
+					notes << " is not ready" << endl;
+					
+					fSendWait = 0.0f;
+					cNetEngine->SendGameReady();
+				}
+			}
+		}
+	}
 	
 	bsUnreliable.Clear();
 }
 
 bool JoinServer(const std::string& addr, const std::string& name, const std::string& player) {
 	hints << "JoinServer " << addr << " (" << name << ") with player '" << player << "'" << endl;
-	//getGameLobby()->iNumPlayers = 1;
-
+	//tGameInfo.iNumPlayers = 1;
+		
+	tLX->iGameType = GME_JOIN;
 	if(!cClient->Initialize()) {
 		warnings << "JoinServer: Could not initialize client" << endl;
 		return false;
 	}
 	
-	cClient->connectInfo = new ClientConnectionRequestInfo;
-	if(player != "") {
-		// Add the player to the connectInfo list
-		SmartPointer<profile_t> ply;
-		ply = FindProfile(player);
-		if(ply.get() == NULL) {
-			ply = MainHumanProfile();
-			warnings << "JoinServer: didn't find player " << player << " profile. using main player profile " << ply->sName << " instead" << endl;
+	// Initialize has cleaned up all worms, so this is not necessarily needed
+	cClient->setNumWorms(0);
+	// Add the player to the list
+	profile_t *ply = NULL;
+	if(player != "" && (ply = FindProfile(player))) {
+		if(bDedicated && ply->iType == PRF_HUMAN->toInt())
+			warnings << "JoinServer: player " << player << " is a human - a human cannot be used in dedicated mode" << endl;
+		else {
+			cClient->getLocalWormProfiles()[0] = ply;
+			cClient->setNumWorms(1);
 		}
-		// this is the current way to tell CClient to create a local worm later on with that profile
-		// that is done in CClientNetEngine::ParseConnected or updateAddedWorms
-		cClient->connectInfo->worms.push_back(ply);
 	}
 	
 	cClient->setServerName(name);
 	
+	tLX->iGameType = GME_JOIN;
 	cClient->Connect(addr);
 	
-	if(cClient->getStatus() != NET_CONNECTING) {
-		warnings << "JoinServer: failed to init connection" << endl;
-		return false;
-	}
-
-	game.startClient();
-
 	if(DedicatedControl::Get())
 		DedicatedControl::Get()->Connecting_Signal(addr);
 
@@ -1173,11 +1285,7 @@ bool JoinServer(const std::string& addr, const std::string& name, const std::str
 void CClient::Connect(const std::string& address)
 {
 	notes << "Client connect to " << address << endl;
-
-	Disconnect(); // disconnect if we were connected to some other server
-
 	iNetStatus = NET_CONNECTING;
-	outstandingPackets.clear();
 	reconnectingAmount = 0;
 	strServerAddr_HumanReadable = strServerAddr = address;
 	iNumConnects = 0;
@@ -1199,20 +1307,15 @@ void CClient::Connect(const std::string& address)
 	InitializeDownloads();
 
 	if(!StringToNetAddr(address, cServerAddr)) {
-
-		strServerAddr_HumanReadable = strServerAddr + " (...)";
-		Timer("client connect DNS timeout", null, NULL, DNS_TIMEOUT * 1000 + 50, true).startHeadless();
-
 		iNetStatus = NET_DISCONNECTED;
 		bBadConnection = true;
-		strBadConnectMsg = "Invalid server address '" + address + "'";
+		strBadConnectMsg = "Invalid server address";
 	}
 
 	// Connecting to a server behind a NAT?
-	if(ServerList::get()->getUdpMasterserverForServer(strServerAddr))  {
+	if(DeprecatedGUI::Menu_SvrList_GetUdpMasterserverForServer(strServerAddr) != "")  {
 		bConnectingBehindNat = true;
-		sUdpMasterserverAddress = ServerList::get()->getUdpMasterserverForServer(strServerAddr).name;
-		notes << "connecting behind NAT, using UDP masterserver " << sUdpMasterserverAddress << endl;
+		sUdpMasterserverAddress = DeprecatedGUI::Menu_SvrList_GetUdpMasterserverForServer(strServerAddr);
 
 		// Start UDP NAT traversal immediately - we know for sure that
 		// the host is registered on UDP masterserver and won't respond on ping
@@ -1230,14 +1333,9 @@ void CClient::Connect(const std::string& address)
 }
 
 void CClient::Reconnect() {
-	(game.isClient() ? notes : warnings)
+	(tLX->iGameType == GME_JOIN ? notes : warnings)
 		<< "Reconnecting local client" << endl;
 	
-	if(connectInfo.get() == NULL) {
-		errors << "CClient::Reconnect: connectInfo is NULL" << endl;
-		return;
-	}
-		
 	// HINT: Don't disconnect because we don't want to lose the connection
 	// and we also want to keep the client struct on the server.
 
@@ -1249,22 +1347,22 @@ void CClient::Reconnect() {
 	bytestr.writeInt(PROTOCOL_VERSION,1);
 	bytestr.writeInt(this->iChallenge,4);
 	bytestr.writeInt(this->iNetSpeed,1);
-	bytestr.writeInt((int)connectInfo->worms.size(), 1);
+	bytestr.writeInt(this->iNumWorms, 1);
 	
 	// Send my worms info
     //
     // __MUST__ match the layout in CWorm::writeInfo() !!!
     //
 	
-	foreach(wormProf, connectInfo->worms) {
+	for(uint i=0;i<this->iNumWorms;i++) {
 		// TODO: move this out here
-		bytestr.writeString(RemoveSpecialChars((*wormProf)->sName));
-		bytestr.writeInt((*wormProf)->iType, 1);
-		bytestr.writeInt((*wormProf)->iTeam,1);
-		bytestr.writeString((*wormProf)->cSkin.getFileName());
-		bytestr.writeInt((*wormProf)->R, 1);
-		bytestr.writeInt((*wormProf)->G, 1);
-		bytestr.writeInt((*wormProf)->B, 1);
+		bytestr.writeString(RemoveSpecialChars(this->tProfiles[i]->sName));
+		bytestr.writeInt(this->tProfiles[i]->iType,1);
+		bytestr.writeInt(this->tProfiles[i]->iTeam,1);
+		bytestr.writeString(this->tProfiles[i]->cSkin.getFileName());
+		bytestr.writeInt(this->tProfiles[i]->R,1);
+		bytestr.writeInt(this->tProfiles[i]->G,1);
+		bytestr.writeInt(this->tProfiles[i]->B,1);
 	}
 	
 	tSocket->reapplyRemoteAddress();
@@ -1436,11 +1534,6 @@ void CClient::Connecting(bool force)
 	if(iNetStatus != NET_CONNECTING)
 		return;
 
-	if (bConnectingBehindNat) {
-		ConnectingBehindNAT();
-		return;
-	}
-
 	// Try every three seconds
 	if(!force && ((tLX->currentTime - fConnectTime).seconds() < 3.0f))
 		return;
@@ -1448,7 +1541,7 @@ void CClient::Connecting(bool force)
 	// For local play/hosting: don't send the challenge more times
 	// On slower machines the loading can be pretty slow and take more than 3 seconds
 	// That doesn't mean that the packet is not delivered
-	if (game.isServer() && iNumConnects > 0)
+	if (tLX->iGameType != GME_JOIN && iNumConnects > 0)
 		return;
 
 
@@ -1472,7 +1565,7 @@ void CClient::Connecting(bool force)
 
 	// Check that we have a port
 	if(GetNetAddrPort(cServerAddr) == 0)  {
-		if (game.isClient()) // Remote joining
+		if (tLX->iGameType == GME_JOIN) // Remote joining
 			SetNetAddrPort(cServerAddr, LX_PORT);  // Try the default port if no port specified
 		else // Host or local
 			SetNetAddrPort(cServerAddr, tLXOptions->iNetworkPort);  // Use the port specified in options
@@ -1510,15 +1603,21 @@ void CClient::Connecting(bool force)
 // Disconnect
 void CClient::Disconnect()
 {
-	if(iNetStatus != NET_DISCONNECTED && cNetEngine) {
-		cNetEngine->SendDisconnect();
-
-		// Log leaving the server
-		if (tLXOptions->bLogConvos && convoLogger)
-			convoLogger->leaveServer();
-	}
+	cNetEngine->SendDisconnect();
 
 	iNetStatus = NET_DISCONNECTED;
+
+	if (bDownloadingMap)
+		cHttpDownloader->CancelFileDownload(sMapDownloadName);
+	getUdpFileDownloader()->reset();
+
+
+	// Log leaving the server
+	if (tLXOptions->bLogConvos && convoLogger)
+		convoLogger->leaveServer();
+	
+	if( GetGlobalIRC() )
+		GetGlobalIRC()->setAwayMessage("");
 }
 
 
@@ -1526,28 +1625,14 @@ void CClient::Disconnect()
 // Setup the viewports for the local players
 void CClient::SetupViewports() {
 	if(bDedicated) return;
-
-	std::vector<CWorm*> humanWorms; humanWorms.reserve(MAX_LOCAL_PLAYERS);
-	for_each_iterator(CWorm*, w, game.localWorms())
-		if(w->get()->getType() == PRF_HUMAN)
-			humanWorms.push_back(w->get());
-
-	// One split-screen viewport per local human player, up to MAX_LOCAL_PLAYERS.
-	if((int)humanWorms.size() > MAX_LOCAL_PLAYERS)
-		humanWorms.resize(MAX_LOCAL_PLAYERS);
-
-	if(humanWorms.size() > 0)
-		SetupViewports(humanWorms, VW_FOLLOW);
-	else if(game.localWorms()->tryGet())
-		SetupViewports(std::vector<CWorm*>(1, game.localWorms()->tryGet()), VW_FOLLOW);
-	else {
-		for_each_iterator(CWorm*, w, game.worms()) {
-			SetupViewports(std::vector<CWorm*>(1, w->get()), VW_FOLLOW);
-			return;
-		}
-		warnings << "CClient::SetupViewports: didn't found any worms" << endl;
-		SetupViewports(std::vector<CWorm*>(), VW_ACTIONCAM);
+	
+	std::vector<CWorm*> humanWorms; humanWorms.reserve(2);
+	for(uint i = 0; i < iNumWorms; ++i) {
+		if(cLocalWorms[i] && cLocalWorms[i]->getType() == PRF_HUMAN)
+			humanWorms.push_back(cLocalWorms[i]);
 	}
+
+	SetupViewports((humanWorms.size() > 0) ? humanWorms[0] : NULL, (humanWorms.size() > 1) ? humanWorms[1] : NULL, VW_FOLLOW, VW_FOLLOW);
 }
 
 
@@ -1562,7 +1647,7 @@ void CClient::SetupViewports(CWorm *w1, CWorm *w2, int type1, int type2)
 
 	// Reset
 	for( int i=0; i<NUM_VIEWPORTS; i++ )  {
-		cViewports[i].shutdown();
+        cViewports[i].setUsed(false);
 		cViewports[i].setTarget(NULL);
 	}
 
@@ -1574,7 +1659,7 @@ void CClient::SetupViewports(CWorm *w1, CWorm *w2, int type1, int type2)
 	// Setup according to top and bottom interface bars
 	SmartPointer<SDL_Surface> topbar = NULL;
 	SmartPointer<SDL_Surface> bottombar = NULL;
-	if (game.isLocalGame())  {
+	if (tLX->iGameType == GME_LOCAL)  {
 		bottombar = DeprecatedGUI::gfxGame.bmpGameLocalBackground;
 		topbar = DeprecatedGUI::gfxGame.bmpGameLocalTopBar;
 	} else {
@@ -1582,172 +1667,38 @@ void CClient::SetupViewports(CWorm *w1, CWorm *w2, int type1, int type2)
 		topbar = DeprecatedGUI::gfxGame.bmpGameNetTopBar;
 	}
 
-	int top = topbar.get() ? (topbar.get()->h) : (tLX->cFont.GetHeight() + 3); // Top bound of the viewports
-	if (!tLXOptions->bTopBarVisible)
-		top = 0;
+
+	int top = 0;
 
 	int h = bottombar.get() ? (480 - bottombar.get()->h - top) : (382 - top); // Height of the viewports
 
-	//if( game.gameScript() && game.gameScript()->gusEngineUsed() )
-	{
-		top = 0; // Topbar is transparent
-		h = 480;
-	}
-	
-	// Non-widescreen games are constrained to the base menuWidth so that a
-	// wider screen gives no gameplay advantage (the narrower view is composed
-	// centered, side gaps edge-filled, see render()). Widescreen
-	// games use the full screen width. Set the display width up front so the
-	// viewports are sized from it (the gameplay draw keeps it updated too).
-	VideoPostProcessor::get()->setDisplayScreenWidth(
-		game.useWideScreen() ? VideoPostProcessor::get()->screenWidth()
-		                     : VideoPostProcessor::menuWidth);
-	const int sw = VideoPostProcessor::get()->displayScreenWidth();
-
 	// One worm
 	if(w2 == NULL) {
-		cViewports[0].Setup(0, top, sw, h, type1);
+        // HACK HACK: FOR AI TESTING
+        //cViewports[0].Setup(0,0,640,382,VW_FREELOOK);
+
+		cViewports[0].Setup(0, top, 640, h, type1);
 		if(w1)
 			cViewports[0].setSmooth( !OwnsWorm(w1->getID()) );
 		cViewports[0].setTarget(w1);
-		cViewports[0].setOrigTarget(w1);
+		cViewports[0].setUsed(true);
 	}
 
 	// Two wormsize
 	else  {
-		// Split screen: two equal halves separated by a 4 px gap.
-		const int gap = 4;
-		const int half = (sw - gap) / 2;
-		cViewports[0].Setup(0, top, half, h, type1);
+		cViewports[0].Setup(0, top, 318, h, type1);
 		if(w1)
 			cViewports[0].setSmooth( !OwnsWorm(w1->getID()) );
 		cViewports[0].setTarget(w1);
-		cViewports[0].setOrigTarget(w1);
+		cViewports[0].setUsed(true);
 
-		cViewports[1].Setup(half + gap, top, half, h, type2);
+		cViewports[1].Setup(322, top, 318, h, type2);
 		if(w2)
 			cViewports[1].setSmooth( !OwnsWorm(w2->getID()) );
 		cViewports[1].setTarget(w2);
-		cViewports[1].setOrigTarget(w2);
+		cViewports[1].setUsed(true);
 	}
-
-	bShouldRepaintInfo = true;
-}
-
-
-///////////////////
-// Compute the screen rectangle for one split-screen viewport, given the total
-// number of local players sharing the screen. The play area is (0, top) with
-// size (sw x h); a `gap` px seam separates neighbouring viewports (it is filled
-// with the split colour when drawing, see CClient::Draw).
-//
-// Layouts (viewport index order shown):
-//   1 player : full screen
-//   2 players: left | right          (two equal columns)
-//   3 players: 2x2 grid, radar map   [0][1] / [2][R]   (R = radar, drawn by
-//              in the 4th quarter                        CClient::Draw)
-//   4 players: 2x2 grid              [0][1] / [2][3]
-//
-// For 3 players every viewport is a quarter, exactly like the 4-player grid, so
-// no player gets a larger (unfair) view; the vacant 4th quarter shows the radar.
-static void splitScreenViewportRect(int index, int count, int top, int sw, int h, int gap,
-									int& vx, int& vy, int& vw, int& vh)
-{
-	const int halfW = (sw - gap) / 2;
-	const int halfH = (h - gap) / 2;
-
-	switch(count) {
-		case 1:
-			vx = 0; vy = top; vw = sw; vh = h;
-			break;
-
-		case 2: // side by side
-			vx = (index == 0) ? 0 : (halfW + gap);
-			vy = top; vw = halfW; vh = h;
-			break;
-
-		default: { // 3 or 4: 2x2 grid (index always < NUM_VIEWPORTS here)
-			const int col = index % 2;
-			const int row = index / 2;
-			vx = col ? (halfW + gap) : 0;
-			vy = top + (row ? (halfH + gap) : 0);
-			vw = halfW; vh = halfH;
-			break;
-		}
-	}
-}
-
-
-///////////////////
-// Setup split-screen viewports for 1..MAX_LOCAL_PLAYERS local players.
-// worms[i] is followed by viewport i (a NULL entry / empty list yields a single
-// spectator viewport). All viewports use the same view `type`.
-void CClient::SetupViewports(const std::vector<CWorm*>& worms, int type)
-{
-	// Reset
-	for( int i=0; i<NUM_VIEWPORTS; i++ )  {
-		cViewports[i].shutdown();
-		cViewports[i].setTarget(NULL);
-	}
-
-	// Setup inputs: viewport i is driven by local player i's control set.
-	for( int i=0; i<NUM_VIEWPORTS && i < (int)tLXOptions->sPlayerControls.size(); i++ )
-		cViewports[i].setupInputs( tLXOptions->sPlayerControls[i] );
-
-	// Setup according to top and bottom interface bars
-	SmartPointer<SDL_Surface> topbar = NULL;
-	SmartPointer<SDL_Surface> bottombar = NULL;
-	if (game.isLocalGame())  {
-		bottombar = DeprecatedGUI::gfxGame.bmpGameLocalBackground;
-		topbar = DeprecatedGUI::gfxGame.bmpGameLocalTopBar;
-	} else {
-		bottombar = DeprecatedGUI::gfxGame.bmpGameNetBackground;
-		topbar = DeprecatedGUI::gfxGame.bmpGameNetTopBar;
-	}
-
-	int top = topbar.get() ? (topbar.get()->h) : (tLX->cFont.GetHeight() + 3); // Top bound of the viewports
-	if (!tLXOptions->bTopBarVisible)
-		top = 0;
-
-	int h = bottombar.get() ? (480 - bottombar.get()->h - top) : (382 - top); // Height of the viewports
-
-	//if( game.gameScript() && game.gameScript()->gusEngineUsed() )
-	{
-		top = 0; // Topbar is transparent
-		h = 480;
-	}
-
-	// See the note in the 2-arg overload: non-widescreen games are constrained
-	// to menuWidth (composed centered, side gaps edge-filled); widescreen uses the full width.
-	VideoPostProcessor::get()->setDisplayScreenWidth(
-		game.useWideScreen() ? VideoPostProcessor::get()->screenWidth()
-		                     : VideoPostProcessor::menuWidth);
-	const int sw = VideoPostProcessor::get()->displayScreenWidth();
-
-	int count = (int) worms.size();
-	if(count > NUM_VIEWPORTS) count = NUM_VIEWPORTS;
-
-	// No worm to follow: a single spectator/action-cam viewport over the screen.
-	if(count == 0) {
-		cViewports[0].Setup(0, top, sw, h, (type == VW_FOLLOW || type == VW_CYCLE) ? VW_ACTIONCAM : type);
-		cViewports[0].setTarget(NULL);
-		cViewports[0].setOrigTarget(NULL);
-		bShouldRepaintInfo = true;
-		return;
-	}
-
-	const int gap = 4;
-	for(int i = 0; i < count; i++) {
-		int vx, vy, vw, vh;
-		splitScreenViewportRect(i, count, top, sw, h, gap, vx, vy, vw, vh);
-		cViewports[i].Setup(vx, vy, vw, vh, type);
-		CWorm* w = worms[i];
-		if(w)
-			cViewports[i].setSmooth( !OwnsWorm(w->getID()) );
-		cViewports[i].setTarget(w);
-		cViewports[i].setOrigTarget(w);
-	}
-
+	
 	bShouldRepaintInfo = true;
 }
 
@@ -1756,179 +1707,228 @@ void CClient::SetupViewports(const std::vector<CWorm*>& worms, int type)
 // Return true if we own the worm
 int CClient::OwnsWorm(int id)
 {
-	CWorm* w = game.wormById(id, false);
-	if(w) return w->getLocal();
+	for(uint i=0;i<iNumWorms;i++) {
+		if(cLocalWorms[i] && id == cLocalWorms[i]->getID())
+			return true;
+	}
+
 	return false;
 }
 
 int CClient::getTeamWormCount(int t) const {
 	int c = 0;
-	for_each_iterator(CWorm*, w, game.worms())
-		if(w->get()->getTeam() == t)
+	for(int i = 0; i < MAX_WORMS; ++i) {
+		CWorm* w = &cRemoteWorms[i];
+		if(w->isUsed() && w->getTeam() == t)
 			c++;
+	}
 	return c;
 }
 
 
-static std::list<SmartPointer<profile_t> > wormsToAdd;
-
-static void prepareWormAdd() {
-	wormsToAdd.clear();
-	if(game.isServer()) {
-		// We are changing the amounts of worms, thus we have to sync the network now.
-		// This is needed because the network protocol depends on the amount of worms
-		// and we cannot parse old packets in the network stream correct anymore.
-		
-		SyncServerAndClient();
-	}
-}
-
-static bool setWormAdd(const SmartPointer<profile_t>& p) {
-	if(!p.get()) {
+static bool setWormAdd(profile_t* p) {
+	if(p == NULL) {
 		errors << "addWorm(): you have to specify the profile" << endl;
 		return false;
 	}
 
-	size_t maxWorms = MAX_WORMS;
-	if(game.isServer() && tLXOptions->iMaxPlayers > 0)
-		maxWorms = MIN(maxWorms, tLXOptions->iMaxPlayers);
-	if(game.localWorms()->size() + 1 >= maxWorms) {
+	if(cClient->getNumWorms() + 1 >= MIN((int)MAX_WORMS, cClient->getGameLobby()->iMaxPlayers)) {
 		warnings << "addWorm(): too many worms" << endl;
 		return false;
 	}
 	
-	wormsToAdd.push_back(p);
+	cClient->getLocalWormProfiles()[cClient->getNumWorms()] = p;
+	cClient->setNumWorms(cClient->getNumWorms() + 1);
 	return true;
 }
 
 static std::list<int> updateAddedWorms(bool outOfGame) {
 	std::list<int> addedWorms;
-	if(wormsToAdd.size() == 0)
-		return addedWorms;
 	
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		if(outOfGame) warnings << "updateAddedWorms: we cannot avoid worm spawning" << endl;
-		cClient->connectInfo = new ClientConnectionRequestInfo();
-		cClient->connectInfo->initFromGame();
-		foreach(wprof, wormsToAdd)
-			cClient->connectInfo->worms.push_back(*wprof);
 		cClient->Reconnect(); // we have to reconnect to inform the server about the new worm
 		return addedWorms;
 	}
 	
 	// we can do it direct as host (similar to kickWorm)
 
-	CServerConnection* localConn = cServer->localClientConnection();
+	CServerConnection* localConn = NULL;
+	for( int i=0; i<MAX_CLIENTS; i++ )
+		if(cServer->getClients()[i].isLocalClient()) {
+			localConn = &cServer->getClients()[i];
+			break;
+		}
 	if(localConn == NULL) {
 		errors << "updateAddedWorms: localClient not found" << endl;
 		return addedWorms;
 	}
 	
-	foreach(newWormProf, wormsToAdd) {
-		// first add the worm on the server
-		
-		WormJoinInfo info;
-		info.loadFromProfile(*newWormProf);
-		CWorm* w = cServer->AddWorm(info, localConn);
-		if(w == NULL) {
-			warnings << "updateAddedWorms: cannot add worm " << info.sName << endl;
-			break;
-		}
-		w->setProfile(*newWormProf);
-		addedWorms.push_back(w->getID());
-		
-		hints << "Worm added: " << w->getName();
-		hints << " (id " << w->getID() << ", team " << w->getTeam() << ")" << endl;
+	for(int i = 0; i < cClient->getNumWorms(); ++i) {
+		if(localConn->getWorm(i) == NULL) { // this is a new worm
+			// first add the worm on the server
+			
+			WormJoinInfo info;
+			info.loadFromProfile(cClient->getLocalWormProfiles()[i]);
+			CWorm* serverWorm = cServer->AddWorm(info);
+			if(serverWorm == NULL) {
+				warnings << "updateAddedWorms: cannot add worm " << info.sName << endl;
+				cClient->setNumWorms(i);
+				break;
+			}
+			addedWorms.push_back(serverWorm->getID());
+			
+			serverWorm->setClient(localConn);
+			localConn->setNumWorms(i + 1);
+			localConn->setWorm(i, serverWorm);
 
-		if(outOfGame) w->setLives(WRM_OUT);
-		if(game.state != Game::S_Lobby) {
-			w->Prepare(); // prepare serverside
-			cServer->PrepareWorm(w);
-		}
+			hints << "Worm added: " << serverWorm->getName();
+			hints << " (id " << serverWorm->getID() << ", team " << serverWorm->getTeam() << ")" << endl;
 
-		// inform everybody else about new worm
-		for(int ii = 0; ii < MAX_CLIENTS; ii++) {
-			if(cServer->getClients()[ii].isLocalClient()) continue;
-			if(cServer->getClients()[ii].getStatus() != NET_CONNECTED) continue;
-			if(cServer->getClients()[ii].getNetEngine() == NULL) continue;
-			cServer->getClients()[ii].getNetEngine()->SendUpdateWorm(w);			
-		}
-		
-		// handling for connect during game
-		if( game.state != Game::S_Lobby ) {
+			serverWorm->setAlive(false);
+			if(outOfGame) serverWorm->setLives(WRM_OUT);
+			if(cServer->getState() != SVS_LOBBY) {
+				serverWorm->Prepare(true); // prepare serverside
+				cServer->PrepareWorm(serverWorm);
+			}
+
+			// inform everybody else about new worm
 			for(int ii = 0; ii < MAX_CLIENTS; ii++) {
+				if(cServer->getClients()[ii].isLocalClient()) continue;
 				if(cServer->getClients()[ii].getStatus() != NET_CONNECTED) continue;
 				if(cServer->getClients()[ii].getNetEngine() == NULL) continue;
-				cServer->getClients()[ii].getNetEngine()->SendWormScore( w );
+				cServer->getClients()[ii].getNetEngine()->SendUpdateWorm(serverWorm);
+				
 			}
+			
+			// handling for connect during game
+			if( cServer->getState() != SVS_LOBBY ) {
+				for(int ii = 0; ii < MAX_CLIENTS; ii++) {
+					if(cServer->getClients()[ii].getStatus() != NET_CONNECTED) continue;
+					if(cServer->getClients()[ii].getNetEngine() == NULL) continue;
+					cServer->getClients()[ii].getNetEngine()->SendWormScore( serverWorm );
+				}
 
-			if(!CServerNetEngine::isWormPropertyDefault(w)) {					
-				for( int j = 0; j < MAX_CLIENTS; j++ ) {
-					if(cServer->getClients()[j].getStatus() != NET_CONNECTED) continue;
-					if(cServer->getClients()[j].getNetEngine() == NULL) continue;
-					cServer->getClients()[j].getNetEngine()->SendWormProperties(w); // if we have changed them in prepare or so
+				if(!CServerNetEngine::isWormPropertyDefault(serverWorm)) {					
+					for( int j = 0; j < MAX_CLIENTS; j++ ) {
+						if(cServer->getClients()[j].getStatus() != NET_CONNECTED) continue;
+						if(cServer->getClients()[j].getNetEngine() == NULL) continue;
+						cServer->getClients()[j].getNetEngine()->SendWormProperties(serverWorm); // if we have changed them in prepare or so
+					}
 				}
 			}
-		}
-		
-		// ----- now add the worm on the client ----
-		
-		// (code from CClientNetEngine::ParseConnected) 
-		
-		w->setType(WormType::fromInt((*newWormProf)->iType));
-		w->setClientVersion(cClient->getClientVersion());
-		if(!w->ChangeGraphics())
-			warnings << "updateAddedWorms: changegraphics for worm " << w->getID() << " failed" << endl;
+			
+			// ----- now add the worm on the client ----
+			
+			// (code from CClientNetEngine::ParseConnected) 
+			cClient->setWorm(i, &cClient->getRemoteWorms()[serverWorm->getID()]);
+			if(cClient->getWorm(i)->isUsed()) {
+				warnings << "updateAddedWorms: local worm " << i << " was already used, it is ";
+				warnings << cClient->getWorm(i)->getID() << ":" << cClient->getWorm(i)->getName() << endl;
+			}
+			
+			cClient->getWorm(i)->setUsed(true);
+			cClient->getWorm(i)->setAlive(false);
+			info.applyTo(cClient->getWorm(i)); // sets skin
+			cClient->getWorm(i)->setClient(NULL); // Local worms won't get CServerConnection owner
+			cClient->getWorm(i)->setLocal(true);
+			cClient->getWorm(i)->setName(serverWorm->getName());
+			cClient->getWorm(i)->setID(serverWorm->getID());
+			cClient->getWorm(i)->setTeam(serverWorm->getTeam());
+			cClient->getWorm(i)->setGameScript(cClient->getGameScript().get()); // TODO: why was this commented out?
+			//cClient->getWorm(i)->setLoadingTime(cClient->fLoadingTime);  // TODO: why is this commented out?
+			cClient->getWorm(i)->setProfile(cClient->getLocalWormProfiles()[i]);
+			if(cClient->getLocalWormProfiles()[i]) {
+				cClient->getWorm(i)->setType(WormType::fromInt(cClient->getLocalWormProfiles()[i]->iType));
+			} else
+				warnings << "updateAddedWorms: profile " << i << " for worm " << serverWorm->getID() << " is not set" << endl;
+			cClient->getWorm(i)->setClientVersion(cClient->getClientVersion());
+			if(!cClient->getWorm(i)->ChangeGraphics(cClient->getGeneralGameType()))
+				warnings << "updateAddedWorms: changegraphics for worm " << serverWorm->getID() << " failed" << endl;
+			
+			
+			// gameready means that we had a preparegame package
+			// status==NET_PLAYING means that we are already playing
+			if( cClient->getGameReady() ) {
+									
+				// Also set some game details
+				cClient->getWorm(i)->setLives(serverWorm->getLives());
+				cClient->getWorm(i)->setKills(serverWorm->getKills());
+				cClient->getWorm(i)->setDeaths(serverWorm->getDeaths());
+				cClient->getWorm(i)->setTeamkills(serverWorm->getTeamkills());
+				cClient->getWorm(i)->setDamage(serverWorm->getDamage());
+				cClient->getWorm(i)->setHealth(serverWorm->getHealth());
+				cClient->getWorm(i)->setGameScript(cClient->getGameScript().get());
+				cClient->getWorm(i)->setWpnRest(cClient->getWeaponRestrictions());
+				cClient->getWorm(i)->setLoadingTime(cClient->getGameLobby()->iLoadingTime/100.0f);
+				cClient->getWorm(i)->setWeaponsReady(serverWorm->getWeaponsReady());
+				cClient->getWorm(i)->CloneWeaponsFrom(serverWorm); // if we had serverside weapons, this will clone them
+				
+				// Prepare for battle!
+				cClient->getWorm(i)->Prepare(false);
+				cClient->getWorm(i)->setCanUseNinja(serverWorm->canUseNinja());
+				cClient->getWorm(i)->setSpeedFactor(serverWorm->speedFactor());
+				cClient->getWorm(i)->setDamageFactor(serverWorm->damageFactor());
+				cClient->getWorm(i)->setShieldFactor(serverWorm->shieldFactor());
+				cClient->getWorm(i)->setCanAirJump(serverWorm->canAirJump());
+				
+				if(!cClient->getWorm(i)->getWeaponsReady())
+					cClient->getWorm(i)->initWeaponSelection();
+				
+				if(!cClient->getWorm(i)->getWeaponsReady()) {
+					// Note for bots: In the normal case (for bots), they already should have selected their weapons in initWeaponSelection().
+					// In case of forcerandomwpns, we have set the wpns in GameServer::PrepareWorm, so they also should be ready.
+					// In case of samewpnsashostwrm, it could be that we are waiting for the host worm.
+					// Also note that the outOfGame-parameter is ignored here.
+					notes << "updateAddedWorms: we have to wait for the weapon selection of the new worm" << endl;
+					cClient->setStatus(NET_CONNECTED); // this means that we are not ready with weapon selection
+					cClient->setReadySent(false); // to force resent
+					// we will recheck that in clients frame
+				}
+				else { // weapons are already ready
+					// copy weapons to server
+					serverWorm->CloneWeaponsFrom(cClient->getWorm(i));
+					serverWorm->setWeaponsReady(true);
 					
-		// gameready means that we had a preparegame package
-		// status==NET_PLAYING means that we are already playing
-		if( game.state >= Game::S_Preparing ) {
-						
-			if(!w->bWeaponsReady)
-				w->initWeaponSelection();
-			
-			if(!w->bWeaponsReady) {
-				// Note for bots: In the normal case (for bots), they already should have selected their weapons in initWeaponSelection().
-				// In case of forcerandomwpns, we have set the wpns in GameServer::PrepareWorm, so they also should be ready.
-				// In case of samewpnsashostwrm, it could be that we are waiting for the host worm.
-				// Also note that the outOfGame-parameter is ignored here.
-				notes << "updateAddedWorms: we have to wait for the weapon selection of the new worm" << endl;
-				cClient->setStatus(NET_CONNECTED); // this means that we are not ready with weapon selection
-				cClient->setReadySent(false); // to force resent
-				// we will recheck that in clients frame
-			}
-			else { // weapons are already ready				
-				if(game.state == Game::S_Playing) { // that means that we were already ready before
-					// send weapon list to other clients
-					for(int ii = 0; ii < MAX_CLIENTS; ii++) {
-						if(!cServer->getClients()[ii].isLocalClient() && cServer->getClients()[ii].getClientVersion() < OLXBetaVersion(0,59,10)) {
-							// TODO: move that out here
-							CBytestream bs;
-							bs.writeByte(S2C_CLREADY);
-							bs.writeByte(1);
-							w->writeWeapons(&bs);
-							cServer->getClients()[ii].getNetEngine()->SendPacket(&bs);
+					if(cClient->getStatus() == NET_PLAYING) { // that means that we were already ready before
+						// send weapon list to other clients
+						for(int ii = 0; ii < MAX_CLIENTS; ii++) {
+							if(!cServer->getClients()[ii].isLocalClient()) {
+								// TODO: move that out here
+								CBytestream bs;
+								bs.writeByte(S2C_CLREADY);
+								bs.writeByte(1);
+								cClient->getWorm(i)->writeWeapons(&bs);
+								cServer->getClients()[ii].getNetEngine()->SendPacket(&bs);
+							}
 						}
-					}
-				}						
-			}
-			
-			if(!bDedicated && w->getType() == PRF_HUMAN) {
-				// we must resetup the inputs
-				cClient->SetupGameInputs();
-				// also resetup viewports
-				cClient->SetupViewports();
+					}						
+
+					if(cServer->getState() == SVS_PLAYING && !outOfGame) {
+						// spawn worm
+						cServer->SpawnWorm( serverWorm );
+					}						
+				}
+				
+				if(!bDedicated && cClient->getWorm(i)->getType() == PRF_HUMAN) {
+					// we must resetup the inputs
+					cClient->SetupGameInputs();
+					// also resetup viewports
+					cClient->SetupViewports();
+				}
+
+				cClient->UpdateScoreboard();
 			}
 		}
 	}
 
 	// grabbed some code from GameServer::ParseConnect
 	
-	if( game.state == Game::S_Lobby )
+	if( cServer->getState() == SVS_LOBBY )
 		cServer->UpdateGameLobby(); // tell everybody about game lobby details
 	
-	if (!game.isLocalGame()) {
-		if( game.state == Game::S_Lobby )
+	if (tLX->iGameType != GME_LOCAL) {
+		if( cServer->getState() == SVS_LOBBY )
 			cServer->SendWormLobbyUpdate(); // to everbody
 		else {
 			for( int i=0; i<MAX_CLIENTS; i++ )
@@ -1942,6 +1942,16 @@ static std::list<int> updateAddedWorms(bool outOfGame) {
 	cServer->RecheckGame();
 	
 	return addedWorms;
+}
+
+static void prepareWormAdd() {
+	if(tLX->iGameType != GME_JOIN) {
+		// We are changing the amounts of worms, thus we have to sync the network now.
+		// This is needed because the network protocol depends on the amount of worms
+		// and we cannot parse old packets in the network stream correct anymore.
+		
+		SyncServerAndClient();
+	}
 }
 
 std::list<int> CClient::AddRandomBots(int amount, bool outOfGame) {
@@ -1959,10 +1969,10 @@ std::list<int> CClient::AddRandomBots(int amount, bool outOfGame) {
 		return std::list<int>();
 	}
 
-	std::vector<SmartPointer<profile_t> > bots;
-	for_each_iterator(SmartPointer<profile_t>, p, GetProfiles()) {
-		if(p->get()->iType == PRF_COMPUTER->toInt())
-			bots.push_back(p->get());
+	std::vector<profile_t*> bots;
+	for(profile_t* p = GetProfiles(); p != NULL; p = p->tNext) {
+		if(p->iType == PRF_COMPUTER->toInt())
+			bots.push_back(p);
 	}
 	
 	if(bots.size() == 0) {
@@ -1977,7 +1987,7 @@ std::list<int> CClient::AddRandomBots(int amount, bool outOfGame) {
 	return updateAddedWorms(outOfGame);
 }
 
-int CClient::AddWorm(const SmartPointer<profile_t>& p, bool outOfGame) {
+int CClient::AddWorm(profile_t* p, bool outOfGame) {
 	{
 		std::string reason;
 		if(!canAddWorm(&reason)) {
@@ -1999,22 +2009,64 @@ int CClient::AddWorm(const SmartPointer<profile_t>& p, bool outOfGame) {
 }
 
 
-bool CClient::isWormVisibleOnAnyViewport(int worm) const {
-	CWorm* w = game.wormById(worm, false);
-	if(!w) return false;
-	for(int i = 0; i < NUM_VIEWPORTS; ++i) {
-		if(!cViewports[i].getUsed()) continue;
-		if(w->isVisible(&cViewports[i])) return true;
+//////////////////
+// Remove the worm
+void CClient::RemoveWorm(int id)
+{
+	if(id < 0 || id >= MAX_WORMS) {
+		warnings << "CClient::RemoveWorm: worm id " << id << " is invalid" << endl;
+		return;
 	}
-	return false;
+	
+	bool found = false;
+	for (int i=0;i<MAX_PLAYERS;i++)  {
+		if (cLocalWorms[i])  {
+			if(i >= getNumWorms()) {
+				warnings << "Client:RemoveWorm: own worm " << cLocalWorms[i]->getID() << ":" << cLocalWorms[i]->getName() << " should not exist" << endl;
+			}
+			if (cLocalWorms[i]->getID() == id)  {
+				found = true;
+				iNumWorms--;
+				cLocalWorms[i] = NULL;
+				tProfiles[i] = NULL;
+				for (int j=i;j<MAX_PLAYERS-1;j++)  {
+					cLocalWorms[j] = cLocalWorms[j+1];
+					tProfiles[j] = tProfiles[j+1];
+				}
+				cLocalWorms[MAX_PLAYERS-1] = NULL;
+				tProfiles[MAX_PLAYERS-1] = NULL;				
+				break;
+			}
+		}
+	}
+	
+	if (cRemoteWorms)  {
+		if(cRemoteWorms[id].getLocal() && !found) {
+			warnings << "CClient::RemoveWorm: didn't found local worm with id " << id << endl;
+		}
+
+		cRemoteWorms[id].Unprepare();
+		// TODO: why not a Clear() here?
+		cRemoteWorms[id].setUsed(false);
+		cRemoteWorms[id].setAlive(false);
+		cRemoteWorms[id].setKills(0);
+		cRemoteWorms[id].setDeaths(0);
+		cRemoteWorms[id].setTeamkills(0);
+		cRemoteWorms[id].setLives(WRM_OUT);
+		cRemoteWorms[id].setProfile(NULL);
+		cRemoteWorms[id].setType(PRF_HUMAN);
+		cRemoteWorms[id].setLocal(false);
+		cRemoteWorms[id].setTagIT(false);
+		cRemoteWorms[id].setTagTime(TimeDiff(0));
+	}
+	else
+		errors << "CClient::RemoveWorm: cRemoteWorms not set" << endl;
 }
 
-bool CClient::isWormTargetOnAnyViewport(int worm) const {
+bool CClient::isWormVisibleOnAnyViewport(int worm) const {
 	for(int i = 0; i < NUM_VIEWPORTS; ++i) {
-		const CViewport* v = &cViewports[i];
-		if(!v->getUsed()) continue;
-		if(v->getTarget() && v->getTarget()->getID() == worm)
-			return true;
+		if(!cViewports[i].getUsed()) continue;
+		if(cRemoteWorms[worm].isVisible(&cViewports[i])) return true;
 	}
 	return false;
 }
@@ -2031,13 +2083,16 @@ void CClient::GetLogData(std::string& data)
 	if (!tGameLog)
 		return;
 
+	if (!tGameLog->tWorms)
+		return;
+
 	std::string levelfile, modfile, level, mod, player, skin;
 
 	// Fill in the details
-	levelfile = getGameLobby()[FT_Map].as<LevelInfo>()->path;
-	modfile = getGameLobby()[FT_Mod].as<ModInfo>()->path;
-	level = game.gameMap()->getName();
-	mod = game.gameScript()->GetHeader()->ModName;
+	levelfile = tGameInfo.sMapFile;
+	modfile = tGameInfo.sModDir;
+	level = cMap->getName();
+	mod = cGameScript.get()->GetHeader()->ModName;
 	xmlEntityText(levelfile);
 	xmlEntityText(modfile);
 	xmlEntityText(level);
@@ -2045,50 +2100,55 @@ void CClient::GetLogData(std::string& data)
 
 	// Save the game info
 	data =	"<game datetime=\"" + tGameLog->sGameStart + "\" " +
-			"length=\"" + ftoa(game.gameOverTime().seconds()) + "\" " +
-			"loading=\"" + itoa((int)getGameLobby()[FT_LoadingTime]) + "\" " +
-			"gamespeed=\"" + ftoa(gameSettings[FT_GameSpeed]) + "\" " +
-			"lives=\"" + itoa((int)getGameLobby()[FT_Lives]) + "\" " +
-			"maxkills=\"" + itoa((int)getGameLobby()[FT_KillLimit]) + "\" " +
-			"bonuses=\"" + (getGameLobby()[FT_Bonuses] ? "1" : "0") + "\" " +
-			"bonusnames=\"" + (getGameLobby()[FT_ShowBonusName] ? "1" : "0") + "\" " +
+			"length=\"" + ftoa((fGameOverTime - tGameLog->fGameStart).seconds()) + "\" " +
+			"loading=\"" + itoa(tGameInfo.iLoadingTime) + "\" " +
+			"gamespeed=\"" + ftoa(tGameInfo.features[FT_GameSpeed]) + "\" " +
+			"lives=\"" + itoa(tGameInfo.iLives) + "\" " +
+			"maxkills=\"" + itoa(tGameInfo.iKillLimit) + "\" " +
+			"bonuses=\"" + (tGameInfo.bBonusesOn ? "1" : "0") + "\" " +
+			"bonusnames=\"" + (tGameInfo.bShowBonusName ? "1" : "0") + "\" " +
 			"levelfile=\"" + levelfile + "\" " +
 			"modfile=\"" + modfile + "\" " +
 			"level=\"" + level + "\" " +
 			"mod=\"" + mod + "\" " +
 			"winner=\"" + itoa(tGameLog->iWinner) + "\" " +
-			"gamemode=\"" + getGameLobby()[FT_GameMode].as<GameModeInfo>()->toString() + "\">";
+			"gamemode=\"" + tGameInfo.sGameMode + "\">";
+
+	// Count the number of players
+	int num_players = 0;
+	{for (short i=0; i < MAX_WORMS; i++)
+		num_players += cRemoteWorms[i].isUsed() ? 1 : 0;
+	}
 
 	// Save the general players info
-	data += "<players startcount=\"" + itoa(tGameLog->tWorms.size()) + "\" endcount=\"" + itoa(game.worms()->size()) + "\">";
+	data += "<players startcount=\"" + itoa(tGameLog->iNumWorms) + "\" endcount=\"" + itoa(num_players) + "\">";
 
 	// Info for each player
-	foreach(wPair, tGameLog->tWorms)  {
-		log_worm_t& w = wPair->second;
-		
+	for (short i=0; i < tGameLog->iNumWorms; i++)  {
+
 		// Replace the entities
-		player = w.sName;
+		player = tGameLog->tWorms[i].sName;
 		xmlEntityText(player);
 
 		// Replace the entities
-		skin = w.sSkin;
+		skin = tGameLog->tWorms[i].sSkin;
 		xmlEntityText(skin);
 
 		// Write the info
 		data += "<player name=\"" + player + "\" " +
 				"skin=\"" + skin + "\" " +
-				"id=\"" + itoa(w.iID) + "\" "
-				"kills=\"" + itoa(w.iKills) + "\" " +
-				"lives=\"" + itoa(w.iLives) + "\" " +
-				"suicides=\"" + itoa(w.iSuicides) + "\" " +
-				"teamkills=\"" + itoa(w.iTeamKills) + "\" " +
-				"teamdeaths=\"" + itoa(w.iTeamDeaths) + "\" " +
-				"team=\"" + itoa(w.iTeam) + "\" " +
-				"tag=\"" + (w.bTagIT ? "1" : "0") + "\" " +
-				"tagtime=\"" + ftoa(w.fTagTime.seconds()) + "\" " +
-				"left=\"" + (w.bLeft ? "1" : "0") + "\" " +
-				"timeleft=\"" + ftoa(w.fTimeLeft.seconds()) + "\" " +
-				"type=\"" + itoa(w.iType) + "\"/>";
+				"id=\"" + itoa(tGameLog->tWorms[i].iID) + "\" "
+				"kills=\"" + itoa(tGameLog->tWorms[i].iKills) + "\" " +
+				"lives=\"" + itoa(tGameLog->tWorms[i].iLives) + "\" " +
+				"suicides=\"" + itoa(tGameLog->tWorms[i].iSuicides) + "\" " +
+				"teamkills=\"" + itoa(tGameLog->tWorms[i].iTeamKills) + "\" " +
+				"teamdeaths=\"" + itoa(tGameLog->tWorms[i].iTeamDeaths) + "\" " +
+				"team=\"" + itoa(tGameLog->tWorms[i].iTeam) + "\" " +
+				"tag=\"" + (tGameLog->tWorms[i].bTagIT ? "1" : "0") + "\" " +
+				"tagtime=\"" + ftoa(tGameLog->tWorms[i].fTagTime.seconds()) + "\" " +
+				"left=\"" + (tGameLog->tWorms[i].bLeft ? "1" : "0") + "\" " +
+				"timeleft=\"" + ftoa(tGameLog->tWorms[i].fTimeLeft.seconds()) + "\" " +
+				"type=\"" + itoa(tGameLog->tWorms[i].iType) + "\"/>";
 	}
 
 	// End tags
@@ -2104,14 +2164,42 @@ log_worm_t *CClient::GetLogWorm(int id)
 	// Check
 	if (!tGameLog)
 		return NULL;
+	if (!tGameLog->tWorms)
+		return NULL;
 
-	std::map<int,log_worm_t>::iterator i = tGameLog->tWorms.find(id);
-	if(i != tGameLog->tWorms.end()) return &i->second;
-	
-	// create
-	log_worm_t& w = tGameLog->tWorms[id];
-	w.iID = id;
-	return &w;
+	// Go through the worms, checking the IDs
+	log_worm_t *w = tGameLog->tWorms;
+	int i;
+	for(i=0;i<tGameLog->iNumWorms;i++,w++)
+		if (w->iID == id)
+			return w;
+
+	// Not found
+	return NULL;
+}
+
+
+////////////////////////
+// Select weapons for client handling local bots in net play
+// Normally, this is done in CClient::Draw
+void CClient::BotSelectWeapons()
+{
+	if(iNetStatus == NET_CONNECTED && bGameReady)  {
+		uint i;
+
+		// Go through and draw the first two worms select menus
+		for(i=0;i<iNumWorms;i++) {
+			// Select weapons
+			cLocalWorms[i]->setWeaponsReady(true);
+			cLocalWorms[i]->setCurrentWeapon(0);
+		}
+
+		// If we're ready, let the server know
+		if(!bReadySent) {
+			bReadySent = true;
+			cNetEngine->SendGameReady();
+		}
+	}
 }
 
 
@@ -2132,21 +2220,47 @@ void CClient::ShutdownLog()
 	if (!tGameLog)
 		return;
 
+	// Free the worms
+	if (tGameLog->tWorms)
+		delete[] tGameLog->tWorms;
+
 	// Free the log structure
 	delete tGameLog;
-	
+
 	tGameLog = NULL;
 }
 
 
 ///////////////////
 // Shutdown the client
-void CClient::Shutdown() {	
-	Disconnect(); // disconnect if not yet disconnected
+void CClient::Shutdown() {
+	// Remote worms
+	if(cRemoteWorms) {
+		for(int i=0;i<MAX_WORMS;i++)
+			cRemoteWorms[i].Shutdown();
+		delete[] cRemoteWorms;
+		cRemoteWorms = NULL;
+	}
 
+	for(int i = 0; i < MAX_WORMS; ++i)
+		cLocalWorms[i] = NULL;
+	for(int i = 0; i < MAX_WORMS; ++i)
+		tProfiles[i] = NULL;
+	
+	
 	// Projectiles
 	cProjectiles.clear();
 	projPosMap.clear();
+
+	// Map
+	if(tLX->iGameType == GME_JOIN) {
+		if(cMap && !bMapGrabbed) {
+			cMap->Shutdown();
+			delete cMap;
+		}
+		bMapGrabbed = false;
+		cMap = NULL;
+	}
 
 	// Box buffer
 	bmpBoxBuffer = NULL;
@@ -2172,10 +2286,10 @@ void CClient::Shutdown() {
 	cShootList.Shutdown();
 
 	// Game menu
-	cGameMenuLayout.Shutdown();
+	DeprecatedGUI::cGameMenuLayout.Shutdown();
 
 	// Scoreboard
-	cScoreLayout.Shutdown();
+	DeprecatedGUI::cScoreLayout.Shutdown();
 
 
 	// Bonuses
@@ -2195,10 +2309,11 @@ void CClient::Shutdown() {
 		delete m_flagInfo;
 		m_flagInfo = NULL;
 	}
+	
+	// HINT: GameScript is shut down by the cache
 
-	if(serverGameState)
-		delete serverGameState;
-	serverGameState = NULL;
+	// Weapon restrictions
+	cWeaponRestrictions.Shutdown();
 
 	// Close the socket
 	tSocket->Clear();
@@ -2234,9 +2349,10 @@ bool CClient::RebindSocket()
 {
 	if(!tSocket->isOpen())
 		return false;
+	NetworkAddr addr = tSocket->localAddress();
 	tSocket->Close();
 	if(!tSocket->OpenUnreliable(0)) {
-		errors << "CClient::RebindSocket: Could not open UDP socket! " << endl;
+		SetError("Error: Could not open UDP socket!");
 		return false;
 	}
 	return true;
@@ -2248,7 +2364,7 @@ CChannel * CClient::createChannel(const Version& v)
 		delete cNetChan;
 	if( v >= OLXBetaVersion(0,58,1) )
 		cNetChan = new CChannel3();
-	else if( v >= OLXBetaVersion(0,57,6) )
+	else if( v >= OLXBetaVersion(6) )
 		cNetChan = new CChannel2();
 	else
 		cNetChan = new CChannel_056b();
@@ -2261,7 +2377,7 @@ void CClient::setNetEngineFromServerVersion()
 	cNetEngine = NULL;
 	if( getServerVersion() >= OLXBetaVersion(0,58,1) )
 		cNetEngine = new CClientNetEngineBeta9(this);
-	else if( getServerVersion() >= OLXBetaVersion(0,57,7) )
+	else if( getServerVersion() >= OLXBetaVersion(7) )
 		cNetEngine = new CClientNetEngineBeta7(this);
 	else
 		cNetEngine = new CClientNetEngine(this);
@@ -2279,20 +2395,22 @@ std::string CClient::debugName() {
 	}
 
 	std::string worms = "no worms";
-	if(game.localWorms()->size() > 0) {
+	if(getNumWorms() > 0) {
 		worms = "";
-		bool first = true;
-		for_each_iterator(CWorm*, w, game.localWorms()) {
-			if(!first) worms += ", ";
-			worms += itoa(w->get()->getID());
-			worms += " '";
-			worms += w->get()->getName();
-			worms += "'";
-			first = false;
+		for(int i = 0; i < getNumWorms(); ++i) {
+			if(i > 0) worms += ", ";
+			if(getWorm(i)) {
+				worms += itoa(getWorm(i)->getID());
+				worms += " '";
+				worms += getWorm(i)->getName();
+				worms += "'";
+			} else {
+				worms += "BAD";
+			}
 		}
 	}
 
-	return "CClient(" + adr + ") with " + worms;
+	return "CClient(" + adr +") with " + worms;
 }
 
 
@@ -2302,25 +2420,26 @@ void CClient::SetupGameInputs()
 	
 	// Setup the controls
 	int humanWormNum = 0;
-	for_each_iterator(CWorm*, w, game.localWorms()) {
-		CWormHumanInputHandler* handler = dynamic_cast<CWormHumanInputHandler*> (w->get()->inputHandler());
+	for(int i = 0; i < getNumWorms(); i++) {
+		if(!getWorm(i)) break; // rare cases, for example if we call it while adding local worms
+		CWormHumanInputHandler* handler = dynamic_cast<CWormHumanInputHandler*> (getWorm(i)->inputHandler());
 		if(handler) {
 			// TODO: Later, let the handler save a rev to his sPlayerControls. This would give
 			// more flexibility to the player and he can have multiple player control sets.
 			// Then, we would call a reloadInputs() here.
-			if(humanWormNum < MAX_LOCAL_PLAYERS) {
-				handler->setupInputs( tLXOptions->sPlayerControls[humanWormNum], humanWormNum );
+			if(humanWormNum <= 1) {
+				handler->setupInputs( tLXOptions->sPlayerControls[humanWormNum] );
 				humanWormNum++;
 			}
 			else
-				warnings << "SetupGameInputs: we currently don't support more than " << MAX_LOCAL_PLAYERS << " local human worms" << endl;
+				warnings << "SetupGameInputs: we currently don't support more than 2 local human worms" << endl;
 		}
 	}
 
-	// Viewport i is driven by local player i's control set (freelook etc.).
-	for( int i=0; i<NUM_VIEWPORTS && i < (int)tLXOptions->sPlayerControls.size(); i++ )
-		cViewports[i].setupInputs( tLXOptions->sPlayerControls[i] );
-
+	// TODO: allow more viewports here
+	cViewports[0].setupInputs( tLXOptions->sPlayerControls[0] );
+	cViewports[1].setupInputs( tLXOptions->sPlayerControls[1] );
+	
 
 	// General key shortcuts
 	cChat_Input.Setup(tLXOptions->sGeneralControls[SIN_CHAT]);
@@ -2333,6 +2452,17 @@ void CClient::SetupGameInputs()
 
 	InitializeSpectatorViewportKeys();
 
+}
+
+int CClient::getNumRemoteWorms()
+{
+	int ret = 0;
+	if( !cRemoteWorms )
+		return 0;
+	for(int i = 0; i < MAX_WORMS; i++ )
+		if( cRemoteWorms[i].isUsed() )
+			ret++;
+	return ret;
 }
 
 long CClient::MapPosIndex::index(const CMap* m) const {
@@ -2349,23 +2479,25 @@ void CClient::DumpGameState(CmdLineIntf* caller) {
 	caller->writeMsg(std::string("Client state: ") + NetStateString((ClientNetState)getStatus()));
 	if(getStatus() == NET_DISCONNECTED) return;
 	caller->writeMsg("Server info: version " + getServerVersion().asString() + ", addr '" + getServerAddr_HumanReadable() + "'");
-	for_each_iterator(CWorm*, w, game.worms()) {
-		std::ostringstream msg;
-		msg << " * worm " << w->get()->getID() << ":" << w->get()->getName();
-		if(w->get()->getLocal()) msg << "(local)";
-		caller->writeMsg(msg.str());
+	if(cRemoteWorms) {
+		for(int i = 0; i < MAX_WORMS; ++i) {
+			CWorm* w = &cRemoteWorms[i];
+			if(!w->isUsed()) continue;
+			std::ostringstream msg;
+			msg << " * worm " << i << ":" << w->getName();
+			if(w->getLocal()) msg << "(local)";
+			caller->writeMsg(msg.str());
+		}
 	}
+	else
+		caller->writeMsg("Worms not initialised");
+}
+
+bool CClient::isMapReady() const {
+	return cMap && cMap->isLoaded();
 }
 
 void CClient::SetSocketWithEvents(bool v) {
 	tSocket->setWithEvents(v);
-}
-
-bool CClient::canSimulate() const { return game.state >= Game::S_Preparing && game.isMapReady(); }
-
-int	CClient::getTeamScore(int team) {
-	if(team < 0) return 0;
-	if((size_t)team >= game.teamScores.get().size()) return 0;
-	return game.teamScores.get().get(team);
 }
 

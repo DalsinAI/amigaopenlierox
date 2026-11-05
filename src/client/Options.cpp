@@ -17,7 +17,6 @@
 
 
 #include "LieroX.h"
-#include "Consts.h" // for MAX_LOCAL_PLAYERS
 #include "Debug.h"
 #include "FindFile.h"
 #include "StringUtils.h"
@@ -27,65 +26,32 @@
 #include "CScriptableVars.h"
 #include "IniReader.h"
 #include "Version.h"
-#include "Iter.h"
+#include "Iterator.h"
 #include "CGameMode.h"
 #include "AuxLib.h"
 #include "CInput.h"
-#include "game/Settings.h"
-#include "game/GameMode.h"
+
 
 
 GameOptions	*tLXOptions = NULL;
 NetworkTexts	*networkTexts = NULL;
-Taunts *taunts = NULL;
 
 const std::string DefaultCfgFilename = "cfg/options.cfg";
 
-const std::string    ply_keys[] = {"Up", "Down", "Left", "Right", "Shoot", "Jump", "Rope", "Strafe", "SelectWeapon", "PreviousWeapon", "NextWeapon", "Weapon1", "Weapon2", "Weapon3", "Weapon4", "Weapon5" };
+const std::string    ply_keys[] = {"Up", "Down", "Left", "Right", "Shoot", "Jump", "SelectWeapon", "Rope", "Strafe", "Dig", "Weapon1", "Weapon2", "Weapon3", "Weapon4", "Weapon5" };
 const std::string    ply_def1[] =
-#ifdef __APPLE__
-	{"up", "down", "left", "right", "lalt", "lmeta", "x", "c", "space", "a", "s", "1", "2", "3", "4", "5" };
+#ifdef MACOSX
+	{"up", "down", "left", "right", "lalt", "lmeta", "space", "x", "c", "a", "1", "2", "3", "4", "5" };
 #else
-	{"up", "down", "left", "right", "lctrl", "lalt", "x", "z", "lshift", "a", "s", "1", "2", "3", "4", "5" };
+	{"up", "down", "left", "right", "lctrl", "lalt", "lshift", "x", "z", "a", "1", "2", "3", "4", "5" };
 #endif
-const std::string    ply_def2[] = {"kp 8",  "kp 5",    "kp 4",    "kp 6",     "kp +", "kp enter", "kp -", "kp .", "kp 0", "kp 7", "kp 9", "6", "7", "8", "9", "0" };
-// Gamepad defaults, in the same order as ply_keys. These are bound as a
-// second alternative alongside the keyboard defaults above, so each control
-// works from either input out of the box. The pad index is added at
-// registration time (j1 for player 1, j2 for player 2).
-// The analog sticks are NOT bound here: during play, walking and aiming come
-// from the twin-stick controls (left stick walks, right stick aims), which
-// read the sticks directly and are always active for a local human with a pad,
-// superseding these Up/Down/Left/Right bindings. The d-pad entries are kept
-// because they still drive non-gameplay input such as the weapon-select
-// screen. The Weapon1-5 quick-select slots are left keyboard-only (on the pad
-// you cycle weapons with Previous/Next Weapon on the shoulders). Empty string
-// means "no gamepad binding".
-const std::string    ply_gamepad_def[] = {
-	"d_up",         // Up           - d-pad up (weapon-select scroll up)
-	"d_down",       // Down         - d-pad down (weapon-select scroll down)
-	"d_left",       // Left         - d-pad left
-	"d_right",      // Right        - d-pad right
-	"triggerright", // Shoot        - right trigger
-	"button_south", // Jump         - A
-	"button_north", // Rope         - Y
-	"button_east",  // Strafe       - B
-	"triggerleft",  // SelectWeapon - left trigger
-	"lshoulder",    // PrevWeapon   - left shoulder
-	"rshoulder",    // NextWeapon   - right shoulder
-	"",             // Weapon1      - keyboard only
-	"",             // Weapon2      - keyboard only
-	"",             // Weapon3      - keyboard only
-	"",             // Weapon4      - keyboard only
-	"",             // Weapon5      - keyboard only
-};
+const std::string    ply_def2[] = {"kp 8",  "kp 5",    "kp 4",    "kp 6",     "kp +", "kp enter", "kp 0", "kp -", "kp .", "kp /", "6", "7", "8", "9", "0" };
 const std::string    gen_keys[] = {"Chat", "ShowScore", "ShowHealth", "ShowSettings",  "TakeScreenshot",  "ViewportManager", "SwitchMode", "ToggleTopBar", "TeamChat",	"IrcChat", "Console"};
-const std::string    gen_def[]  = {"i",    "tab",		"h",		  "space",	       "F12",				"F2",				 "alt+enter", "F8",		   "o",			"F4",	"F3"};
+const std::string    gen_def[]  = {"i",    "tab",		"h",		  "space",	       "F12",				"F2",				 "F5",		   "F8",		   "o",			"F4",	"F3"};
 
 static_assert( sizeof(ply_keys) / sizeof(std::string) == __SIN_PLY_BOTTOM, "ply_keys__sizecheck" );
 static_assert( sizeof(ply_def1) / sizeof(std::string) == __SIN_PLY_BOTTOM, "ply_def1__sizecheck" );
 static_assert( sizeof(ply_def2) / sizeof(std::string) == __SIN_PLY_BOTTOM, "ply_def2__sizecheck" );
-static_assert( sizeof(ply_gamepad_def) / sizeof(std::string) == __SIN_PLY_BOTTOM, "ply_gamepad_def__sizecheck" );
 static_assert( sizeof(gen_keys) / sizeof(std::string) == __SIN_GENERAL_BOTTOM, "gen_keys__sizecheck" );
 static_assert( sizeof(gen_def) / sizeof(std::string) == __SIN_GENERAL_BOTTOM, "gen_def__sizecheck" );
 
@@ -163,23 +129,26 @@ bool GameOptions::Init() {
 		return false;
 	}
 
-	// gamesettings depends on GameOptions (tLXOptions), thus here is the right place to init the standard settings layers
-	gameSettings.layersInitStandard(true);
-	
 	CScriptableVars::RegisterVars("GameOptions")
 		( tLXOptions->bFullscreen, "Video.Fullscreen", true )
 		( tLXOptions->bShowFPS, "Video.ShowFPS", false )
 		( tLXOptions->bOpenGL, "Video.OpenGL",
-#ifdef __APPLE__
+#ifdef MACOSX
 			true )
 #else
 			false )
 #endif
-		( tLXOptions->iColourDepth, "Video.ColourDepth", 32 )
+		( tLXOptions->iColourDepth, "Video.ColourDepth",
+#ifdef __ANDROID__
+			16 ) // Faster video output
+#else
+			32 )
+#endif
 		( tLXOptions->sResolution, "Video.Resolution", "" )
+		( tLXOptions->sVideoPostProcessor, "Video.PostProcessor", "" )
 
-		( tLXOptions->iNetworkPort, "Network.Port", (int)LX_PORT )
-		( tLXOptions->iNetworkSpeed, "Network.Speed", (int)NST_LAN )
+		( tLXOptions->iNetworkPort, "Network.Port", LX_PORT )
+		( tLXOptions->iNetworkSpeed, "Network.Speed", NST_LAN )
 		( tLXOptions->bUseIpToCountry, "Network.UseIpToCountry", true )
 		( tLXOptions->iMaxUploadBandwidth, "Network.MaxUploadBandwidth", 50000 )
 		( tLXOptions->bCheckBandwidthSanity, "Network.CheckBandwidthSanity", true )
@@ -190,18 +159,14 @@ bool GameOptions::Init() {
 		( tLXOptions->bEnableMiniChat, "Network.EnableMiniChat", true )
 		( tLXOptions->sServerName, "Network.ServerName", "OpenLieroX Server" )
 		( tLXOptions->sWelcomeMessage, "Network.WelcomeMessage", "Welcome to <server>, <player>" )
-		( tLXOptions->sServerPassword, "Network.Password", "" )
+		( tLXOptions->sServerPassword, "Network.Password" )
 		( tLXOptions->bRegServer, "Network.RegisterServer", true )
 		( tLXOptions->bAllowWantsJoinMsg, "Network.AllowWantsJoinMsg", true )
 		( tLXOptions->bWantsJoinBanned, "Network.WantsToJoinFromBanned", true )
 		( tLXOptions->bAllowRemoteBots, "Network.AllowRemoteBots", true )
 		( tLXOptions->bForceCompatibleConnect, "Network.ForceCompatibleConnect", true, "Force Compatible", "Don't allow incompatible clients to connect" )
 		( tLXOptions->sForceMinVersion, "Network.ForceMinVersion", defaultMinVersionStr, "Force Min Version", "Minimal version needed to play on this server" )
-		( tLXOptions->bCheckChatMessageLength, "Network.CheckChatMessageLength", true)	//Check chat message length
-		( tLXOptions->iMaxChatMessageLength, "Network.MaxChatMessageLength", 800)	//Max chat message length, 800 should be more than enough for reasonable messages? NOTE: Includes nickname and ": " after it.
-		( tLXOptions->bKickOversizedMsgSenders, "Network.KickOversizedMsgSenders", false)	//Drop clients who send oversized messages NOTE: This should be off by default. It can be used on dedicated servers, but it is better to implement kicking in the control script.
-		( tLXOptions->bLogServerChatToMainlog, "Network.LogServerChatToMainlog", true)
-		
+
 		( tLXOptions->bFirstHosting, "State.FirstHosting", true )
 		( tLXOptions->sNewestVersion, "State.NewestVersion", "" )
 
@@ -220,10 +185,7 @@ bool GameOptions::Init() {
 		( tLXOptions->sTheme, "Game.Theme", "" )
 		( tLXOptions->bAntiAliasing, "Game.Antialiasing", true )
 		( tLXOptions->bMouseAiming, "Game.MouseAiming", false ) // TODO: rename to mouse control?
-		( tLXOptions->bAlwaysCenterWorm, "Game.AlwaysCenterWorm", false )
 		( tLXOptions->iMouseSensity, "Game.MouseSensity", 200 )
-		( tLXOptions->sTouchscreenControls, "Game.TouchscreenControls", "auto" )
-		( tLXOptions->sTouchscreenLayout, "Game.TouchscreenLayout", "classic" )
 		( tLXOptions->bAntilagMovementPrediction, "Game.AntilagMovementPrediction", true )
 		( tLXOptions->sLastSelectedPlayer, "Game.LastSelectedPlayer", "" )
 		( tLXOptions->sLastSelectedPlayer2, "Game.LastSelectedPlayer2", "" )
@@ -231,13 +193,13 @@ bool GameOptions::Init() {
 		( tLXOptions->bDamagePopups, "Game.DamagePopups", true )
 		( tLXOptions->bColorizeDamageByWorm, "Game.ColorizeDamageByWorm", false )
 		( tLXOptions->iRandomTeamForNewWorm, "Game.RandomTeamForNewWorm", 1, "Random team for new worm", "Joining worms will be randomly in a team of [0,value]", GIG_Other, ALT_Advanced, true, 0, 3 )
-		( tLXOptions->fCrosshairDistance, "Game.CrosshairDistance", 32.0f, "Crosshair distance", "", GIG_Other, ALT_OnlyViaConfig, true, 5.0f, 100.0f )
-		( tLXOptions->fAimAcceleration, "Game.AimAcceleration", /* Gusanos promode default */ 1299.91f, "Aim speed acceleration", "aim speed acceleration - kind of the sensibility of up/down keys for aiming", GIG_Other, ALT_VeryAdvanced, true, 100.0f, 2000.0f )
-		( tLXOptions->fAimMaxSpeed, "Game.AimMaxSpeed", /* Gusanos promode default */ 232.996f, "Aim max speed", "maximum possible aim speed for worm", GIG_Other, ALT_VeryAdvanced, true, 20.0f, 1000.0f )
-		( tLXOptions->fAimFriction, "Game.AimFriction", /* Gusanos promode default */ 0.0f, "Aim friction", "aim speed friction for worm", GIG_Other, ALT_VeryAdvanced, true, 0.0f, 1.0f )
+		( tLXOptions->fCrosshairDistance, "Game.CrosshairDistance", 32.0, "Crosshair distance", "", GIG_Other, ALT_OnlyViaConfig, true, 5, 100 )
+		( tLXOptions->fAimAcceleration, "Game.AimAcceleration", /* Gusanos promode default */ 1299.91, "Aim speed acceleration", "aim speed acceleration - kind of the sensibility of up/down keys for aiming", GIG_Other, ALT_VeryAdvanced, true, 100, 2000 )
+		( tLXOptions->fAimMaxSpeed, "Game.AimMaxSpeed", /* Gusanos promode default */ 232.996, "Aim max speed", "maximum possible aim speed for worm", GIG_Other, ALT_VeryAdvanced, true, 20, 1000 )
+		( tLXOptions->fAimFriction, "Game.AimFriction", /* Gusanos promode default */ 0, "Aim friction", "aim speed friction for worm", GIG_Other, ALT_VeryAdvanced, true, 0, 1 )
 		( tLXOptions->bAimLikeLX56, "Game.AimLikeLX56", false, "Aim friction like LX56", "aim speed friction behaves like LX56", GIG_Other, ALT_OnlyViaConfig )
-		( tLXOptions->fRopeAdjustSpeed, "Game.RopeAdjustSpeed", /* Gusanos default */ 0.5f, "Rope adjust speed", "rope length adjust speed", GIG_Other, ALT_VeryAdvanced, true, 0.1f, 2.0f )
-		( tLXOptions->bSetAFK, "Game.SetAFK", true, "set AFK status", "set AFK status on local human worms in game", GIG_Other, ALT_Dev )
+		( tLXOptions->bTouchscreenTapCycleWeaponsBackwards, "Game.TouchscreenTapCycleWeaponsBackwards", true )
+		( tLXOptions->iTouchscreenSensitivity, "Game.TouchscreenSensitivity", 5 )
 		
 		// Killing spree thresholds
 		( tLXOptions->iSpreeThreshold1, "Game.SpreeThreshold1", 3 )
@@ -252,6 +214,7 @@ bool GameOptions::Init() {
 		( tLXOptions->iDyingSpreeThreshold4, "Game.DyingSpreeThreshold4", 9 )
 		( tLXOptions->iDyingSpreeThreshold5, "Game.DyingSpreeThreshold5", 10 )
 		
+		
 		( tLXOptions->nMaxFPS, "Advanced.MaxFPS", 95 )
 		( tLXOptions->iJpegQuality, "Advanced.JpegQuality", 80 )
 		( tLXOptions->iMaxCachedEntries, "Advanced.MaxCachedEntries", 300 ) // Should be enough for every mod (we have 2777 .png and .wav files total now) and does not matter anyway with SmartPointer
@@ -265,10 +228,12 @@ bool GameOptions::Init() {
 		( tLXOptions->bCheckForUpdates, "Advanced.CheckForUpdates", true )
 
 		( tLXOptions->bLogConvos, "Misc.LogConversations", false )
+		( tLXOptions->bLogServerChatToMainlog, "Network.LogServerChatToMainlog", true)	//Log chat to main log when hosting a server - previously OLX always did this. NOTE: It's under network settings as it affects mostly the server side.
+		( tLXOptions->iMaxChatMessageLength, "Network.MaxChatMessageLength", 384)	//Max chat message length. NOTE: Includes nickname and ": " after it.
 		( tLXOptions->bShowPing, "Misc.ShowPing", true )
 		( tLXOptions->bShowNetRates, "Misc.ShowNetRate", false )
 		( tLXOptions->bShowProjectileUsage, "Misc.ShowProjectileUsage", false )
-		( tLXOptions->iScreenshotFormat, "Misc.ScreenshotFormat", (int)FMT_PNG )
+		( tLXOptions->iScreenshotFormat, "Misc.ScreenshotFormat", FMT_PNG )
 		( tLXOptions->sDedicatedScript, "Misc.DedicatedScript", "dedicated_control" )
 		( tLXOptions->sDedicatedScriptArgs, "Misc.DedicatedScriptArgs", "cfg/dedicated_config" )
 		( tLXOptions->iVerbosity, "Misc.Verbosity", 0 )	
@@ -276,75 +241,79 @@ bool GameOptions::Init() {
 		( tLXOptions->bAdvancedLobby, "Misc.ShowAdvancedLobby", false )
 		( tLXOptions->bShowCountryFlags, "Misc.ShowCountryFlags", true )
 		( tLXOptions->doProjectileSimulationInDedicated, "Misc.DoProjectileSimulationInDedicated", true )
-		( tLXOptions->bAutoFileCacheRefresh, "Misc.AutoFileCacheRefresh", true )
-		( tLXOptions->bUseMainLockDetector, "Misc.UseMainLockDetector", true )
+		( tLXOptions->bCheckMaxWpnTimeInInstantStart, "Misc.CheckMaxWpnSelectionTimeInInstantStart", true )
 
 		( tLXOptions->iInternetSortColumn, "Widgets.InternetSortColumn", 4 )
 		( tLXOptions->iLANSortColumn, "Widgets.LANSortColumn", 4 )
 		( tLXOptions->iFavouritesSortColumn, "Widgets.FavouritesSortColumn", 4 )
 		( tLXOptions->iAdvancedLevelLimit, "Widgets.AdvancedLevelLimit", 0 )
-		( tLXOptions->bShowModifiedGameSettingsOnly, "Widgets.ShowModifiedGameSettingsOnly", false )
-		( tLXOptions->sLocalPlayGame, "Widgets.LocalPlayGame", "introduction" )
-		( tLXOptions->sSvrListSettingsFilterCfg, "Widgets.SvrListSettingsFilterCfg", "" )
 		;
 
 	for( uint i = 0; i < sizeof(ply_keys) / sizeof(ply_keys[0]) ; i ++ )
 	{
-		// Default to keyboard (slot 1) plus a gamepad binding (slot 2).
-		// Player 1 uses pad j1, player 2 uses pad j2. Controls with no
-		// gamepad default (empty suffix, e.g. weapon select) stay keyboard-only.
-		std::string def1 = ply_def1[i];
-		std::string def2 = ply_def2[i];
-		// Players 3 and 4 are gamepad-only: a keyboard has neither the keys nor
-		// the ergonomics for four players, so they get no keyboard defaults and
-		// only their gamepad binding (pad 3 / pad 4). Their controls are not
-		// exposed in the options UI; the pad bindings mirror players 1 and 2.
-		std::string def3, def4;
-		if( !ply_gamepad_def[i].empty() ) {
-			// Append the gamepad binding as the second (Gamepad) slot. The
-			// keyboard binding is slot 0 and the gamepad binding slot 1, so we
-			// always keep the ", " separator even when there is no keyboard
-			// default (e.g. player 2's Prev/Next weapon): that leaves slot 0
-			// empty and the pad binding in slot 1, matching the UI columns.
-			// CInput::Setup ignores the empty leading token.
-			def1 += ", j1_" + ply_gamepad_def[i];
-			def2 += ", j2_" + ply_gamepad_def[i];
-			// Players 3/4 have no keyboard slot, so the pad binding is the only
-			// (slot 0) token.
-			def3 = "j3_" + ply_gamepad_def[i];
-			def4 = "j4_" + ply_gamepad_def[i];
-		}
-		CScriptableVars::RegisterVars("GameOptions.Ply1Controls") ( tLXOptions->sPlayerControls[0][i], ply_keys[i], def1 );
-		CScriptableVars::RegisterVars("GameOptions.Ply2Controls") ( tLXOptions->sPlayerControls[1][i], ply_keys[i], def2 );
-		CScriptableVars::RegisterVars("GameOptions.Ply3Controls") ( tLXOptions->sPlayerControls[2][i], ply_keys[i], def3 );
-		CScriptableVars::RegisterVars("GameOptions.Ply4Controls") ( tLXOptions->sPlayerControls[3][i], ply_keys[i], def4 );
+		CScriptableVars::RegisterVars("GameOptions.Ply1Controls") ( tLXOptions->sPlayerControls[0][i], ply_keys[i], ply_def1[i].c_str() );
+		CScriptableVars::RegisterVars("GameOptions.Ply2Controls") ( tLXOptions->sPlayerControls[1][i], ply_keys[i], ply_def2[i].c_str() );
 	}
 	for( uint i = 0; i < sizeof(gen_keys) / sizeof(gen_keys[0]) ; i ++ )
 	{
-		CScriptableVars::RegisterVars("GameOptions.GeneralControls") ( tLXOptions->sGeneralControls[i], gen_keys[i], gen_def[i] );
+		CScriptableVars::RegisterVars("GameOptions.GeneralControls") ( tLXOptions->sGeneralControls[i], gen_keys[i], gen_def[i].c_str() );
 	}
 	
-	CScriptableVars::RegisterVars("GameOptions.Server")
-	( tLXOptions->iMaxPlayers, "MaxPlayers", 14, "Max players", "Max amount of players allowed on server", GIG_General, ALT_Basic, true, 1, 32 )
-	( tLXOptions->bAllowConnectDuringGame, "AllowConnectDuringGame", true, "Connect during game", "Allow new players to connect during game", GIG_Advanced, ALT_Basic )
-	( tLXOptions->bAllowNickChange, "AllowNickChange", true, "Allow name change", "Allow players to change name with /setmyname command", GIG_Other, ALT_VeryAdvanced )
-	( tLXOptions->bAllowStrafing, "AllowStrafing", true, "Allow strafing", "Allow players to use the Strafe key", GIG_Other, ALT_VeryAdvanced )
-	( tLXOptions->bServerSideHealth, "ServerSideHealth", false, "Server sided health", "Health is calculated on server, to prevent cheating", GIG_Other, ALT_OnlyViaConfig )
-	( tLXOptions->iWeaponSelectionMaxTime, "WeaponSelectionMaxTime", 120, "Weapon selection max time", "Max time to allow players to select weapons, in seconds", GIG_Weapons, ALT_VeryAdvanced, true, 10, 500 )
-	;
+	struct GameModeIndexWrapper : DynamicVar<int> {
+		int get() {
+			if(tLXOptions) return GetGameModeIndex(tLXOptions->tGameInfo.gameMode);
+			else errors << "GameModeIndexWrapper:get: options not inited" << endl;
+			return 0;
+		}
+		void set(const int& i) {
+			if(tLXOptions) {
+				tLXOptions->tGameInfo.gameMode = GameMode(GameModeIndex(i));
+				if(tLXOptions->tGameInfo.gameMode == NULL) {
+					errors << "GameModeIndexWrapper:set: gamemodeindex " << i << " is invalid" << endl;
+					tLXOptions->tGameInfo.gameMode = GameMode(GM_DEATHMATCH);
+				}
+			}
+			else errors << "GameModeIndexWrapper:set: options not inited" << endl;
+		}
+	};
+	static GameModeIndexWrapper gameModeIndexWrapper;
 	
-	for_each_iterator( Feature*, f, ArrayRef(featureArray,featureArrayLen()) ) {
-		CScriptableVars::RegisterVars("GameOptions.GameInfo")
-		( &gameSettings.wrappers[featureArrayIndex(f->get())], f->get()->name, f->get()->defaultValue, 
-			f->get()->humanReadableName, f->get()->description, f->get()->group, f->get()->advancedLevel, f->get()->unsignedValue, f->get()->minValue, f->get()->maxValue );
-	}
+	// Legend:	Name in options, Default value, Human-readable-name, Long description, Group in options, If value unsigned (ints and floats), Min value (ints and floats), Max value (ints and floats)
+	// If you want to add another in-gmae option, do not add it here, add it to FeatureList.cpp
+	// TODO: move all options to FeatureList, except for LevelName, ModName and GameType which are comboboxes
+	CScriptableVars::RegisterVars("GameOptions.GameInfo")
+		( tLXOptions->tGameInfo.iLives, "Lives", -1, "Lives", "Lives", GIG_General, ALT_Basic, true, -1, 150 )
+		( tLXOptions->tGameInfo.iKillLimit, "KillLimit", 15, "Max kills", "Game ends when a player reaches the specified number of kills", GIG_General, ALT_Basic, true, -1, 150 )
+		( tLXOptions->tGameInfo.fTimeLimit, "TimeLimit", 6.0f, "Time limit", "Time limit, in minutes", GIG_General, ALT_Basic, true, -0.15f, 20.0f )
+		( tLXOptions->tGameInfo.iTagLimit, "TagLimit", 5, "Tag limit", "Tag limit, for Tag game mode. It's the time how long a player must be tagged until the game ends", GIG_Tag, ALT_Basic, true, 1, 150 )
+		( tLXOptions->tGameInfo.iLoadingTime, "LoadingTime", 100, "Loading time", "Loading time of weapons, in percent", GIG_General, ALT_Basic, true, 0, 500 )
+		( tLXOptions->tGameInfo.bBonusesOn, "Bonuses", false, "Bonuses", "Bonuses enabled", GIG_Bonus, ALT_Basic )
+		( tLXOptions->tGameInfo.bShowBonusName, "BonusNames", true, "Show Bonus names", "Show bonus name above its image", GIG_Bonus, ALT_VeryAdvanced )
+		( tLXOptions->tGameInfo.iMaxPlayers, "MaxPlayers", 14, "Max players", "Max amount of players allowed on server", GIG_General, ALT_Basic, true, 1, 32 )
+		( tLXOptions->tGameInfo.sMapFile, "LevelName", "Dirt Level.lxl" ) // WARNING: confusing, it is handled like the filename
+		( &gameModeIndexWrapper, "GameType", (int)GM_DEATHMATCH )
+		( tLXOptions->tGameInfo.sModDir, "ModName", "Classic" ) // WARNING: confusing, it is handled like the dirname
+		( tLXOptions->tGameInfo.fBonusFreq, "BonusFrequency", 30.0f, "Bonus spawn time", "How often a new bonus will be spawned (every N seconds)", GIG_Bonus, ALT_Advanced, true, 1.0f, 150.0f )
+		( tLXOptions->tGameInfo.fBonusLife, "BonusLife", 60.0f, "Bonus life time", "Bonus life time, in seconds", GIG_Bonus, ALT_VeryAdvanced, true, 1.0f, 150.0f )
+		( tLXOptions->tGameInfo.fRespawnTime, "RespawnTime", 2.5, "Respawn time", "Player respawn time, in seconds", GIG_Advanced, ALT_Advanced, true, 0.0f, 20.0f )
+		( tLXOptions->tGameInfo.bRespawnGroupTeams, "RespawnGroupTeams", true, "Group teams", "Respawn player closer to its team, and farther from enemy", GIG_Advanced, ALT_Advanced )
+		( tLXOptions->tGameInfo.bEmptyWeaponsOnRespawn, "EmptyWeaponsOnRespawn", false, "Empty weapons on respawn", "Your weapon ammo is emptied when you respawn", GIG_Weapons, ALT_VeryAdvanced )
+		( tLXOptions->tGameInfo.fBonusHealthToWeaponChance, "BonusHealthToWeaponChance", 0.5f, "Bonus weapon chance", "Chance of spawning a weapon bonus instead of a health bonus", GIG_Bonus, ALT_Advanced, true, 0.0f, 1.0f )
+		( tLXOptions->tGameInfo.bForceRandomWeapons, "ForceRandomWeapons", false, "Force random weapons", "Force all players to select random weapons", GIG_Weapons, ALT_Basic )
+		( tLXOptions->tGameInfo.bSameWeaponsAsHostWorm, "SameWeaponsAsHostWorm", false, "Same weapons as host worm", "Force all players to select the same weapons as host worm", GIG_Weapons, ALT_Advanced )
+		( tLXOptions->tGameInfo.bAllowConnectDuringGame, "AllowConnectDuringGame", true, "Connect during game", "Allow new players to connect during game", GIG_Advanced, ALT_Basic )
+		( tLXOptions->tGameInfo.bAllowNickChange, "AllowNickChange", true, "Allow name change", "Allow players to change name with /setmyname command", GIG_Other, ALT_VeryAdvanced )
+		( tLXOptions->tGameInfo.bAllowStrafing, "AllowStrafing", true, "Allow strafing", "Allow players to use the Strafe key", GIG_Other, ALT_VeryAdvanced )
+		( tLXOptions->tGameInfo.bServerSideHealth, "ServerSideHealth", false, "Server sided health", "Health is calculated on server, to prevent cheating", GIG_Other, ALT_OnlyViaConfig )
+		( tLXOptions->tGameInfo.iWeaponSelectionMaxTime, "WeaponSelectionMaxTime", 120, "Weapon selection max time", "Max time to allow players to select weapons, in seconds", GIG_Weapons, ALT_VeryAdvanced, true, 10, 500 )
+		;
 
-	// Game is an alias to GameOptions.GameInfo
-	for_each_iterator( Feature*, f, ArrayRef(featureArray,featureArrayLen()) ) {
-		CScriptableVars::RegisterVars("Game")
-		( &gameSettings.wrappers[featureArrayIndex(f->get())], f->get()->name, f->get()->defaultValue,
-			f->get()->humanReadableName, f->get()->description, f->get()->group, f->get()->advancedLevel, f->get()->unsignedValue, f->get()->minValue, f->get()->maxValue );
+	foreach( Feature*, f, Array(featureArray,featureArrayLen()) ) {
+		CScriptableVars::RegisterVars("GameOptions.GameInfo")
+		( tLXOptions->tGameInfo.features[f->get()], f->get()->name, f->get()->defaultValue, 
+				f->get()->humanReadableName, f->get()->description, f->get()->group, f->get()->advancedLevel, f->get()->minValue, f->get()->maxValue, f->get()->unsignedValue );
 	}
+	
 	
 	
 	// We still use the old ReadKeyword&co functions, they need this.
@@ -362,17 +331,11 @@ bool GameOptions::Init() {
 	for( CScriptableVars::const_iterator it = CScriptableVars::begin();
 		it != CScriptableVars::end(); it++ )
 	{
-		if( strStartsWith(it->first, "GameOptions.") )
+		if( it->first.find("GameOptions.") == 0 )
 		{
-			// but not from GameInfo - that is all handled automatically via the settings layers
-			// setting it would be bad because we would have all customsettings set
-			if( !strStartsWith(it->first, "GameOptions.GameInfo.") )
-				it->second.var.setDefault();
+			it->second.var.setDefault();
 		}
 	}
-
-	// reset it because we need the CGameMode* ptr working and in some cases, it is not init correctly
-	featureArray[FT_GameMode].defaultValue = featureArray[FT_GameMode].unsetValue = ScriptVar_t(GameModeInfo().getRefCopy());
 	
 	notes << "Reading game options from " << GetFullFileName(tLXOptions->cfgFilename) << endl;
 	notes << "Will write game options to " << GetWriteFullFileName(tLXOptions->cfgFilename, true) << endl;
@@ -396,33 +359,19 @@ bool GameOptions::LoadFromDisc(const std::string& cfgfilename)
 	// define parser handler
 	struct MyIniReader : public IniReader {
 		GameOptions* opts;
-		typedef std::list< std::pair<std::string,std::string> > GameInfoData;
-		GameInfoData lx56_LastGameFallback;
-		GameInfoData gameInfoSection;
+		typedef std::list< std::pair<std::string,std::string> > LX56FallbackList;
+		LX56FallbackList lx56_LastGameFallback;
 		bool haveGameInfo;
-		Version savedBy;
 		MyIniReader(const std::string& fn, GameOptions* o) : IniReader(fn), opts(o), haveGameInfo(false) {}
 
 		bool OnEntry(const std::string& section, const std::string& propname, const std::string& value) {
 			// ConfigFileInfo is additional data about the config file itself - we ignore it atm at this place
-			if(stringcaseequal(section, "ConfigFileInfo")) {
-				if(stringcaseequal(propname, "SavedBy"))
-					savedBy = Version(value);
-				return true;
-			}
+			if(stringcaseequal(section, "ConfigFileInfo")) return true;
 			if(stringcaseequal(section, "GameInfo")) haveGameInfo = true;
 			
-			if(stringcaseequal(section, "Games_Levels")) {
-				opts->localplayLevels[propname] = from_string<int>(value);
-				return true;
-			}
-						
 			RegisteredVar* var = CScriptableVars::GetVar("GameOptions." + section + "." + propname);
 			if( var !=  NULL ) { // found entry
-				if(stringcaseequal(section, "GameInfo"))
-					gameInfoSection.push_back(make_pair(propname, value));
-				else
-					CScriptableVars::SetVarByString(var->var, value);
+				CScriptableVars::SetVarByString(var->var, value);
 			} else {
 				if( (stringcaseequal(section, "FileHandling") && stringcasefind(propname, "SearchPath") == 0)
 				|| stringcaseequal(section, "Widgets") ) {
@@ -447,56 +396,19 @@ bool GameOptions::LoadFromDisc(const std::string& cfgfilename)
 		hints << cfgfilename << " not found, will use standards" << endl;
 	}
 	else {
-		MyIniReader::GameInfoData* gameInfoData = NULL;
-
 		// Fallback: this is old LX56 config file
 		if(!iniReader.haveGameInfo && iniReader.lx56_LastGameFallback.size() > 0) {
 			notes << "Old LX56 config file" << endl;
-			gameInfoData = &iniReader.lx56_LastGameFallback;
+			for(MyIniReader::LX56FallbackList::iterator i = iniReader.lx56_LastGameFallback.begin(); i != iniReader.lx56_LastGameFallback.end(); ++i) {
+				const std::string& propname = i->first;
+				const std::string& value = i->second;
+				RegisteredVar* var = CScriptableVars::GetVar("GameOptions.GameInfo." + propname);
+				if( var !=  NULL ) // found entry
+					CScriptableVars::SetVarByString(var->var, value);
+				else
+					notes << "the LX56 gameoption " << propname << " is unknown" << endl;
+			}
 		}
-
-		// load custom settings from GameInfo section
-		else {
-			if(iniReader.savedBy < OLXBetaVersion(0,59,6))
-				notes << "config was saved with " << iniReader.savedBy.asHumanString() << ", so we ignore quite a lot of game settings from GameInfo" << endl;
-			
-			gameInfoData = &iniReader.gameInfoSection;
-		}
-
-		for(MyIniReader::GameInfoData::iterator i = gameInfoData->begin(); i != gameInfoData->end(); ++i) {
-			const std::string& propname = i->first;
-			const std::string& value = i->second;
-
-			RegisteredVar* var = CScriptableVars::GetVar("GameOptions.GameInfo." + propname);
-			if( var !=  NULL ) { // found entry
-				// Version <0.59beta6 just always save everything.
-				// We don't want to have all custom settings set because that would overwrite all other settings in the settings layers.
-				// So in that case, we skip all
-				if(iniReader.savedBy < OLXBetaVersion(0,59,6)) {
-					Feature* f = featureByVar(var->var);
-					if(f == NULL) {
-						errors << "Options::LoadFromDisc " << cfgfilename << ": var " << propname << " seems invalid" << endl;
-						continue;
-					}
-					const FeatureIndex i = featureArrayIndex(f);
-					
-					// check for settings we still want to overtake, otherwise ignore
-					if(
-					   i != FT_Map &&
-					   i != FT_Mod &&
-					   i != FT_SettingsPreset &&
-					   i != FT_Lives &&
-					   i != FT_KillLimit &&
-					   i != FT_TimeLimit &&
-					   featureArray[i].minVersion < OLXBetaVersion(0,59,6)) // all options since 0.59beta6 are also ok
-						continue;
-				}				
-				
-				CScriptableVars::SetVarByString(var->var, value);
-			} else
-				notes << "the gameoption " << propname << " is unknown" << endl;
-		}
-
 	}
 
 	initSpecialSearchPathForTheme();
@@ -523,9 +435,6 @@ bool GameOptions::LoadFromDisc(const std::string& cfgfilename)
 		// overwrite it to new default
 		tLXOptions->sForceMinVersion = MAX(defaultMinVersion, Version(tLXOptions->sForceMinVersion)).asString();
 	
-	if(tLXOptions->sForceMinVersion == "")
-		tLXOptions->sForceMinVersion = defaultMinVersion.asString();
-
 	notes << "DONE loading options" << endl;
 
 	return true;
@@ -535,9 +444,6 @@ bool GameOptions::LoadFromDisc(const std::string& cfgfilename)
 // Save & shutdown the options
 void ShutdownOptions()
 {
-	// just to be sure that we don't have any reference on it anymore
-	gameSettings.layersClear();
-	
 	CScriptableVars::DeRegisterVars("GameOptions");
 	if(tLXOptions) {
 		delete tLXOptions;
@@ -547,11 +453,6 @@ void ShutdownOptions()
 	if(networkTexts) {
 		delete networkTexts;
 		networkTexts = NULL;
-	}
-
-	if(taunts) {
-		delete taunts;
-		taunts = NULL;
 	}
 }
 
@@ -626,10 +527,6 @@ void GameOptions::SaveToDisc(const std::string& cfgfilename)
 	{
 		if( strStartsWith(it->first, "GameOptions.") )
 		{
-			if(strStartsWith(it->first, "GameOptions.GameInfo."))
-				// skip those - we handle them in a special way
-				continue;
-			
 			size_t dot1 = it->first.find(".");
 			size_t dot2 = it->first.find( ".", dot1 + 1 );
 			if(dot2 == std::string::npos) {
@@ -649,17 +546,6 @@ void GameOptions::SaveToDisc(const std::string& cfgfilename)
 			break;
 	}
 
-	fprintf(fp, "\n[GameInfo]\n");
-	for_each_iterator( Feature*, f, ArrayRef(featureArray,featureArrayLen()) ) {
-		if(customSettings.isSet[featureArrayIndex(f->get())])
-			fprintf(fp, "%s = %s\n", f->get()->name.c_str(), customSettings[f->get()].toString().c_str());
-	}
-	
-	fprintf(fp, "\n[Games_Levels]\n");
-	for(std::map<std::string,int>::iterator i = localplayLevels.begin(); i != localplayLevels.end(); ++i)
-		fprintf(fp, "%s = %i\n", i->first.c_str(), i->second);
-
-	
 	fprintf(fp, "\n\n# This is for OLX to know what type of config file this is.\n");
 	fprintf(fp, "[ConfigFileInfo]\n");
 	fprintf(fp, "Type = MainConfig\n");
@@ -784,7 +670,7 @@ bool NetworkTexts::LoadFromDisc()
 	ReadString (f, "NetworkTexts", "YouQuit",		  sYouQuit,			"You have quit");
 	ReadString (f, "NetworkTexts", "YouTimed",		  sYouTimed,		"You timed out");
 
-	ReadString (f, "NetworkTexts", "Killed",	      sKilled,			"<killer> killed <victim> with <weapon>");
+	ReadString (f, "NetworkTexts", "Killed",	      sKilled,			"<killer> killed <victim>");
 	ReadString (f, "NetworkTexts", "CommitedSuicide", sCommitedSuicide,	"<player> commited suicide");
 	ReadString (f, "NetworkTexts", "FirstBlood",	  sFirstBlood,		"<player> drew first blood");
 	ReadString (f, "NetworkTexts", "TeamKill",		  sTeamkill,		"<player> is an ugly teamkiller");
@@ -837,60 +723,23 @@ bool NetworkTexts::LoadFromDisc()
 	return true;
 }
 
+GameOptions::GameInfo::GameInfo() {
+	// For most of the values, it doesn't matter if they are uninited.
+	// In PrepareGame/UpdateGameLobby, we will get all the values (for cClient).
+	// Anyway, we set some values because it could crash if these are invalid.
+	fTimeLimit = -1;
+	iLives = iKillLimit = iTagLimit = -1;
+	iLoadingTime = iGeneralGameType = 0;
+	iMaxPlayers = 8;
+	gameMode = NULL;
+}
 
-GameOptions::GameOptions() : customSettings("custom user settings") {
+GameOptions::GameOptions() {
 	// we need to set some initial values for these
 	bLogTimestamps = false;
 	iVerbosity = 0;
 	cfgFilename = DefaultCfgFilename;
 	
-	// One control set per local split-screen player. Sized once, here, before
-	// the controls are registered as scriptable vars (RegisterVars stores
-	// pointers into these elements); resizing later would move the elements and
-	// dangle those pointers, so this must not change after construction.
-	sPlayerControls.resize(MAX_LOCAL_PLAYERS);
-
-	// The only place where we call this constructor is in GameOptions::Init().
-	// We init all the other variables there.
-}
-
-bool Taunts::Init() {
-	if(taunts) {
-		warnings << "taunts are already inited; ignoring ..." << endl;
-		return true;
-	}
-
-	taunts = new Taunts;
-
-	return taunts->LoadFromDisc();
-}
-
-bool Taunts::LoadFromDisc()
-{
-	notes << "Loading taunts... ";
-
-	// TODO: use the general INI-parser here
-	const std::string cfg = "cfg/taunts.txt";
-	
-	for( int f=0; f < Taunts::MAX_COUNT; f++ )
-	{
-		texts[f] = "";
-		keyNames[f] = "";
-		keySyms[f] = 0;
-		ReadString (cfg, "Taunts", std::string("Taunt") + itoa(f), texts[f], "");
-		ReadString (cfg, "Taunts", std::string("TauntKey") + itoa(f), keyNames[f], "");
-		if( keyNames[f] != "" )
-			keySyms[f] = keys_t::keySymFromName(keyNames[f]);
-	}
-
-	notes << "DONE" << endl;
-	return true;
-}
-
-std::string Taunts::getTauntForKey(int keySym) const {
-	for( int f=0; f < Taunts::MAX_COUNT; f++ )
-		if( keySyms[f] == keySym )
-			return texts[f];
-	
-	return "";
+	// TODO: don't hardcode the size here
+	sPlayerControls.resize(2);	// Don't change array size or we'll get segfault when vector memory allocation changes	
 }

@@ -22,6 +22,7 @@
 #include "AuxLib.h"
 #include "DeprecatedGUI/Menu.h"
 #include "StringUtils.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/CBox.h"
 #include "DeprecatedGUI/CImage.h"
 #include "DeprecatedGUI/CButton.h"
@@ -29,13 +30,14 @@
 #include "DeprecatedGUI/CLabel.h"
 #include "DeprecatedGUI/CSlider.h"
 #include "DeprecatedGUI/CTextbox.h"
-#include "OLXConsole.h"
-#include "sound/SoundsBase.h"
 
 
 
 namespace DeprecatedGUI {
 
+
+CGuiLayout cGameMenuLayout;
+CGuiLayout cScoreLayout;
 
 bool CGuiLayout::bKeyboardNavigation = true;
 
@@ -77,21 +79,6 @@ void CGuiLayout::Add(CWidget *widget, int id, int x, int y, int w, int h)
 	cWidgets.push_front(widget);
 }
 
-void CGuiLayout::AddBack(CWidget *widget, int id, int x, int y, int w, int h)
-{
-	if(!widget) {
-		errors << "CGuiLayout::Add: widget is unset" << endl;
-		return;
-	}
-	
-	widget->Setup(id, x, y, w, h);
-	widget->Create();
-	widget->setParent(this);
-	
-	// Link the widget in
-	cWidgets.push_back(widget);
-}
-	
 
 ///////////////////
 // Remove a widget
@@ -221,61 +208,11 @@ void CGuiLayout::Draw(SDL_Surface * bmpDest)
 }
 
 
-/////////////////
-// Shift every widget by (dx,dy). Used to center an in-game popup layout
-// (which is authored for a 640-wide canvas) on a wider screen.
-void CGuiLayout::moveWidgets(int dx, int dy)
-{
-	if(dx == 0 && dy == 0) return;
-	for( std::list<CWidget *>::iterator w = cWidgets.begin() ; w != cWidgets.end() ; w++)
-		(*w)->move(dx, dy);
-}
-
-
 //////////////////
 // Build the layout according to code specified in skin file
 bool CGuiLayout::Build()
 {
 	return true;
-}
-
-
-////////////////////
-// Widget an arrow key would move focus to, or NULL for no navigation
-CWidget *CGuiLayout::keyboardNavigationTarget(int keysym) const
-{
-	// A widget that uses the arrow keys itself (e.g. a textbox cursor) keeps them;
-	// menu navigation must not steal them (#815).
-	if (!bCanFocus || cFocused == NULL || !cFocused->CanLoseFocus() || cFocused->handlesArrowKeys())
-		return NULL;
-
-	CWidget *selected = NULL;
-	if (keysym == SDLK_UP || keysym == SDLK_LEFT) {
-		int posmin = 0;
-		int posmax = cFocused->getX() + cFocused->getY() * 0x10000 + cFocused->getKeyboardNavigationOrder() * 0x10000000;
-		for(auto widget: cWidgets) {
-			if (!widget->getEnabled() || widget == cFocused || widget->getType() == wid_Label || widget->getType() == wid_None)
-				continue;
-			int pos = widget->getX() + widget->getY() * 0x10000 + widget->getKeyboardNavigationOrder() * 0x10000000;
-			if (posmin < pos && posmax > pos) {
-				posmin = pos;
-				selected = widget;
-			}
-		}
-	} else if (keysym == SDLK_DOWN || keysym == SDLK_RIGHT) {
-		int posmin = cFocused->getX() + cFocused->getY() * 0x10000 + cFocused->getKeyboardNavigationOrder() * 0x10000000;
-		int posmax = INT_MAX;
-		for(auto widget: cWidgets) {
-			if (!widget->getEnabled() || widget == cFocused || widget->getType() == wid_Label || widget->getType() == wid_None)
-				continue;
-			int pos = widget->getX() + widget->getY() * 0x10000 + widget->getKeyboardNavigationOrder() * 0x10000000;
-			if (posmin < pos && posmax > pos) {
-				posmax = pos;
-				selected = widget;
-			}
-		}
-	}
-	return selected;
 }
 
 
@@ -298,6 +235,24 @@ gui_event_t *CGuiLayout::Process()
 		return NULL;
 	}
 
+	// Switch between window and fullscreen mode (only for menu)
+	// Switch only if delta time is low enough. This is because when the game does not
+	// respond for >30secs and the user presses cSwitchMode in the meantime, the mainlock-detector
+	// would switch to window and here we would switch again to fullscreen which is stupid.
+	// TODO: move this out of here
+	if( tLX && tLX->cSwitchMode.isUp() && tMenu->bMenuRunning && tLX->fRealDeltaTime < 1.0f )  {
+		// Set to fullscreen
+		tLXOptions->bFullscreen = !tLXOptions->bFullscreen;
+
+		// Set the new video mode
+		doSetVideoModeInMainThread();
+
+		// Redraw the mouse
+		Menu_RedrawMouse(true);
+
+		tLX->cSwitchMode.reset();
+	}
+
 	// Put it here, so the mouse will never display
 	
 	EnableSystemMouseCursor(false);
@@ -312,7 +267,7 @@ gui_event_t *CGuiLayout::Process()
 	// Parse keyboard events to the focused widget
 	// Make sure a key event happened
 	keyboard_t *Keyboard = GetKeyboard();
-	if(!Con_IsVisible() && Keyboard->queueLength > 0) {
+	if(Keyboard->queueLength > 0) {
 
 		// Process Escape key in menus
 		for(int i = 0; i < Keyboard->queueLength; i++) {
@@ -398,9 +353,37 @@ gui_event_t *CGuiLayout::Process()
 			if (kbev.down && (kbev.sym == SDLK_UP || kbev.sym == SDLK_LEFT || kbev.sym == SDLK_DOWN || kbev.sym == SDLK_RIGHT)) {
 
 				bKeyboardNavigation = true;
-				CWidget * selected = keyboardNavigationTarget(kbev.sym);
+				CWidget * selected = NULL;
 
-				if (selected && cFocused != selected) {
+				if (!bCanFocus || cFocused == NULL || !cFocused->CanLoseFocus()) {
+					// Do nothing
+				} else if (kbev.sym == SDLK_UP || kbev.sym == SDLK_LEFT) {
+					int posmin = 0;
+					int posmax = cFocused->getX() + cFocused->getY() * 0x10000 + cFocused->getKeyboardNavigationOrder() * 0x10000000;
+					for(auto widget: cWidgets) {
+						if (!widget->getEnabled() || widget == cFocused || widget->getType() == wid_Label || widget->getType() == wid_None)
+							continue;
+						int pos = widget->getX() + widget->getY() * 0x10000 + widget->getKeyboardNavigationOrder() * 0x10000000;
+						if (posmin < pos && posmax > pos) {
+							posmin = pos;
+							selected = widget;
+						}
+					}
+				} else if (kbev.sym == SDLK_DOWN || kbev.sym == SDLK_RIGHT) {
+					int posmin = cFocused->getX() + cFocused->getY() * 0x10000 + cFocused->getKeyboardNavigationOrder() * 0x10000000;
+					int posmax = INT_MAX;
+					for(auto widget: cWidgets) {
+						if (!widget->getEnabled() || widget == cFocused || widget->getType() == wid_Label || widget->getType() == wid_None)
+							continue;
+						int pos = widget->getX() + widget->getY() * 0x10000 + widget->getKeyboardNavigationOrder() * 0x10000000;
+						if (posmin < pos && posmax > pos) {
+							posmax = pos;
+							selected = widget;
+						}
+					}
+				}
+
+				if (cFocused && selected && cFocused != selected) {
 					cFocused->setFocused(false);
 					cFocused = selected;
 					widgetSelectedWithKeyboard = true;
@@ -435,9 +418,6 @@ gui_event_t *CGuiLayout::Process()
 		widget = true;
 		
 		if(tMouse->Down) {
-			// Process the skin-defined code
-			cFocused->ProcessEvent(OnMouseDown);
-			
 			if( (ev = cFocused->MouseDown(tMouse, tMouse->Down)) >= 0) {
 				tEvent->iEventMsg = ev;
 				tEvent->iControlID = cFocused->getID();
@@ -448,10 +428,6 @@ gui_event_t *CGuiLayout::Process()
 		else if(tMouse->Up) {
 			bCanFocus = true;
 			bKeyboardNavigation = false; // Mouse click disables key navigation mode
-			// Process the skin defined code
-			// OnClick is only fired if mouseup was done over the widget
-			if(cFocused->InBox(tMouse->X,tMouse->Y))
-				cFocused->ProcessEvent(OnClick);
 			
 			if(cFocused->InBox(tMouse->X,tMouse->Y))
 				if( (ev = cFocused->MouseClicked(tMouse, tMouse->Up)) >= 0) {
@@ -535,51 +511,14 @@ gui_event_t *CGuiLayout::Process()
 
 				}
 
-				// Process the skin defined code
-				(*w)->ProcessEvent(OnMouseDown);
-
 				if( (ev = (*w)->MouseDown(tMouse, tMouse->Down)) >= 0) {
 					tEvent->iEventMsg = ev;
 					return tEvent;
 				}
 			}
 
-			// TODO: i don't understand that. mouseup should always only be sent to the widget where we have sent the mousedown
-			/*
-			// Mouse up event
-			if(tMouse->Up) {
-				bCanFocus = true;
-				widget = true;
-				if(cFocused)  {
-					if(cFocused->CanLoseFocus())  {
-						cFocused->setFocused(false);
-						(*w)->setFocused(true);
-						cFocused = *w;
-					}
-				}
-				else  {
-					(*w)->setFocused(true);
-					cFocused = *w;
-				}
-
-				// Process the skin defined code
-				(*w)->ProcessEvent(OnClick);
-
-				if( (ev = (*w)->MouseUp(tMouse, tMouse->Up)) >= 0) {
-					tEvent->iEventMsg = ev;
-					return tEvent;
-				}
-			}
-			 */
-
 			// Mouse over
 			if (*w != cMouseOverWidget)  {
-				(*w)->ProcessEvent(OnMouseOver);
-
-				// For the current Mouse over widget this means a mouse out event
-				if(cMouseOverWidget)
-					cMouseOverWidget->ProcessEvent(OnMouseOut);
-
 				cMouseOverWidget = *w;
 			}
 
@@ -597,7 +536,6 @@ gui_event_t *CGuiLayout::Process()
 
 	// If mouse is over empty space it means, it's not over any widget ;-)
 	if (cMouseOverWidget)  {
-		cMouseOverWidget->ProcessEvent(OnMouseOut);
 		cMouseOverWidget = NULL;
 	}
 
@@ -622,15 +560,15 @@ gui_event_t *CGuiLayout::Process()
 
 	// Non-widget wheel up
 	if(tMouse->WheelScrollUp)  {
-		tEvent->iControlID = gev_MouseWheel;
-		tEvent->iEventMsg = gev_MouseWheelUp;
+		tEvent->iControlID = -9999;
+		tEvent->iEventMsg = SDL_BUTTON_WHEELUP;
 		return tEvent;
 	}
 
 	// Non-widget wheel down
 	if(tMouse->WheelScrollDown)  {
-		tEvent->iControlID = gev_MouseWheel;
-		tEvent->iEventMsg = gev_MouseWheelDown;
+		tEvent->iControlID = -9999;
+		tEvent->iEventMsg = SDL_BUTTON_WHEELDOWN;
 		return tEvent;
 	}
 
@@ -700,7 +638,7 @@ void CGuiLayout::SetGlobalProperty(int property, int value)
 
 ///////////////////
 // Send a message to a widget
-uintptr_t CGuiLayout::SendMessage(int iControl, int iMsg, uintptr_t Param1, uintptr_t Param2)
+DWORD CGuiLayout::SendMessage(int iControl, int iMsg, DWORD Param1, DWORD Param2)
 {
 	CWidget *w = getWidget(iControl);
 
@@ -723,7 +661,7 @@ uintptr_t CGuiLayout::SendMessage(int iControl, int iMsg, uintptr_t Param1, uint
 	return w->SendMessage(iMsg, Param1, Param2);
 }
 
-uintptr_t CGuiLayout::SendMessage(int iControl, int iMsg, const std::string& sStr, uintptr_t Param)
+DWORD CGuiLayout::SendMessage(int iControl, int iMsg, const std::string& sStr, DWORD Param)
 {
 	CWidget *w = getWidget(iControl);
 
@@ -735,7 +673,7 @@ uintptr_t CGuiLayout::SendMessage(int iControl, int iMsg, const std::string& sSt
 
 }
 
-uintptr_t CGuiLayout::SendMessage(int iControl, int iMsg, std::string *sStr, uintptr_t Param)
+DWORD CGuiLayout::SendMessage(int iControl, int iMsg, std::string *sStr, DWORD Param)
 {
 	// Check the string
 	if (!sStr)

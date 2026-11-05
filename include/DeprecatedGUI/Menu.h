@@ -19,7 +19,6 @@
 
 #include <SDL.h>
 #include <string>
-#include <list>
 
 #include "DeprecatedGUI/CWidgetList.h"
 #include "DeprecatedGUI/CCombobox.h"
@@ -30,25 +29,27 @@
 #include "CWpnRest.h"
 #include "CClient.h" // for MAX_PLAYERS
 #include "CGameSkin.h"
-#include "ProfileSystem.h"
+#include "CWorm.h"
 #include "Color.h"
 #include "HTTP.h"
-#include "ThreadVar.h"
 
+void GotoJoinLobby();
 
-enum {
-	// Menu sockets
-	SCK_LAN = 0,
-	SCK_NET = 1,
-	SCK_FOO = 2,	
-};
 
 namespace DeprecatedGUI {
 
 enum {
+// Menu sockets
+	SCK_LAN = 0,
+	SCK_NET = 1,
+	SCK_FOO = 2,
+// Serverlist timeout
+	SVRLIST_TIMEOUT =  7000, 
 // Server info dialog dimensions
 	INFO_W = 400,
 	INFO_H = 420,
+
+	MAX_QUERIES = 3
 };
 
 
@@ -266,8 +267,7 @@ class frontendinfo_t { public:
 };
 
 // Menu structure
-struct menu_t {
-	menu_t();
+class menu_t { public:
 
 	// Graphics
 	//SmartPointer<SDL_Surface> bmpMainBack;
@@ -303,16 +303,19 @@ struct menu_t {
 	SmartPointer<SDL_Surface> bmpTriangleDown;
 
 	SmartPointer<SDL_Surface> bmpAI;
-	CGameSkin cSkin;
+	CWormSkin cSkin;
 
 	SmartPointer<SDL_Surface> bmpMapEdTool;
 
 	// Other
+	bool			bMenuRunning;
 	int				iMenuType;
 	frontendinfo_t	tFrontendInfo;
 	std::string		sSavedChatText;
-	std::list<SmartPointer<profile_t> >	sLocalPlayers;
+	CWorm			sLocalPlayers[MAX_PLAYERS];
 	bool			bForbidConsole;  // Don't show console
+	int				iListItemHeight;
+	bool			bFingerDrag;
 
 	// Map Editor
 	int				iEditMode;
@@ -343,13 +346,67 @@ enum {
 	net_join
 };
 
-	
+
+// Server structure
+class server_t { public:
+	server_t() {
+		SetNetAddrValid(sAddress, false);
+		bAllowConnectDuringGame = false;
+		bBehindNat = false;
+		lastPingedPort = 0;
+	}
+
+	NetworkAddr & getBestAddress() {
+		if( IsNetAddrValid(sAddress6) && nPing6 <= nPing4 )
+			return sAddress6;
+		return sAddress;
+	}
+
+	bool	bIgnore;
+	bool	bProcessing;
+    bool    bManual;
+	int		nPings;
+	int		nQueries;
+	bool	bgotPong;
+	bool	bgotQuery;
+	bool	bgotQuery6;
+	AbsTime	fInitTime;
+	bool	bAddrReady;
+	AbsTime	fLastPing;
+	AbsTime	fLastQuery;
+	AbsTime	fQueryTimes[MAX_QUERIES+1];
+
+	// Server address
+	std::string	szAddress; // IPv4 or IPv6, depending on ping
+	NetworkAddr	sAddress; // Does not include port
+	NetworkAddr	sAddress6; // Includes port, there is no NAT for IPv6
+
+	// Server details
+	std::string	szName;
+	int		nState;
+	int		nNumPlayers;
+	int		nMaxPlayers;
+	int		nPing;
+	int		nPing4;
+	int		nPing6;
+	bool	bAllowConnectDuringGame;
+	Version tVersion;
+
+	// First int is port, second is UDP masterserver idx
+	// If server responds to ping the port which responded moved to the top of the list
+	std::vector< std::pair<int, int> > ports;
+	int		lastPingedPort;
+	bool	bBehindNat;	// Accessible only from UDP masterserver
+};
+
+
 // Menu globals
 extern	menu_t		*tMenu;
+extern	bool		*bGame;
 extern	int			iNetMode;
 extern	int			iJoinMenu;
 extern	int			iHostType;
-extern	bool		bSkipStart;
+extern	int			iSkipStart;
 extern  bool		bHost_Update;
 extern	bool		bJoin_Update;
 extern  CWidgetList	LayoutWidgets[LAYOUT_COUNT];
@@ -360,13 +417,18 @@ extern	int			nTries;
 extern	AbsTime		fStart;
 extern bool		bShowFloatingOptions;
 
+// AbsTime to wait before pinging/querying the server again (in milliseconds)
+#define	PingWait  1000
+#define	QueryWait  1000
+
 
 // Routines
-bool	Menu_Initialize();
+bool	Menu_Initialize(bool *game);
 void	Menu_LoadFrontendInfo();
 void	Menu_Shutdown();
-void    Menu_Frame();
+void	Menu_Start();
 void	Menu_RedrawMouse(bool total);
+void	Menu_Loop();
 void    Menu_SetSkipStart(int s);
 void	Menu_DrawSubTitle(SDL_Surface * bmpDest, int id);
 void    Menu_DrawSubTitleAdv(SDL_Surface * bmpDest, int id, int y);
@@ -385,8 +447,37 @@ bool	Menu_IsKeyboardNavigationUsed();
 void	Menu_WarpMouse(int x, int y);
 void	Menu_ProcessMouseMotion(int x, int y);
 
-void    Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h);
-	
+// Server list
+void		Menu_SvrList_Clear();
+void        Menu_SvrList_ClearAuto();
+void		Menu_SvrList_Shutdown();
+void		Menu_SvrList_PingLAN();
+server_t	*Menu_SvrList_AddServer(const std::string& address, bool bManual, const std::string & name = "Untitled", int udpMasterserverIndex = -1, const std::string& v4address = "");
+server_t    *Menu_SvrList_FindServerStr(const std::string& szAddress, const std::string & name = "");
+void        Menu_SvrList_RemoveServer(const std::string& szAddress);
+bool		Menu_SvrList_Process();
+bool		Menu_SvrList_ParsePacket(CBytestream *bs, const SmartPointer<NetworkSocket>& sock);
+server_t	*Menu_SvrList_FindServer(const NetworkAddr& addr, const std::string & name = "");
+void		Menu_SvrList_PingServer(server_t *svr);
+bool		Menu_SvrList_RemoveDuplicateNATServers(server_t *defaultServer);
+bool		Menu_SvrList_RemoveDuplicateDownServers(server_t *defaultServer);
+void		Menu_SvrList_WantsJoin(const std::string& Nick, server_t *svr);
+void		Menu_SvrList_QueryServer(server_t *svr);
+void		Menu_SvrList_GetServerInfo(server_t *svr);
+void		Menu_SvrList_ParseQuery(server_t *svr, CBytestream *bs, bool ipv6);
+void		Menu_SvrList_ParseUdpServerlist(CBytestream *bs, int UdpMasterserverIndex, bool v4AddressIncluded = false);
+void		Menu_SvrList_RefreshList();
+void        Menu_SvrList_RefreshServer(server_t *s, bool updategui = true);
+void		Menu_SvrList_UpdateList();
+void		Menu_SvrList_UpdateUDPList();
+void		Menu_SvrList_FillList(CListview *lv);
+void        Menu_SvrList_SaveList(const std::string& szFilename);
+void        Menu_SvrList_LoadList(const std::string& szFilename);
+void        Menu_SvrList_DrawInfo(const std::string& szAddress, int w, int h);
+void		Menu_SvrList_AddFavourite(const std::string& szName, const std::string& szAddress);
+// Returns non-empty UDP masterserver address if server is registered on this UDP masterserver and won't respond on pinging
+std::string	Menu_SvrList_GetUdpMasterserverForServer(const std::string& szAddress);
+
 // Main menu
 void	Menu_MainInitialize();
 void	Menu_MainShutdown();
@@ -458,7 +549,7 @@ void	Menu_ServerSettingsShutdown();
 
 
 // Options
-bool	Menu_OptionsInitialize();
+bool	Menu_OptionsInitialize(bool floating = false);
 void	Menu_OptionsShutdown();
 void	Menu_OptionsFrame();
 void	Menu_OptionsWaitInput(int ply, const std::string& name, CInputbox *b);
@@ -469,13 +560,19 @@ void	Menu_FloatingOptionsShutdown();
 void	Menu_FloatingOptionsFrame();
 void	Menu_FloatingOptionsWaitInput(int ply, const std::string& name, CInputbox *b);
 
+// Speed test
+void	Menu_SpeedTest_Initialize();
+bool	Menu_SpeedTest_Frame();
+void	Menu_SpeedTest_Shutdown();
+float	Menu_SpeedTest_GetSpeed();
+
 
 // Main net
 bool	Menu_NetInitialize(bool withSubMenu = true);
 void	Menu_Net_GotoHostLobby();
 void	Menu_NetFrame();
 void	Menu_NetShutdown();
-void	Menu_Net_ServerList_Refresher();
+
 
 // Net::Main menu
 bool	Menu_Net_MainInitialize();
@@ -511,7 +608,7 @@ void Menu_HostActionsPopupMenuInitialize( CGuiLayout & layout, int id_PopupMenu,
 void Menu_HostActionsPopupMenuClick(CGuiLayout & layout, int id_PopupMenu, int id_PopupPlayerInfo, int wormid, int menuItem);
 void Menu_HostActionsPopupPlayerInfoClick(CGuiLayout & layout, int id_PopupMenu, int id_PopupPlayerInfo, int wormid, int menuItem);
 
-	
+
 // Net::LAN menu
 bool	Menu_Net_LANInitialize();
 void	Menu_Net_LANShutdown();
@@ -519,11 +616,10 @@ void	Menu_Net_LANFrame(int mouse);
 void	Menu_Net_LANSendPing();
 void	Menu_Net_LANJoinServer(const std::string& sAddress, const std::string& sName);
 void    Menu_Net_LanShowServer(const std::string& szAddress);
-void	Menu_Net_LAN_ServerList_Refresher();
 
 
 // Net::Joining menu
-bool	Menu_Net_JoinInitialize();
+bool	Menu_Net_JoinInitialize(const std::string& sAddress);
 void	Menu_Net_JoinShutdown();
 void	Menu_Net_JoinFrame(int mouse);
 
@@ -535,7 +631,6 @@ void	Menu_Net_FavouritesJoinServer(const std::string& sAddress, const std::strin
 void	Menu_Net_FavouritesShowServer(const std::string& szAddress);
 void	Menu_Net_RenameServer(std::string& szName);
 void	Menu_Net_FavouritesAddServer();
-void	Menu_Net_Favourites_ServerList_Refresher();
 
 // Net::News menu
 bool	Menu_Net_NewsInitialize();
@@ -547,7 +642,7 @@ bool	Menu_Net_ChatInitialize();
 void	Menu_Net_ChatShutdown();
 void	Menu_Net_ChatFrame(int mouse);
 
-bool	Menu_Net_JoinConnectionInitialize();
+bool	Menu_Net_JoinConnectionInitialize(const std::string& sAddress);
 void	Menu_Net_JoinConnectionFrame(int mouse);
 void	Menu_Net_JoinConnectionShutdown();
 
@@ -568,8 +663,8 @@ void	Menu_Net_NETFrame(int mouse);
 void	Menu_Net_NETJoinServer(const std::string& sAddress, const std::string& sName);
 void	Menu_Net_NETAddServer();
 void	Menu_Net_NETUpdateList();
+void	Menu_Net_NETParseList(class CHttp& http);
 void    Menu_Net_NETShowServer(const std::string& szAddress);
-void	Menu_Net_NET_ServerList_Refresher();
 
 void	Menu_Current_Shutdown();
 	

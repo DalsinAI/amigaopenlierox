@@ -1,5 +1,0 @@
-invisible=1
-
-on creation()
-   play_sound([shell.wav,shell1.wav], 40, 1, 0.2)
-remove()

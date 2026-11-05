@@ -23,11 +23,11 @@
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "DeprecatedGUI/CMenu.h"
-#include "OLXConsole.h"
+#include "console.h"
 #include "GfxPrimitives.h"
 #include "StringUtils.h"
 #include "DeprecatedGUI/CBar.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "CWormBot.h"
 #include "Protocol.h"
 #include "Entity.h"
@@ -40,8 +40,6 @@
 #include "DeprecatedGUI/CCheckbox.h"
 #include "DeprecatedGUI/CChatWidget.h"
 #include "InputEvents.h"
-#include "TouchControls.h"
-#include "TouchScreenInput.h"
 #include "AuxLib.h"
 #include "Timer.h"
 #include "Clipboard.h"
@@ -54,17 +52,11 @@
 #include "CGameMode.h"
 #include "FlagInfo.h"
 #include "WeaponDesc.h"
-#include "gusanos/gusanos.h"
-#include "gusanos/gfx.h"
-#include "game/Game.h"
-#include "gusanos/gusgame.h"
-#include "gusanos/luaapi/context.h"
-#include "game/SinglePlayer.h"
-#include "gusanos/network.h"
-#include "CodeAttributes.h"
-#include "CGameScript.h"
-#include "CWormHuman.h"
+#include "Touchscreen.h"
 
+
+using DeprecatedGUI::cGameMenuLayout;
+using DeprecatedGUI::cScoreLayout;
 
 SmartPointer<SDL_Surface> bmpMenuButtons = NULL;
 float			fLagFlash;
@@ -100,11 +92,11 @@ bool CClient::InitializeDrawing()
 
 		FillSurface(bmpIngameScoreBg.get(), tLX->clScoreBackground);
 	}
-	InitializeIngameScore();
+	InitializeIngameScore(true);
 
 	// Local and network have different layouts and sections in the config file
 	std::string section = "";
-	if (game.isLocalGame())
+	if (tLX->iGameType == GME_LOCAL)
 		section = "LocalGameInterface";
 	else
 		section = "NetworkGameInterface";
@@ -133,7 +125,7 @@ bool CClient::InitializeDrawing()
 	ReadInteger("data/frontend/frontend.cfg",section,"TimeLeftW",&tInterfaceSettings.TimeLeftW, 60);
 
 
-	if (game.isLocalGame())  {  // Local play can handle two players, it means all the top boxes twice
+	if (tLX->iGameType == GME_LOCAL)  {  // Local play can handle two players, it means all the top boxes twice
 		ReadInteger("data/frontend/frontend.cfg",section,"MinimapX",&tInterfaceSettings.MiniMapX, 255);
 		ReadInteger("data/frontend/frontend.cfg",section,"MinimapY",&tInterfaceSettings.MiniMapY, 382);
 		ReadInteger("data/frontend/frontend.cfg",section,"ScoreboardTwoPlayersX",&tInterfaceSettings.ScoreboardOtherPosX, 200);
@@ -173,7 +165,9 @@ bool CClient::InitializeDrawing()
 		ReadInteger("data/frontend/frontend.cfg",section,"WeaponLabel2X",&tInterfaceSettings.WeaponLabel2X, 390);
 		ReadInteger("data/frontend/frontend.cfg",section,"WeaponLabel2Y",&tInterfaceSettings.WeaponLabel2Y, 425);
 
-			} else {  // Network allows only one player
+		ReadInteger("data/frontend/frontend.cfg",section,"LocalChatX",&tInterfaceSettings.LocalChatX, 0);
+		ReadInteger("data/frontend/frontend.cfg",section,"LocalChatY",&tInterfaceSettings.LocalChatY, tLX->cFont.GetHeight());
+	} else {  // Network allows only one player
 		ReadInteger("data/frontend/frontend.cfg",section,"MinimapX",&tInterfaceSettings.MiniMapX, 511);
 		ReadInteger("data/frontend/frontend.cfg",section,"MinimapY",&tInterfaceSettings.MiniMapY, 382);
 		ReadInteger("data/frontend/frontend.cfg",section,"ScoreboardNotReadyX",&tInterfaceSettings.ScoreboardOtherPosX, 125);
@@ -223,11 +217,9 @@ bool CClient::InitializeDrawing()
 		ReadInteger("data/frontend/frontend.cfg",section,"WeaponLabel2X",&tInterfaceSettings.WeaponLabel2X, 390);
 		ReadInteger("data/frontend/frontend.cfg",section,"WeaponLabel2Y",&tInterfaceSettings.WeaponLabel2Y, 425);
 	}
-		ReadInteger("data/frontend/frontend.cfg",section,"LocalChatX",&tInterfaceSettings.LocalChatX, 0);
-	ReadInteger("data/frontend/frontend.cfg",section,"LocalChatY",&tInterfaceSettings.LocalChatY, tLX->cFont.GetHeight());
 
 	// Setup the loading boxes
-	int NumBars = game.isLocalGame() ? 4 : 2;
+	int NumBars = tLX->iGameType == GME_LOCAL ? 4 : 2;
 	for (byte i=0; i<NumBars; i++)
 		if (!InitializeBar(i))
 			return false;
@@ -245,7 +237,7 @@ bool CClient::InitializeDrawing()
 	cDownloadBar->SetForeColor(Color(0, 0, 200));
 
 	// Reset the scoreboard here so it doesn't show kills & lives when waiting for players
-	InitializeIngameScore();
+	InitializeIngameScore(true);
 
 
 	return true;
@@ -255,7 +247,7 @@ bool CClient::InitializeDrawing()
 // Get the bottom border of the top bar
 int CClient::getTopBarBottom()
 {
-	if (game.isLocalGame())
+	if (tLX->iGameType == GME_LOCAL)
 		return DeprecatedGUI::gfxGame.bmpGameLocalTopBar.get() ? DeprecatedGUI::gfxGame.bmpGameLocalTopBar.get()->h : tLX->cFont.GetHeight();
 	else
 		return DeprecatedGUI::gfxGame.bmpGameNetTopBar.get() ? DeprecatedGUI::gfxGame.bmpGameNetTopBar.get()->h : tLX->cFont.GetHeight();
@@ -265,7 +257,7 @@ int CClient::getTopBarBottom()
 // Get the top border of the bottom bar
 int CClient::getBottomBarTop()
 {
-	if (game.isLocalGame())
+	if (tLX->iGameType == GME_LOCAL)
 		return DeprecatedGUI::gfxGame.bmpGameLocalBackground.get() ? 480 - DeprecatedGUI::gfxGame.bmpGameLocalBackground.get()->h : 382;
 	else
 		return DeprecatedGUI::gfxGame.bmpGameNetBackground.get() ? 480 - DeprecatedGUI::gfxGame.bmpGameNetBackground.get()->h : 382;
@@ -308,7 +300,7 @@ bool CClient::InitializeBar(int number)  {
 		y = 430;
 		label_x = 163;
 		label_y = 425;
-		numforestates = numbgstates = 3; //Shoot (0), loading (1) and cooldown (2)
+		numforestates = numbgstates = 2;
 
 		break;
 
@@ -339,7 +331,7 @@ bool CClient::InitializeBar(int number)  {
 		y = 430;
 		label_x = 550;
 		label_y = 420;
-		numforestates = numbgstates = 3; //Shoot (0), loading (1) and cooldown (2)
+		numforestates = numbgstates = 2;
 
 		break;
 	default: return false;
@@ -347,7 +339,7 @@ bool CClient::InitializeBar(int number)  {
 
 	// Local and network have different layouts and sections in the config file
 	std::string section = "";
-	if (game.isLocalGame())
+	if (tLX->iGameType == GME_LOCAL)
 		section = "LocalGameInterface";
 	else
 		section = "NetworkGameInterface";
@@ -384,13 +376,6 @@ bool CClient::InitializeBar(int number)  {
 
 }
 
-static std::list<std::string> hudDebugInfo;
-
-void CClient::addHudDebugInfo(const std::string& txt) {
-	hudDebugInfo.push_back(txt);
-}
-
-
 //////////////////
 // Draw a box
 void CClient::DrawBox(SDL_Surface * dst, int x, int y, int w)
@@ -411,18 +396,14 @@ void CClient::DrawBox(SDL_Surface * dst, int x, int y, int w)
 	DrawImage(dst, bmpBoxRight, x + bmpBoxLeft.get()->w + middle_w, y); // Right part
 }
 
+#ifdef DrawText // Windows crap
+#undef DrawText
+#endif
+
 ///////////////////
 // Main drawing routines
-void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
+void CClient::Draw(SDL_Surface * bmpDest)
 {
-	// Widescreen games use the full screen width; others are constrained to the
-	// base menuWidth (composed centered, side gaps edge-filled) so that a wider
-	// screen gives no gameplay advantage. This also overrides the menuWidth set
-	// by Menu_Frame once we are in a widescreen game.
-	VideoPostProcessor::get()->setDisplayScreenWidth(
-		game.useWideScreen() ? VideoPostProcessor::get()->screenWidth()
-		                     : VideoPostProcessor::menuWidth);
-
 #ifdef DEBUG
 	struct DrawDebugStrPostHandler {
 		CClient& cl;
@@ -433,23 +414,56 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 				cl.DrawText(dst, false, 10, 30, Color(255,0,0), cl.strDebug);
 		}
 	};
-	DrawDebugStrPostHandler drawDebugStrPostHandler(*this, bmpDest.get());
+	DrawDebugStrPostHandler drawDebugStrPostHandler(*this, bmpDest);
 #endif
 	
 	// TODO: clean this function up
 	// currently both control structure and the drawing itself is in here
 
+	ushort i,num;
+	TimeDiff dt = tLX->fDeltaTime;
+
+	// TODO: allow more worms
+	num = (ushort)MIN(2,iNumWorms);
+
+
+	// Check for any communication errors
+	if(bServerError) {
+
+		// Stop any file downloads
+		if (bDownloadingMap && cHttpDownloader)
+			cHttpDownloader->CancelFileDownload(sMapDownloadName);
+		getUdpFileDownloader()->reset();
+
+		if(bDedicated) {
+			errors << "servererror: " << strServerErrorMsg << endl;
+		} else {
+			// Show message box, shutdown and quit back to menu
+			DrawImage(DeprecatedGUI::tMenu->bmpBuffer.get(), DeprecatedGUI::tMenu->bmpMainBack_common, 0, 0);
+			DeprecatedGUI::Menu_RedrawMouse(true);
+			EnableSystemMouseCursor(false);
+
+			DeprecatedGUI::Menu_MessageBox("Connection error", strServerErrorMsg, DeprecatedGUI::LMB_OK);
+		}
+
+		GotoNetMenu();
+		
+		if( GetGlobalIRC() )
+			GetGlobalIRC()->setAwayMessage("");
+
+		return;
+	}
 
 	//
 	// check if Players not yet ready
 	//
-	if (game.state >= Game::S_Preparing && iNetStatus >= NET_CONNECTED)  {
+	if (iNetStatus == NET_CONNECTED && bGameReady)  {
 		bool ready = true;
 
 		// Go through and draw the first two worms select menus
 		if (!bWaitingForMod) {
-			for_each_iterator(CWorm*, w, game.localWorms())
-				ready = ready && w->get()->bWeaponsReady;
+			for(i=0;i<num;i++)
+				ready = ready && cLocalWorms[i]->getWeaponsReady();
 		} else // Waiting for a mod to download
 			ready = false;
 
@@ -466,29 +480,24 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 	if(bDedicated)
 		return;
 	
-	if(bmpDest.get() == NULL) {
+	if(bmpDest == NULL) {
 		errors << "CClient::Draw: bmpDest is unset" << endl;
 		return;
 	}
 
-	// bgImage is the bottom background image used in old LX
 	// Local and network use different background images
-	//SmartPointer<SDL_Surface> bgImage = DeprecatedGUI::gfxGame.bmpGameNetBackground;
-	//if (game.isLocalGame())
-	//	bgImage = DeprecatedGUI::gfxGame.bmpGameLocalBackground;
+	SmartPointer<SDL_Surface> bgImage = DeprecatedGUI::gfxGame.bmpGameNetBackground;
+	if (tLX->iGameType == GME_LOCAL)
+		bgImage = DeprecatedGUI::gfxGame.bmpGameLocalBackground;
 
 	// TODO: allow more viewports
 	// Draw the borders
+	if (bShouldRepaintInfo || tLX->bVideoModeChanged || bCurrentSettings)  {
+		// Fill the viewport area with black
+		DrawRectFill(bmpDest, 0, 0,
+			VideoPostProcessor::videoSurface()->w, getBottomBarTop(), tLX->clBlack);
 
-	/*
-	if( !(game.gameScript() && game.gameScript()->gusEngineUsed()) )
-	{
-		// Fill the viewport area with black, only if map will be smaller than viewport
-		if( (float)getGameLobby()[FT_SizeFactor] < 1.0f )
-			DrawRectFill(bmpDest, 0, tLXOptions->bTopBarVisible ? getTopBarBottom() : 0,
-				VideoPostProcessor::videoSurface()->w, getBottomBarTop(), tLX->clBlack);
-		
-		if (game.isLocalGame())  {
+		if (tLX->iGameType == GME_LOCAL)  {
 			if (bgImage.get())  // Doesn't have to exist (backward compatibility)
 				DrawImageAdv(bmpDest, bgImage, 0, 0, 0, 480 - bgImage.get()->h, 640, bgImage.get()->h);
 			else
@@ -514,32 +523,17 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 
 	// if 2 viewports, draw special
 	if(cViewports[1].getUsed())
-		DrawRectFill(bmpDest,640/2-2,0,640/2+2, bgImage.get() ? (480-bgImage.get()->h) : (384), tLX->clViewportSplit);
-	*/
-	// (The split-screen separator is drawn after the viewports, below.)
-
-	// Top bar (do not draw for Gusanos)
-	/*
-	if (tLXOptions->bTopBarVisible && !bGameMenu && 
-		(bShouldRepaintInfo || tLX->bVideoModeChanged) && 
-		!(game.gameScript() && game.gameScript()->gusEngineUsed()) )  {
-		SmartPointer<SDL_Surface> top_bar = game.isLocalGame() ? DeprecatedGUI::gfxGame.bmpGameLocalTopBar : DeprecatedGUI::gfxGame.bmpGameNetTopBar;
-		if (top_bar.get())
-			DrawImage( bmpDest, top_bar, 0, 0);
-		else
-			DrawRectFill( bmpDest, 0, 0, 640, tLX->cFont.GetHeight() + 4, tLX->clGameBackground ); // Backward compatibility
-	}
-	*/
+		DrawRectFill(bmpDest,318,0,322, bgImage.get() ? (480-bgImage.get()->h) : (384), tLX->clViewportSplit);
 
 	// DEBUG: draw the AI paths
 #ifdef _AI_DEBUG
-	if (game.state == Game::S_Playing && game.gameMap())  {
+	if (iNetStatus == NET_PLAYING && cMap)  {
 		static AbsTime last = tLX->currentTime;
 		if ((tLX->currentTime - last).seconds() >= 0.5f)  {
-			game.gameMap()->ClearDebugImage();
-			for_each_iterator(CWorm*, w, game.localWorms()) {
-				if (w->get()->getType() == PRF_COMPUTER)
-					((CWormBotInputHandler*) w->get()->inputHandler() )->AI_DrawPath();
+			cMap->ClearDebugImage();
+			for (int i = 0; i < (int)iNumWorms; i++)  {
+				if (cLocalWorms[i]->getType() == PRF_COMPUTER)
+					((CWormBotInputHandler*) cLocalWorms[i]->inputHandler() )->AI_DrawPath();
 			}
 			last = tLX->currentTime;
 		}
@@ -547,145 +541,39 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 #endif
 
 	// Draw the viewports
-	if((game.state >= Game::S_Preparing) && !bWaitingForMap) {
+	// HINT: before we get packet with map info and load the map, cMap is undefined
+	// bGameReady says if the game (including cMap) has been initialized
+	if(((iNetStatus == NET_CONNECTED  && bGameReady ) || (iNetStatus == NET_PLAYING)) && !bWaitingForMap) {
 
 		// Draw the viewports
-		for( ushort i=0; i<NUM_VIEWPORTS; i++ ) {
+		for( i=0; i<NUM_VIEWPORTS; i++ ) {
 			if( cViewports[i].getUsed() )  {
-				if (game.gameMap() != NULL)
-					cViewports[i].Process(cViewports, game.gameMap()->GetWidth(), game.gameMap()->GetHeight(), getGeneralGameType());
+				if (cMap != NULL)
+					cViewports[i].Process(cRemoteWorms, cViewports, cMap->GetWidth(), cMap->GetHeight(), getGeneralGameType());
 				DrawViewport(bmpDest, (byte)i);
 			}
 		}
 
-		// Separators filling the gaps between split-screen viewports. These
-		// seams lie outside every viewport rect, so the per-viewport black fill
-		// in DrawViewport_Game never reaches them, and effects that draw outside
-		// the viewport clip (e.g. blood splatter) can leave artifacts there.
-		// Repaint them every frame to keep the seams clean. The seams match the
-		// grid layouts in splitScreenViewportRect():
-		//   2 players -> one vertical seam
-		//   3 players -> 2x2 grid seams; the empty 4th quarter is filled and
-		//                shows the radar map (drawn below)
-		//   4 players -> full-width horizontal seam + a vertical seam per row
-		int usedViewports = 0;
-		for(int i = 0; i < NUM_VIEWPORTS; i++)
-			if(cViewports[i].getUsed()) usedViewports++;
-		{
-			// Vertical seam between the two top-row viewports (2+ players).
-			if(usedViewports >= 2 && cViewports[0].getUsed() && cViewports[1].getUsed()) {
-				const int gapL = cViewports[0].GetLeft() + cViewports[0].GetVirtW();
-				const int gapR = cViewports[1].GetLeft();
-				const int gapT = cViewports[0].GetTop();
-				const int gapB = cViewports[0].GetTop() + cViewports[0].GetVirtH();
-				DrawRectFill(bmpDest.get(), gapL, gapT, gapR, gapB, tLX->clViewportSplit);
-			}
-			// Full-width horizontal seam between the top and bottom rows (3+).
-			if(usedViewports >= 3 && cViewports[2].getUsed()) {
-				const int rowL = cViewports[0].GetLeft();
-				const int rowR = cViewports[1].GetLeft() + cViewports[1].GetVirtW();
-				const int gapT = cViewports[0].GetTop() + cViewports[0].GetVirtH();
-				const int gapB = cViewports[2].GetTop();
-				DrawRectFill(bmpDest.get(), rowL, gapT, rowR, gapB, tLX->clViewportSplit);
-			}
-			// Vertical seam between the two bottom-row viewports (4 players).
-			if(usedViewports >= 4 && cViewports[2].getUsed() && cViewports[3].getUsed()) {
-				const int gapL = cViewports[2].GetLeft() + cViewports[2].GetVirtW();
-				const int gapR = cViewports[3].GetLeft();
-				const int gapT = cViewports[2].GetTop();
-				const int gapB = cViewports[2].GetTop() + cViewports[2].GetVirtH();
-				DrawRectFill(bmpDest.get(), gapL, gapT, gapR, gapB, tLX->clViewportSplit);
-			}
-			// 3 players: the bottom-right quarter has no viewport. Fill it (plus
-			// the seam next to the bottom-left viewport) with the split colour;
-			// the radar map is centered into it below.
-			if(usedViewports == 3 && cViewports[1].getUsed() && cViewports[2].getUsed()) {
-				const int qL = cViewports[2].GetLeft() + cViewports[2].GetVirtW(); // past the seam
-				const int qR = cViewports[1].GetLeft() + cViewports[1].GetVirtW();
-				const int qT = cViewports[2].GetTop();
-				const int qB = cViewports[2].GetTop() + cViewports[2].GetVirtH();
-				DrawRectFill(bmpDest.get(), qL, qT, qR, qB, tLX->clViewportSplit);
-			}
-		}
-
-		// Radar map default position: the top-right corner of the screen. This is
-		// what a single on-screen player gets, identically in local and network
-		// play. Use the actual display width (not a hardcoded 640) so it lands in
-		// the real corner on widescreen too. The split-screen layouts below
-		// relocate it so it costs each player an equal share of the screen.
-		const int displayW = VideoPostProcessor::get()->displayScreenWidth();
-		int MiniMapX = displayW - tInterfaceSettings.MiniMapW;
-		int MiniMapY = 0;
-
-		// 2-player split screen: put the radar map at the top, centered on the
-		// vertical seam between the two viewports, so it costs each player equally.
-		if(usedViewports == 2 && cViewports[0].getUsed() && cViewports[1].getUsed()) {
-			const int centerX = (cViewports[0].GetLeft() + cViewports[0].GetVirtW() + cViewports[1].GetLeft()) / 2;
-			MiniMapX = centerX - tInterfaceSettings.MiniMapW / 2;
-			MiniMapY = cViewports[0].GetTop();
-		}
-		// 3-player split screen: place the radar map in the empty 4th quarter
-		// (bottom-right), centered, instead of overlaying a player's viewport.
-		else if(usedViewports == 3 && cViewports[1].getUsed() && cViewports[2].getUsed()) {
-			const int qX = cViewports[1].GetLeft();
-			const int qY = cViewports[2].GetTop();
-			const int qW = cViewports[1].GetVirtW();
-			const int qH = cViewports[2].GetVirtH();
-			MiniMapX = qX + (qW - tInterfaceSettings.MiniMapW) / 2;
-			MiniMapY = qY + (qH - tInterfaceSettings.MiniMapH) / 2;
-		}
-		// 4-player split screen: center the radar map at the intersection of the
-		// four viewports so it overlaps each player's screen estate equally.
-		else if(usedViewports == 4 && cViewports[0].getUsed() && cViewports[1].getUsed()
-		        && cViewports[2].getUsed() && cViewports[3].getUsed()) {
-			// Middle of the vertical seam (between the two columns) and of the
-			// horizontal seam (between the two rows) = the screen's centre.
-			const int centerX = (cViewports[0].GetLeft() + cViewports[0].GetVirtW() + cViewports[1].GetLeft()) / 2;
-			const int centerY = (cViewports[0].GetTop() + cViewports[0].GetVirtH() + cViewports[2].GetTop()) / 2;
-			MiniMapX = centerX - tInterfaceSettings.MiniMapW / 2;
-			MiniMapY = centerY - tInterfaceSettings.MiniMapH / 2;
-		}
-
-		// When the on-screen touch controls are visible, the active
-		// layout can override the minimap position so it doesn't sit
-		// under the action buttons. If the layout doesn't specify one,
-		// fall back to "just left of the right-aligned-style action column".
-		if(TouchControls::IsActive()) {
-			int mx, my;
-			if(TouchControls::GetMinimapPosition(mx, my)) {
-				// Negative coords are relative to the right/bottom screen edge
-				// (same convention as the touch buttons): anchor the minimap's
-				// far edge |coord| px from that edge, so it stays put on wider
-				// screens. Non-negative coords are the usual top-left origin.
-				const int sw = VideoPostProcessor::get()->displayScreenWidth();
-				const int sh = VideoPostProcessor::get()->screenHeight();
-				MiniMapX = (mx >= 0) ? mx : sw + mx - tInterfaceSettings.MiniMapW;
-				MiniMapY = (my >= 0) ? my : sh + my - tInterfaceSettings.MiniMapH;
-			} else {
-				constexpr int kTouchRightEdge = 525;
-				constexpr int kGap            = 4;
-				MiniMapX = kTouchRightEdge - kGap - tInterfaceSettings.MiniMapW;
-				if(MiniMapX < 0) MiniMapX = 0;
-			}
-		}
-
 		// Mini-Map
-		if (game.gameMap() != NULL && (bool)getGameLobby()[FT_MiniMap])  {
-			if (game.state >= Game::S_Preparing)
-				game.gameMap()->DrawMiniMap( bmpDest.get(), MiniMapX, MiniMapY, tLX->fDeltaTime );
+		if (cMap != NULL && (bool)getGameLobby()->features[FT_MiniMap])  {
+			if (bGameReady || iNetStatus == NET_PLAYING)
+				cMap->DrawMiniMap( bmpDest, GetTouchscreenControlsShown() ? 0 : tInterfaceSettings.MiniMapX, tInterfaceSettings.MiniMapY, dt, cRemoteWorms );
 			else {
-				if(game.gameMap()->GetMiniMap().get())
-					DrawImage( bmpDest.get(), game.gameMap()->GetMiniMap(), MiniMapX, MiniMapY);
+				if(cMap->GetMiniMap().get())
+					DrawImage( bmpDest, cMap->GetMiniMap(), GetTouchscreenControlsShown() ? 0 : tInterfaceSettings.MiniMapX, tInterfaceSettings.MiniMapY);
 			}
 		}
 
+		if (!bGameMenu && GetMouse()->FirstDown && !GetTouchscreenControlsShown()) {
+			SetTouchscreenControlsShown(true);
+		}
 	}
 
 	// If waiting for the map/mod to finish downloading, draw the progress
 	if (bWaitingForMap || bWaitingForMod)  {
 		cDownloadBar->SetPosition( getDlProgress() );
-		tLX->cOutlineFont.DrawCentre(bmpDest.get(), 320, getBottomBarTop() - cDownloadBar->GetHeight() - tLX->cOutlineFont.GetHeight() - 5, tLX->clNormalLabel, "Downloading files");
-		cDownloadBar->Draw(bmpDest.get());
+		tLX->cOutlineFont.DrawCentre(bmpDest, 320, getBottomBarTop() - cDownloadBar->GetHeight() - tLX->cOutlineFont.GetHeight() - 5, tLX->clNormalLabel, "Downloading files");
+		cDownloadBar->Draw(bmpDest);
 	}
 
 	// DEBUG
@@ -694,76 +582,43 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 	//tLX->cFont.Draw(bmpDest,0,20,tLX->clWhite,"iGameReady = %i",iGameReady);
 
 	// Draw the chatbox for either a local game, or remote game
-	if(game.isLocalGame())
-		DrawLocalChat(bmpDest.get());
+	if(tLX->iGameType == GME_LOCAL)
+		DrawLocalChat(bmpDest);
 	else
-		DrawRemoteChat(bmpDest.get());
-	
-	if(game.hudPermanentText != "") {
-		int y = tInterfaceSettings.LocalChatY;
-		tLX->cFont.Draw(bmpDest.get(), tInterfaceSettings.LocalChatX + 1, y+1, tLX->clBlack, game.hudPermanentText); // Shadow black
-		tLX->cFont.Draw(bmpDest.get(), tInterfaceSettings.LocalChatX, y, Color(200,200,255), game.hudPermanentText);
-	}
-	
+		DrawRemoteChat(bmpDest);
+
 	// FPS
 	if(tLXOptions->bShowFPS) {
-		if (false /*tLXOptions->bTopBarVisible*/)  {
-			DrawBox( bmpDest.get(), tInterfaceSettings.FpsX, tInterfaceSettings.FpsY, tInterfaceSettings.FpsW);  // Draw the box around it
-			tLX->cFont.Draw( // Draw the text
-						bmpDest.get(),
-						tInterfaceSettings.FpsX + 2,
-						tInterfaceSettings.FpsY,
-						tLX->clFPSLabel,
+		tLX->cOutlineFont.Draw( // Draw the text
+					bmpDest,
+					VideoPostProcessor::videoSurface()->w - 70,
+					0,
+					tLX->clFPSLabel,
 #ifdef DEBUG
-						"FPS: " + itoa(GetFPS()) + "/" + itoa(GetMinFPS()) // Get the string and its width
+					"FPS: " + itoa(GetFPS()) + "/" + itoa(GetMinFPS()) // Get the string and its width
 #else
-						"FPS: " + itoa(GetFPS()) // Get the string and its width
+					"FPS: " + itoa(GetFPS()) // Get the string and its width
 #endif
-					);
-		} else { // Top bar is hidden
-			tLX->cOutlineFont.Draw( // Draw the text
-						bmpDest.get(),
-						VideoPostProcessor::videoSurface()->w - 70,
-						0,
-						tLX->clFPSLabel,
-#ifdef DEBUG
-						"FPS: " + itoa(GetFPS()) + "/" + itoa(GetMinFPS()) // Get the string and its width
-#else
-						"FPS: " + itoa(GetFPS()) // Get the string and its width
-#endif
-					);
-		}
+				);
 	}
 
 	// Ping on the top right
-	if(tLXOptions->bShowPing && game.isClient())  {
+	if(tLXOptions->bShowPing && tLX->iGameType == GME_JOIN)  {
 
-		if (false /*tLXOptions->bTopBarVisible*/)  {
-			// Draw the box around it
-			DrawBox( bmpDest.get(), tInterfaceSettings.PingX, tInterfaceSettings.PingY, tInterfaceSettings.PingW);
-
-			tLX->cFont.Draw( // Draw the text
-						bmpDest.get(),
-						tInterfaceSettings.PingX + 2,
-						tInterfaceSettings.PingY,
-						tLX->clPingLabel,
-						"Ping: " + itoa(iMyPing));
-		} else {
-			tLX->cOutlineFont.Draw( // Draw the text
-						bmpDest.get(),
-						VideoPostProcessor::videoSurface()->w - (tLXOptions->bShowFPS ? 135 : 65),
-						0,
-						tLX->clPingLabel,
-						"Ping: " + itoa(iMyPing));				
-		}
+		tLX->cOutlineFont.Draw( // Draw the text
+					bmpDest,
+					VideoPostProcessor::videoSurface()->w - (tLXOptions->bShowFPS ? 135 : 65),
+					0,
+					tLX->clPingLabel,
+					"Ping: " + itoa(iMyPing));				
 
 	}
 
 	// Draw time left
-	if((float)tGameInfo[FT_TimeLimit] > 0 /*&& tLXOptions->bTopBarVisible*/)
+	if(tGameInfo.fTimeLimit > 0 && tLXOptions->bTopBarVisible)
 	{
 		// time left in minutes
-		float fTimeLeft = (float)tGameInfo[FT_TimeLimit] - (game.serverTime().seconds()/60.0f);
+		float fTimeLeft = tGameInfo.fTimeLimit - (serverTime().seconds()/60.0f);
 		//sanity check
 		if(fTimeLeft < 0.0f)
 			fTimeLeft = 0.0f;
@@ -782,95 +637,49 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 		sprintf(cstr_buf,"%.2i:%.2i",iTLMinutes,iTLSeconds);
 	
 		//DrawBox( bmpDest, tInterfaceSettings.TimeLeftX, tInterfaceSettings.TimeLeftY, tInterfaceSettings.TimeLeftW );
-		DrawImage(bmpDest.get(), DeprecatedGUI::gfxGame.bmpClock, tInterfaceSettings.TimeLeftX+1,  tInterfaceSettings.TimeLeftY+1);
-		tLX->cFont.Draw(bmpDest.get(),tInterfaceSettings.TimeLeftX+DeprecatedGUI::gfxGame.bmpClock.get()->w+5, tInterfaceSettings.TimeLeftY, clTimeLabel, cstr_buf);
+		DrawImage(bmpDest, DeprecatedGUI::gfxGame.bmpClock, tInterfaceSettings.TimeLeftX+1,  tInterfaceSettings.TimeLeftY+1);
+		tLX->cOutlineFont.Draw(bmpDest,tInterfaceSettings.TimeLeftX+DeprecatedGUI::gfxGame.bmpClock.get()->w+5, tInterfaceSettings.TimeLeftY, clTimeLabel, cstr_buf);
 	}
 
-	if( sSpectatorViewportMsg != "" && !game.gameOver )
-		tLX->cOutlineFont.DrawCentre( bmpDest.get(), 320, 200, tLX->clPingLabel, sSpectatorViewportMsg );
+	if( sSpectatorViewportMsg != "" && !isGameOver() )
+		tLX->cOutlineFont.DrawCentre( bmpDest, 320, 200, tLX->clPingLabel, sSpectatorViewportMsg );
 
-	std::list<std::string> dbgtxtHudLines;
 	if(tLXOptions->bShowNetRates) {
 		// Upload and download rates
 		float up = 0;
 		float down = 0;
 
 		// Get the rates
-		if( game.isClient() )
+		if( tLX->iGameType == GME_JOIN )
 		{
 			down = cClient->getChannel()->getIncomingRate() / 1024.0f;
 			up = cClient->getChannel()->getOutgoingRate() / 1024.0f;
 		}
-		else
+		else if( tLX->iGameType == GME_HOST )
 		{
 			down = cServer->GetDownload() / 1024.0f;
 			up = cServer->GetUpload() / 1024.0f;
 		}
 
-		dbgtxtHudLines.push_back("Down: " + ftoa(down, 3) + " kB/s");
-		dbgtxtHudLines.push_back("Up: " + ftoa(up, 3) + " kB/s");
+		tLX->cOutlineFont.Draw(bmpDest, 550, 20, tLX->clWhite, "Down: " + ftoa(down, 3) + " kB/s");
+		tLX->cOutlineFont.Draw(bmpDest, 550, 20 + tLX->cOutlineFont.GetHeight(), tLX->clWhite, "Up: " + ftoa(up, 3) + " kB/s");
 	}
 
 	if(tLXOptions->bShowProjectileUsage) {
-		dbgtxtHudLines.push_back("Projs: " + itoa(cProjectiles.size()));
-
-		// Gusanos
-		dbgtxtHudLines.push_back("Objects: " + cast<std::string>(game.objects.size()));
-		dbgtxtHudLines.push_back("Players: " + cast<std::string>(game.players.size()));
-		dbgtxtHudLines.push_back("Lua Mem: " + cast<std::string>(lua_gc(luaIngame, LUA_GCCOUNT, 0)));
+		std::string txt = "Projs: " + itoa(cProjectiles.size());
+		tLX->cOutlineFont.Draw(bmpDest, 550, 20 + 2 * tLX->cOutlineFont.GetHeight(), tLX->clWhite, txt);
 	}
 	
-	foreach(i, hudDebugInfo)
-		dbgtxtHudLines.push_back(*i);
-	hudDebugInfo.clear();
-
-	{
-		//static const int Snap = 50;
-		int txtWidth = 100;
-		foreach(i, dbgtxtHudLines) {
-			txtWidth = std::max(txtWidth, tLX->cOutlineFont.GetWidth(*i));
-			//txtWidth += Snap-1 - ((txtWidth-1) % Snap);
-		}
-
-		const int dbgtxtHudX = 640 - txtWidth;
-		int dbgtxtHudY = 20;
-		foreach(i, dbgtxtHudLines) {
-			tLX->cOutlineFont.Draw(bmpDest.get(), dbgtxtHudX, dbgtxtHudY, tLX->clWhite, *i);
-			dbgtxtHudY += tLX->cOutlineFont.GetHeight();
-		}
-	}
-
 	// Go through and draw the first two worms select menus
-	if (game.state >= Game::S_Preparing && !bWaitingForMod) {
-		// Darken the whole screen behind the weapon selection. Drawn once here
-		// (not per-viewport) so it always covers the full display width and
-		// does not stack alpha in split-screen.
-		bool anyWeaponSelect = false;
-		for_each_iterator(CWorm*, w, game.localWorms())
-			if(!w->get()->bWeaponsReady) anyWeaponSelect = true;
-		if(anyWeaponSelect)
-			DrawRectFill(bmpDest.get(), 0, 0,
-				VideoPostProcessor::get()->displayScreenWidth(),
-				VideoPostProcessor::get()->screenHeight(), Color(0,0,0,100));
+	if (iNetStatus == NET_CONNECTED && bGameReady && !bWaitingForMod)
+		for(i=0;i<num;i++)
+			if(!cLocalWorms[i]->getWeaponsReady())
+				cLocalWorms[i]->doWeaponSelectionFrame(bmpDest, &cViewports[i]);
 
-		for_each_iterator(CWorm*, w, game.localWorms()) {
-			if(w->get()->bWeaponsReady) continue;
-			// Render each worm's selection menu in its OWN viewport (the one
-			// targeting it), so in split-screen each player gets the menu
-			// centered in their half rather than a wrong/unused viewport.
-			CViewport* v = NULL;
-			for(int j = 0; j < NUM_VIEWPORTS; j++)
-				if(cViewports[j].getUsed() && cViewports[j].getTarget() == w->get()) {
-					v = &cViewports[j];
-					break;
-				}
-			w->get()->doWeaponSelectionFrame(bmpDest.get(), v);
-		}
-	}
 
 /*#ifdef DEBUG
 	// Client and server velocity
-	if (game.isServer())  {
+	if (tLX->iGameType != GME_JOIN)  {
 		if (cClient->getWorm(0) && cServer->getClient(0)->getWorm(0))  {
 			static std::string cl = "0.000";
 			static std::string sv = "0.000";
@@ -890,51 +699,45 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 	// Game over
 	// TODO: remove this static here; it is a bad hack and doesn't work in all cases
 	static bool was_gameovermenu = false;
-	if(game.gameOver) {
-		if(game.gameOverTime().seconds() > GAMEOVER_WAIT && !was_gameovermenu)  {
+	if(bGameOver) {
+		if(tLX->currentTime - fGameOverTime > GAMEOVER_WAIT && !was_gameovermenu)  {
 			InitializeGameMenu();
 
 			// If this is a tournament, take screenshot of the final screen
-			if (tLXOptions->bMatchLogging && !game.isLocalGame())  {
+			if (tLXOptions->bMatchLogging && tLX->iGameType != GME_LOCAL)  {
 				std::string data;
 				GetLogData(data);
 				PushScreenshot("game_results", data);
 			}
 
 			was_gameovermenu = true;
-		} else {
-			if(game.gameMode() == &singlePlayerGame && singlePlayerGame.levelSucceeded) {
-				std::string s = "Congratulations, you have done it!";
-				tLX->cFont.DrawCentre(bmpDest.get(), 321, 201, tLX->clBlack, s);
-				tLX->cFont.DrawCentre(bmpDest.get(), 320, 200, Color(100,255,100), s);
-			} else
-				tLX->cOutlineFont.DrawCentre(bmpDest.get(), 320, 200, tLX->clNormalText, "Game Over");
-		}
+		} else
+			tLX->cOutlineFont.DrawCentre(bmpDest, 320, 200, tLX->clNormalText, "Game Over");
 	} else
 		was_gameovermenu = false;
 
 	// Viewport manager
 	if(bViewportMgr)  {
 		bScoreboard = false;
-		DrawViewportManager(bmpDest.get());
+		DrawViewportManager(bmpDest);
 	}
 
 	if(iNetStatus == NET_CONNECTED && !bReadySent)  {
 		bScoreboard = false;
-		DrawPlayerWaiting(bmpDest.get());
+		DrawPlayerWaiting(bmpDest);
 	}
 
 	// Scoreboard
 	if(bScoreboard && !bGameMenu)
-		DrawScoreboard(bmpDest.get());
+		DrawScoreboard(bmpDest);
 
 	// Current Settings
-	DrawCurrentSettings(bmpDest.get());
+	DrawCurrentSettings(bmpDest);
 
 	// Game menu
 	bool options = DeprecatedGUI::bShowFloatingOptions;  // TODO: bad hack, because DrawGameMenu does processing as well...
 	if( bGameMenu)
-		DrawGameMenu(bmpDest.get());
+		DrawGameMenu(bmpDest);
 		
 	// Options dialog
 	if (DeprecatedGUI::bShowFloatingOptions && options)  {  // Skip the first frame to ignore the click on the Game Settings button
@@ -943,23 +746,11 @@ void CClient::Draw(const SmartPointer<SDL_Surface>& bmpDest)
 
 	// Chatter
 	if(bChat_Typing)  {
-		DrawChatter(bmpDest.get());
+		DrawChatter(bmpDest);
 	}
 
 	// Console
-	Con_Draw(bmpDest.get());
-
-	// Touchscreen on-screen controls (no-op when option is disabled)
-	TouchControls::Render(bmpDest.get());
-
-	// When the touch controls are up but the player is driving them with a
-	// mouse (web build), draw the software cursor so they can see where they're
-	// pointing. InputUsingMouse() flips to false on real touch, so a finger
-	// user never sees a cursor. (No-op off the web build — always false there.)
-	if(TouchControls::IsActive() && InputUsingMouse()) {
-		SetGameCursor(CURSOR_ARROW);
-		DrawCursor(bmpDest.get());
-	}
+	Con_Draw(bmpDest);
 
 	// We currently just set it always to true because it paints on the video surface
 	// and expects that it will always stay there. This is of course wrong for double buffering
@@ -997,27 +788,65 @@ void CClient::DrawChatter(SDL_Surface * bmpDest)
 	}
 }
 
-
-void CClient::DrawViewport_Game(const SmartPointer<SDL_Surface>& bmpDest, CViewport* v) {
-	if(!game.gameMap() || !game.gameMap()->isLoaded()) return;
-
+void CClient::DrawViewport_Game(SDL_Surface* bmpDest, CViewport* v) {
 	// Set the clipping
 	SDL_Rect rect = v->getRect();
-	ScopedSurfaceClip clip(bmpDest.get(), rect);
-
-	// Clear the viewport to black first. The map is only blitted where it actually
-	// exists, so any area outside the map (centered camera at the borders, or a map
-	// smaller than the viewport) would otherwise show flickering stale framebuffer
-	// content. FillSurface respects the clip rect, so this fills just this viewport.
-	FillSurface(bmpDest.get(), Color(0,0,0));
-
-	v->gusRender(bmpDest);
+	ScopedSurfaceClip clip(bmpDest, rect);
+	
+	// Earlier: When game menu is visible (bGameMenu), it covers all this anyway, so we won't bother to draw it.
+	// We draw it anyway now because we could use some nice alpha blending or so
+	if (cMap) {
+		cMap->Draw(bmpDest, v);
+		
+		// The following will be drawn only when playing
+		if (bGameReady || iNetStatus == NET_PLAYING)  {
+			// update the drawing position
+			CWorm *w = cRemoteWorms;
+			for(short i=0;i<MAX_WORMS;i++,w++) {
+				if(w->isUsed() && w->getAlive())
+					w->UpdateDrawPos();
+			}
+			
+			if( tLXOptions->bShadows ) {
+				// Draw the projectile shadows
+				DrawProjectileShadows(bmpDest, v);
+				
+				// Draw the worm shadows
+				w = cRemoteWorms;
+				for(short i=0;i<MAX_WORMS;i++,w++) {
+					if(w->isUsed() && w->getAlive())
+						w->DrawShadow(bmpDest, v);
+				}
+			}
+			
+			// Draw the entities
+			DrawEntities(bmpDest, v, getGameLobby()->features[FT_InfiniteMap], cMap->GetWidth(), cMap->GetHeight());
+			
+			// Draw the projectiles
+			DrawProjectiles(bmpDest, v);
+			
+			// Draw the bonuses
+			DrawBonuses(bmpDest, v);
+			
+			// draw unattached flags and flag spawnpoints
+			cClient->flagInfo()->draw(bmpDest, v);
+			
+			// Draw all the worms in the game
+			ushort i;
+			w = cRemoteWorms;
+			for(i=0;i<MAX_WORMS;i++,w++) {
+				if(w->isUsed())
+					w->Draw(bmpDest, v);
+			}
+		}
+	}
+	
 }
 
 
 ///////////////////
 // Draw a viewport
-void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewport_index)
+void CClient::DrawViewport(SDL_Surface * bmpDest, int viewport_index)
 {	
 	// Check the parameters
 	if (viewport_index >= NUM_VIEWPORTS)
@@ -1026,16 +855,14 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
     CViewport *v = &cViewports[viewport_index];
 	if (!v->getUsed())
 		return;
-	
-	{
-		float sizeFactor = cClient->getGameLobby()[FT_SizeFactor];
-		if(sizeFactor == 0.0f) sizeFactor = 1.0f; // bad value, avoid crashes ...
-		if(sizeFactor < 0.5f) sizeFactor = 0.5f; // Gusanos does not support this. and it's anyway *very* slow, so put this limit here...
-		if(sizeFactor > 5.f) sizeFactor = 5.f; // just put some sane max limit. the code would support much more but it doesn't really make sense
 
+	{
+		float sizeFactor = cClient->getGameLobby()->features[FT_SizeFactor];
 		if(sizeFactor == 1.0f)
 			DrawViewport_Game(bmpDest, v);
-		else {			
+		else {
+			if(sizeFactor == 0.0f) return; // bad value, avoid crashes ...
+			
 			// I have to admit, a bit hacky, but it will work for sure and we can perhaps make it better later on.
 			// I would highly vote for not implementing this for each game object (worms, projectiles, and all others)
 			// seperated. This is too much work and it means much more testing.
@@ -1053,27 +880,27 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 			/* {
 				int oldWorldXCenter = v->GetWorldX() + v->GetWidth() / 2;
 				int oldWorldYCenter = v->GetWorldY() + v->GetHeight() / 2;
-				bool wrapAround = cClient->getGameLobby()[FT_InfiniteMap];
-				if((uint)sizedViewport.GetWidth() >= game.gameMap()->GetWidth()) {
+				bool wrapAround = cClient->getGameLobby()->features[FT_InfiniteMap];
+				if((uint)sizedViewport.GetWidth() >= cMap->GetWidth()) {
 					// Note: We do this viewport clamping also for wrapAround because it
 					// doesn't work correct yet if the map is smaller than the viewport.
-					if(!wrapAround) oldWorldXCenter = game.gameMap()->GetWidth() / 2;
+					if(!wrapAround) oldWorldXCenter = cMap->GetWidth() / 2;
 					// to avoid some drawing problems
-					sizedViewport.SetLeft(sizedViewport.GetWidth() - game.gameMap()->GetWidth());
-					sizedViewport.SetVirtWidth(game.gameMap()->GetWidth() * 2);
+					sizedViewport.SetLeft(sizedViewport.GetWidth() - cMap->GetWidth());
+					sizedViewport.SetVirtWidth(cMap->GetWidth() * 2);
 				}
 				// same for height/y
-				if((uint)sizedViewport.GetHeight() >= game.gameMap()->GetHeight()) {
-					if(!wrapAround) oldWorldYCenter = game.gameMap()->GetHeight() / 2;
-					sizedViewport.SetTop(sizedViewport.GetHeight() - game.gameMap()->GetHeight());
-					sizedViewport.SetVirtHeight(game.gameMap()->GetHeight() * 2);
+				if((uint)sizedViewport.GetHeight() >= cMap->GetHeight()) {
+					if(!wrapAround) oldWorldYCenter = cMap->GetHeight() / 2;
+					sizedViewport.SetTop(sizedViewport.GetHeight() - cMap->GetHeight());
+					sizedViewport.SetVirtHeight(cMap->GetHeight() * 2);
 				}
 				sizedViewport.SetWorldX( oldWorldXCenter - sizedViewport.GetWidth() / 2 );
 				sizedViewport.SetWorldY( oldWorldYCenter - sizedViewport.GetHeight() / 2 );
-				sizedViewport.Clamp(game.gameMap()->GetWidth(), game.gameMap()->GetHeight());
+				sizedViewport.Clamp(cMap->GetWidth(), cMap->GetHeight());
 			} */
 			
-			sizedViewport.Process(cViewports, game.gameMap()->GetWidth(), game.gameMap()->GetHeight(), getGeneralGameType());
+			sizedViewport.Process(cRemoteWorms, cViewports, cMap->GetWidth(), cMap->GetHeight(), getGeneralGameType());
 			
 			// Ok, even more hacky now. But again, would be too annoying to add this at all other places in CClient.
 			static SmartPointer<SDL_Surface> tmpSurf = NULL;
@@ -1085,12 +912,12 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 			
 			// if surface was too big or some other problem while allocating, don't crash
 			if(tmpSurf.get()) {
-				DrawViewport_Game(tmpSurf, &sizedViewport);
+				DrawViewport_Game(tmpSurf.get(), &sizedViewport);
 				// For some special factors, we have optimised (mainly for quality) versions. Otherwise fallback to basic resampler.
 				if(sizeFactor == 2.0f)
-					DrawImageScale2x(bmpDest.get(), tmpSurf.get(), 0, 0, v->GetLeft(), v->GetTop(), surfW-1, surfH-1);
+					DrawImageScale2x(bmpDest, tmpSurf.get(), 0, 0, v->GetLeft(), v->GetTop(), surfW-1, surfH-1);
 				else
-					DrawImageResampledAdv(bmpDest.get(), tmpSurf.get(), 0, 0, v->GetLeft(), v->GetTop(), surfW-1, surfH-1, sizeFactor, sizeFactor);
+					DrawImageResampledAdv(bmpDest, tmpSurf.get(), 0, 0, v->GetLeft(), v->GetTop(), surfW-1, surfH-1, sizeFactor, sizeFactor);
 			}
 		}
 	}
@@ -1102,21 +929,16 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 	// The positions are different for different viewports
 	int *HealthLabelX, *WeaponLabelX, *LivesX, *KillsX, *TeamX, *SpecMsgX;
 	int *HealthLabelY, *WeaponLabelY, *LivesY, *KillsY, *TeamY, *SpecMsgY;
-	int	*LivesW, *KillsW, *TeamW, *SpecMsgW;
+	int	*LivesW, *TeamW; //, *KillsW, *SpecMsgW;
 	DeprecatedGUI::CBar *HealthBar, *WeaponBar;
 
 	// Do we need to draw this?
-	if ( bShouldRepaintInfo || tLX->bVideoModeChanged ) {
+	if ( !( bShouldRepaintInfo || tLX->bVideoModeChanged ) )
+		return;
 
     CWorm *worm = v->getTarget();	
 	
-	// Local HUD position storage for the extra split-screen viewports (players
-	// 3+), which have no fixed interface-settings slot. Laid out relative to the
-	// viewport in the else branch so each extra player gets their own HUD row.
-	int exLivesX, exLivesY, exLivesW, exKillsX, exKillsY, exKillsW;
-	int exTeamX, exTeamY, exTeamW, exSpecMsgX, exSpecMsgY, exSpecMsgW;
-	int exHealthLabelX = 0, exHealthLabelY = 0, exWeaponLabelX = 0, exWeaponLabelY = 0;
-
+	// TODO: allow more viewports
 	if (viewport_index == 0)  {  // Viewport 1
 		HealthLabelX = &tInterfaceSettings.HealthLabel1X;	HealthLabelY = &tInterfaceSettings.HealthLabel1Y;
 		WeaponLabelX = &tInterfaceSettings.WeaponLabel1X;	WeaponLabelY = &tInterfaceSettings.WeaponLabel1Y;
@@ -1127,7 +949,7 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 
 		KillsX = &tInterfaceSettings.Kills1X;
 		KillsY = &tInterfaceSettings.Kills1Y;
-		KillsW = &tInterfaceSettings.Kills1W;
+		//KillsW = &tInterfaceSettings.Kills1W;
 
 		TeamX = &tInterfaceSettings.Team1X;
 		TeamY = &tInterfaceSettings.Team1Y;
@@ -1135,11 +957,11 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 
 		SpecMsgX = &tInterfaceSettings.SpecMsg1X;
 		SpecMsgY = &tInterfaceSettings.SpecMsg1Y;
-		SpecMsgW = &tInterfaceSettings.SpecMsg1W;
+		//SpecMsgW = &tInterfaceSettings.SpecMsg1W;
 
 		HealthBar = cHealthBar1;
 		WeaponBar = cWeaponBar1;
-	} else if (viewport_index == 1) { // Viewport 2
+	} else { // Viewport 2
 		HealthLabelX = &tInterfaceSettings.HealthLabel2X;	HealthLabelY = &tInterfaceSettings.HealthLabel2Y;
 		WeaponLabelX = &tInterfaceSettings.WeaponLabel2X;	WeaponLabelY = &tInterfaceSettings.WeaponLabel2Y;
 
@@ -1149,7 +971,7 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 
 		KillsX = &tInterfaceSettings.Kills2X;
 		KillsY = &tInterfaceSettings.Kills2Y;
-		KillsW = &tInterfaceSettings.Kills2W;
+		//KillsW = &tInterfaceSettings.Kills2W;
 
 		TeamX = &tInterfaceSettings.Team2X;
 		TeamY = &tInterfaceSettings.Team2Y;
@@ -1157,94 +979,47 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 
 		SpecMsgX = &tInterfaceSettings.SpecMsg2X;
 		SpecMsgY = &tInterfaceSettings.SpecMsg2Y;
-		SpecMsgW = &tInterfaceSettings.SpecMsg2W;
+		//SpecMsgW = &tInterfaceSettings.SpecMsg2W;
 
 		HealthBar = cHealthBar2;
 		WeaponBar = cWeaponBar2;
-	} else { // Viewport 3+ (players 3 and 4): HUD row at the top of their own
-		// viewport, mirroring the per-half offsets used for players 1/2 (Lives
-		// at +1, Kills at +80, Team/SpecMsg at +150 from the viewport's left
-		// edge). Positions go into locals so we never clobber the shared
-		// interface-settings slots of players 1/2 across frames.
-		const int bx = v->GetLeft();
-		const int by = v->GetTop();
-		exLivesX   = bx + 1;   exLivesY   = by + 1; exLivesW   = tInterfaceSettings.Lives1W;
-		exKillsX   = bx + 80;  exKillsY   = by + 1; exKillsW   = tInterfaceSettings.Kills1W;
-		exTeamX    = bx + 150; exTeamY    = by + 1; exTeamW    = tInterfaceSettings.Team1W;
-		exSpecMsgX = bx + 150; exSpecMsgY = by + 1; exSpecMsgW = tInterfaceSettings.SpecMsg1W;
-		exHealthLabelX = exWeaponLabelX = bx + 5;
-		exHealthLabelY = exWeaponLabelY = by + 1;
-
-		HealthLabelX = &exHealthLabelX; HealthLabelY = &exHealthLabelY;
-		WeaponLabelX = &exWeaponLabelX; WeaponLabelY = &exWeaponLabelY;
-		LivesX = &exLivesX; LivesY = &exLivesY; LivesW = &exLivesW;
-		KillsX = &exKillsX; KillsY = &exKillsY; KillsW = &exKillsW;
-		TeamX  = &exTeamX;  TeamY  = &exTeamY;  TeamW  = &exTeamW;
-		SpecMsgX = &exSpecMsgX; SpecMsgY = &exSpecMsgY; SpecMsgW = &exSpecMsgW;
-
-		HealthBar = cHealthBar1;
-		WeaponBar = cWeaponBar1;
 	}
 
 	// The following is only drawn for viewports with a worm target
-	if( v->getType() <= VW_CYCLE ) {
+    if( v->getType() > VW_CYCLE )
+        return;
 
-		{
-			// for now, until we have a better/cleaner solution, "fix" up the positions
-			HealthBar = cHealthBar1;
-			WeaponBar = cWeaponBar1;
-			*HealthLabelX = *WeaponLabelX = v->GetLeft() + 5;
-			HealthBar->SetX(*HealthLabelX);
-			WeaponBar->SetX(*HealthLabelX);
-			HealthBar->SetLabelX(*HealthLabelX + HealthBar->GetWidth() + 3);
-			WeaponBar->SetLabelX(*HealthLabelX + HealthBar->GetWidth() + 3);
-			//*HealthLabelY = v->GetTop() + v->GetVirtH() - 5 - tLX->cFont.GetHeight()*2 - HealthBar->GetHeight();
-			//HealthBar->SetLabelY(*HealthLabelY);
-			*WeaponLabelY = v->GetTop() + v->GetVirtH() - 5 - tLX->cFont.GetHeight();
-			//WeaponBar->SetLabelY(*WeaponLabelY);
-			HealthBar->SetY(v->GetTop() + v->GetVirtH() - 5 - tLX->cFont.GetHeight() - HealthBar->GetHeight()*2 - 4);
-			WeaponBar->SetY(v->GetTop() + v->GetVirtH() - 5 - tLX->cFont.GetHeight() - HealthBar->GetHeight());
-			HealthBar->SetLabelY(HealthBar->GetY() - 1);
-			WeaponBar->SetLabelY(WeaponBar->GetY());
-		}
 
-	// Draw the details only when current settings is not displayed, and don't draw for Gus
-	if (!bCurrentSettings && !(game.gameScript() && game.gameScript()->gusEngineUsed()) ) {
+	// Draw the details only when current settings is not displayed
+	// Touchscreen controls cover health bar in the corner of the screen, so do not draw it, it will be drawn near the worm
+	if (!bCurrentSettings && !GetTouchscreenControlsShown())  {
 		// Health
-		//tLX->cFont.Draw(bmpDest, *HealthLabelX, *HealthLabelY, tLX->clHealthLabel, "Health:");
+		tLX->cFont.Draw(bmpDest, *HealthLabelX, *HealthLabelY, tLX->clHealthLabel, "Health:");
 		if (HealthBar)  {
 			HealthBar->SetPosition((int)worm->getHealth());
-			HealthBar->Draw(bmpDest.get());
+			HealthBar->Draw(bmpDest);
 		}
 
 		// Weapon
-		const wpnslot_t *Slot = worm->getCurWeapon();
-		if(Slot->weapon()) {
-			std::string weapon_name = Slot->weapon()->Name;
+		wpnslot_t *Slot = worm->getCurWeapon();
+		if(Slot->Weapon) {
+			std::string weapon_name = Slot->Weapon->Name;
 			stripdot(weapon_name, 100);
-			tLX->cFont.Draw(bmpDest.get(), *WeaponLabelX, *WeaponLabelY, tLX->clWeaponLabel, weapon_name);
+			weapon_name += ":";
+			tLX->cFont.Draw(bmpDest, *WeaponLabelX, *WeaponLabelY, tLX->clWeaponLabel, weapon_name);
 
 			if (WeaponBar)  {
-				if(Slot->Reloading)  {
+				if(Slot->Reloading || !Slot->Enabled)  {
 					WeaponBar->SetForeColor(Color(128,64,64));  // In case it's not loaded properly
 					WeaponBar->SetCurrentForeState(1);  // Loading state
 					WeaponBar->SetCurrentBgState(1);
 				} else {
-					// Either ready to shoot or on cooldown
-					if(Slot->LastFire > 0 && Slot->weapon()->ROF > 0.2) {
-						// Set weapon on cooldown, don't do this for weapons with
-						// low ROF values to stop ammo bar from needlessly blinking
-						WeaponBar->SetForeColor(Color(255,161,66));
-						WeaponBar->SetCurrentForeState(2);  // "Cooldown" state
-						WeaponBar->SetCurrentBgState(2);
-					} else {
-						WeaponBar->SetForeColor(Color(64,64,255));
-						WeaponBar->SetCurrentForeState(0);  // "Shooting" state
-						WeaponBar->SetCurrentBgState(0);
-					}
+					WeaponBar->SetForeColor(Color(64,64,255));
+					WeaponBar->SetCurrentForeState(0);  // "Shooting" state
+					WeaponBar->SetCurrentBgState(0);
 				}
 				WeaponBar->SetPosition((int) ( Slot->Charge * 100.0f ));
-				WeaponBar->Draw( bmpDest.get() );
+				WeaponBar->Draw( bmpDest );
 			}
 		}
 		else { // no weapon
@@ -1253,58 +1028,68 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 				WeaponBar->SetCurrentForeState(0);  // "Shooting" state
 				WeaponBar->SetCurrentBgState(0);
 				WeaponBar->SetPosition((int) ( 0 ));
-				WeaponBar->Draw( bmpDest.get() );
+				WeaponBar->Draw( bmpDest );
 			}			
 		}
 	}
 
 
 	// The following are items on top bar, so don't draw them when we shouldn't
-	if (tLXOptions->bTopBarVisible) {
+	if (!tLXOptions->bTopBarVisible)
+		return;
+
 
 	// Lives
-	DrawBox(bmpDest.get(), *LivesX, *LivesY, *LivesW); // Box first
+	//DrawBox(bmpDest, *LivesX, *LivesY, *LivesW); // Box first
 
 	std::string lives_str;
-	lives_str = "Lives: ";
-	switch (worm->getLives())  {
-	case WRM_OUT:
-		lives_str += "Out";
-		tLX->cFont.Draw(bmpDest.get(), *LivesX+2, *LivesY, tLX->clLivesLabel, lives_str); // Text
-		break;
-	case WRM_UNLIM:
-		tLX->cFont.Draw(bmpDest.get(), *LivesX+2, *LivesY, tLX->clLivesLabel, lives_str); // Text
-		DrawImage(bmpDest.get(), DeprecatedGUI::gfxGame.bmpInfinite, *LivesX + *LivesW - DeprecatedGUI::gfxGame.bmpInfinite.get()->w, *LivesY); // Infinite
-		break;
-	default:
-		if (worm->getLives() >= 0)  {
-			lives_str += itoa( worm->getLives() );
-			tLX->cFont.Draw(bmpDest.get(), *LivesX + 2, *LivesY, tLX->clLivesLabel, lives_str);
+	if (worm->getLives() == WRM_UNLIM && tLXOptions->tGameInfo.iLives < 0 &&
+		getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+		lives_str = "Deaths: "; // Print death count in games with unlimited lives
+		lives_str += itoa( worm->getDeaths() );
+		tLX->cOutlineFont.Draw(bmpDest,*LivesX + 2, *LivesY, tLX->clLivesLabel, lives_str);
+	} else {
+		lives_str = "Lives: ";
+		switch (worm->getLives())  {
+		case WRM_OUT:
+			lives_str += "Out";
+			tLX->cOutlineFont.Draw(bmpDest, *LivesX+2, *LivesY, tLX->clLivesLabel, lives_str); // Text
+			break;
+		case WRM_UNLIM:
+			tLX->cOutlineFont.Draw(bmpDest, *LivesX+2, *LivesY, tLX->clLivesLabel, lives_str); // Text
+			DrawImage(bmpDest, DeprecatedGUI::gfxGame.bmpInfinite, *LivesX + *LivesW - DeprecatedGUI::gfxGame.bmpInfinite.get()->w,
+						*LivesY + tLX->cOutlineFont.GetHeight() / 2 - DeprecatedGUI::gfxGame.bmpInfinite.get()->h / 2); // Infinite
+			break;
+		default:
+			if (worm->getLives() >= 0)  {
+				lives_str += itoa( worm->getLives() );
+				tLX->cOutlineFont.Draw(bmpDest,*LivesX + 2, *LivesY, tLX->clLivesLabel, lives_str);
+			}
 		}
 	}
 
 	
 	// Kills
-	DrawBox( bmpDest.get(), *KillsX, *KillsY, *KillsW );
+	//DrawBox( bmpDest, *KillsX, *KillsY, *KillsW );
 	std::string teamScoreTxt = "Scores: ";
 	if(worm && worm->getTeam() >= 0 && worm->getTeam() < 4)
-		teamScoreTxt += itoa(cClient->getTeamScore(worm->getTeam()));
+		teamScoreTxt += itoa(iTeamScores[worm->getTeam()]);
 	if(getGeneralGameType() == GMT_TEAMS)
-		tLX->cFont.Draw(bmpDest.get(),*KillsX+2, *KillsY, tLX->clKillsLabel, teamScoreTxt);
+		tLX->cOutlineFont.Draw(bmpDest,*KillsX+2, *KillsY, tLX->clKillsLabel, teamScoreTxt);		
 	else
-		tLX->cFont.Draw(bmpDest.get(),*KillsX+2, *KillsY, tLX->clKillsLabel, "Kills: " + itoa( worm->getKills() ));
+		tLX->cOutlineFont.Draw(bmpDest,*KillsX+2, *KillsY, tLX->clKillsLabel, "Kills: " + itoa( worm->getKills() ));
 
 	bool showTeamEnemyScores = getGeneralGameType() == GMT_TEAMS && !cViewports[1].getUsed();
 	if(showTeamEnemyScores) {
 		int x = tInterfaceSettings.Kills2X;
 		int y = tInterfaceSettings.Kills2Y;
-		for(int i = 0; i < MAX_TEAMS; ++i) {
-			if(i != worm->getTeam() && (cClient->getTeamWormCount(i) > 0 || cClient->getTeamScore(i) != 0)) {
-				DrawImage( bmpDest.get(), DeprecatedGUI::gfxGame.bmpTeamColours[i], x, y );
+		for(int i = 0; i < 4; ++i) {
+			if(i != worm->getTeam() && (cClient->getTeamWormCount(i) > 0 || iTeamScores[i] != 0)) {
+				DrawImage( bmpDest, DeprecatedGUI::gfxGame.bmpTeamColours[i], x, y );			
 				x += DeprecatedGUI::gfxGame.bmpTeamColours[i].get()->w + 5;
 				
-				std::string enemyScoreTxt = itoa(cClient->getTeamScore(i));
-				tLX->cFont.Draw(bmpDest.get(), x, y, tLX->clTeamColors[i], enemyScoreTxt);
+				std::string enemyScoreTxt = itoa(iTeamScores[i]);
+				tLX->cOutlineFont.Draw(bmpDest, x, y, tLX->clTeamColors[i], enemyScoreTxt);
 				x += MAX(30, tLX->cFont.GetWidth(enemyScoreTxt) + 5);
 			}
 		}
@@ -1318,8 +1103,8 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 		// Am i IT?
 		if(worm->getTagIT())  {
 			spec_msg = "You are IT!";
-			DrawBox( bmpDest.get(), *SpecMsgX, *SpecMsgY, *SpecMsgW);
-			tLX->cFont.Draw(bmpDest.get(), *SpecMsgX+2, *SpecMsgY, tLX->clSpecMsgLabel, spec_msg);
+			//DrawBox( bmpDest, *SpecMsgX, *SpecMsgY, *SpecMsgW);
+			tLX->cOutlineFont.Draw(bmpDest, *SpecMsgX+2, *SpecMsgY, tLX->clSpecMsgLabel, spec_msg);
 		}
 		break;
 
@@ -1335,27 +1120,23 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 			else
 				spec_msg += itoa(count/1000)+"k";
 
-			DrawBox( bmpDest.get(), *SpecMsgX, *SpecMsgY, *SpecMsgW);
-			tLX->cFont.Draw(bmpDest.get(), *SpecMsgX+2, *SpecMsgY, tLX->clSpecMsgLabel, spec_msg);
+			//DrawBox( bmpDest, *SpecMsgX, *SpecMsgY, *SpecMsgW);
+			tLX->cOutlineFont.Draw(bmpDest, *SpecMsgX+2, *SpecMsgY, tLX->clSpecMsgLabel, spec_msg);
 		}
 		break;
 
 	case GMT_TEAMS:  {
 			if (worm->getTeam() >= 0 && worm->getTeam() < 4)  {
-				int box_h = bmpBoxLeft.get() ? bmpBoxLeft.get()->h : tLX->cFont.GetHeight();
-				DrawBox( bmpDest.get(), *TeamX, *TeamY, *TeamW);
-				tLX->cFont.Draw( bmpDest.get(), *TeamX+2, *TeamY, tLX->clTeamColors[worm->getTeam()], "Team");
-				DrawImage( bmpDest.get(), DeprecatedGUI::gfxGame.bmpTeamColours[worm->getTeam()],
+				int box_h = bmpBoxLeft.get() ? bmpBoxLeft.get()->h : tLX->cOutlineFont.GetHeight();
+				//DrawBox( bmpDest, *TeamX, *TeamY, *TeamW);
+				tLX->cOutlineFont.Draw( bmpDest, *TeamX+2, *TeamY, tLX->clTeamColors[worm->getTeam()], "Team");
+				DrawImage( bmpDest, DeprecatedGUI::gfxGame.bmpTeamColours[worm->getTeam()],
 						   *TeamX + *TeamW - DeprecatedGUI::gfxGame.bmpTeamColours[worm->getTeam()].get()->w - 2,
 						   *TeamY + MAX(1, box_h/2 - DeprecatedGUI::gfxGame.bmpTeamColours[worm->getTeam()].get()->h/2));
 			}
 		}
 	}
 
-	} // top bar visible
-	} // only with worm target
-	} // should repaint
-	
 	// Debug
 	/*CViewport *view = worm->getViewport();
 	int wx = view->GetWorldX();
@@ -1368,50 +1149,6 @@ void CClient::DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewpor
 	y=((int)vPosition.y-wy)*2+t;
 
 	DrawRectFill(bmpDest, x-2,y-2,x+2,y+2,tLX->clWhite);*/
-	
-	// draw messages like "press space for respawn"
-	{
-		CWorm* worm = v->getOrigTarget();
-		if(worm && !worm->getAlive() && worm->getLives() != WRM_OUT) {
-			SDL_Rect rect = v->getRect();
-			ScopedSurfaceClip clip(bmpDest.get(), rect);
-			float x = (float)v->GetLeft();
-			float y = (float)v->GetTop();
-			float w = (float)v->GetVirtW();
-			float h = (float)v->GetVirtH();
-			y += h * 0.8f;
-			h *= 0.2f;
-			h -= 2;
-			x += 2;
-			w -= 4;
-			CWormHumanInputHandler* wInput = dynamic_cast<CWormHumanInputHandler*>(worm->inputHandler());
-			std::string msg;
-			Color col(0,0,0,100);
-			if(!worm->bWeaponsReady && worm->getLocal()) {
-				if(worm->shouldDoOwnWeaponSelection())
-					msg = "Waiting for weapon selection ...";
-				else
-					msg = "Waiting for host worm weapon selection ...";
-			} else if(!worm->bWeaponsReady && !worm->getLocal()) {
-				msg = "Waiting for weapon selection of remote player ...";
-			} else if(game.state == Game::S_Preparing) {
-				msg = "Game not yet started, preparing ...";
-			} else if(!worm->getLocal()) {
-				msg = "Waiting for respawn of remote player ...";
-			} else if(wInput == NULL) {
-				col = Color(70,0,0,100);
-				msg = "Waiting for sync ...";
-			} else if(worm->bCanRespawnNow) {
-				msg = "Press Jump (" + wInput->getInputJump().getEventName() + ") to respawn";
-			}
-			else {
-				col = Color(50,0,0,100);
-				msg = "Waiting for respawn ...";
-			}
-			DrawRectFill(bmpDest.get(), (int)x, (int)y, int(x + w), int(y + h), col);
-			tLX->cFont.DrawCentre(bmpDest.get(), int(x + w*0.5f), int(y + h*0.5f), tLX->clNormalLabel, msg);
-		}
-	}
 }
 
 ///////////////////
@@ -1453,16 +1190,13 @@ void CClient::SimulateHud()
 	//
 
 	// Health bar toggle
-	if (cShowHealth.isDownOnce() && !bChat_Typing && game.state >= Game::S_Preparing)  {
+	if (cShowHealth.isDownOnce() && !bChat_Typing && bGameReady)  {
 		tLXOptions->bShowHealth = !tLXOptions->bShowHealth;
 	}
 
 	// Game Menu
-	if( ( WasKeyboardEventHappening(SDLK_ESCAPE, false)
-		|| DeprecatedGUI::CChatWidget::GlobalEnabled()
-		|| TouchScreenInput::wasActionTapped(1, TouchScreenInput::Action::OpenMenu)
-		) &&
-			!bChat_Typing && !con && game.state >= Game::S_Preparing) {
+	if( ( WasKeyboardEventHappening(SDLK_ESCAPE, false) || DeprecatedGUI::CChatWidget::GlobalEnabled()) && 
+			!bChat_Typing && !con && !DeprecatedGUI::tMenu->bMenuRunning) {
         if( !bViewportMgr )
         {
 			if (!bGameMenu)
@@ -1477,40 +1211,16 @@ void CClient::SimulateHud()
 	// Top bar toggle
 	if (cToggleTopBar.isDownOnce() && !bChat_Typing)  {
 		tLXOptions->bTopBarVisible = !tLXOptions->bTopBarVisible;
-
-		SmartPointer<SDL_Surface> topbar = (game.isLocalGame()) ? DeprecatedGUI::gfxGame.bmpGameLocalTopBar : DeprecatedGUI::gfxGame.bmpGameNetTopBar;
-
-		int toph = topbar.get() ? (topbar.get()->h) : (tLX->cFont.GetHeight() + 3); // Top bound of the viewports
-		int top = toph;
-		if (!tLXOptions->bTopBarVisible)  {
-			toph = -toph;
-			top = 0;
-		}
-		if( game.gameScript() && game.gameScript()->gusEngineUsed() )
-		{
-			top = 0;
-			toph = 0;
-		}
-
-		// TODO: allow more viewports
-		// Setup the viewports
-		cViewports[0].SetTop(top);
-		cViewports[0].SetVirtHeight(cViewports[0].GetVirtH() - toph);
-		if (cViewports[1].getUsed()) {
-			cViewports[1].SetTop(top);
-			cViewports[1].SetVirtHeight(cViewports[1].GetVirtH() - toph);
-		}
-
 		bShouldRepaintInfo = true;
 	}
 
-	if (game.state >= Game::S_Preparing)  {
+	if (bGameReady)  {
 		// Console
 		if(!bChat_Typing && !bGameMenu && !bViewportMgr) {
 			Con_Process(tLX->fDeltaTime);
 			
 			// could be that some command wants to quit
-			if(!tLX || game.state <= Game::S_Lobby)
+			if(!tLX || tLX->bQuitEngine || tLX->bQuitGame)
 				return;
 		}
 
@@ -1525,17 +1235,17 @@ void CClient::SimulateHud()
 			processChatter();
 	}
 	
-	for_each_iterator(CWorm*, w, game.localWorms()) {
+
+	if( iNumWorms > 0 && cLocalWorms[0] && cLocalWorms[0]->getType() != PRF_COMPUTER) {
 		AFK_TYPE curState = AFK_BACK_ONLINE;
-		if(w->get()->getType() == PRF_HUMAN && tLXOptions->bSetAFK) {
-			if(game.state >= Game::S_Preparing && !w->get()->bWeaponsReady) curState = AFK_SELECTING_WPNS;
-			if(bChat_Typing) curState = AFK_TYPING_CHAT;
-			if(bGameMenu && !game.gameOver) curState = AFK_MENU;
-			if(Con_IsVisible()) curState = AFK_CONSOLE;
-			if(!ApplicationHasFocus()) curState = AFK_AWAY;
-		}
-		if( curState != w->get()->getAFK() ) {
-			cNetEngine->SendAFK( w->get()->getID(), curState );
+		if(iNetStatus == NET_CONNECTED && bGameRunning) curState = AFK_SELECTING_WPNS;
+		if(bChat_Typing) curState = AFK_TYPING_CHAT;
+		if(bGameMenu) curState = AFK_MENU;
+		if(Con_IsVisible()) curState = AFK_CONSOLE;
+		if(!ApplicationHasFocus()) curState = AFK_AWAY;
+		if (GetTouchscreenTextInputShown()) curState = AFK_TYPING_CHAT;
+		if( curState != cLocalWorms[0]->getAFK() ) {
+			cNetEngine->SendAFK( cLocalWorms[0]->getID(), curState );
 		}
 	}
 }
@@ -1543,18 +1253,18 @@ void CClient::SimulateHud()
 
 /////////////
 // Adds default columns to a scoreboard listview, used internally by InitializeGameMenu
-INLINE void AddColumns(DeprecatedGUI::CListview *lv)
+inline void AddColumns(DeprecatedGUI::CListview *lv)
 {
 	lv->AddColumn("", 15); // Command button
 	lv->AddColumn("", 25); // Skin
-	lv->AddColumn("", (game.isServer() && !game.isLocalGame()) ? 160 - 35 : 160); // Player name
+	lv->AddColumn("", tLX->iGameType == GME_HOST ? 160 - 35 : 160); // Player name
 	lv->AddColumn("", 30); // Lives
-	if (cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->mode == GameMode(GM_DEMOLITIONS))
+	if (cClient->getGameLobby()->gameMode == GameMode(GM_DEMOLITIONS))
 		lv->AddColumn("", 40); // Dirt count
 	else
 		lv->AddColumn("", 30);  // Kills
 	lv->AddColumn("", 35);  // Damage
-	if ((game.isServer() && !game.isLocalGame()))
+	if (tLX->iGameType == GME_HOST)
 		lv->AddColumn("", 35);  // Ping
 }
 
@@ -1582,25 +1292,27 @@ void CClient::InitializeGameMenu()
 	bGameMenu = true;
 	ProcessEvents();  // Prevents immediate closing of the scoreboard
 	SetGameCursor(CURSOR_HAND);
+	SetTouchscreenControlsShown(false);
 
 	// Shutdown any previous instances
 	cGameMenuLayout.Shutdown();
+	bUpdateScore = true;
 
 	cGameMenuLayout.Add(new DeprecatedGUI::CButton(DeprecatedGUI::BUT_GAMESETTINGS, DeprecatedGUI::tMenu->bmpButtons), gm_Options, 190, 360, 80, 20);
-	cGameMenuLayout.getWidget(gm_Options)->setEnabled(!game.gameOver); // Hide on game over
+	cGameMenuLayout.getWidget(gm_Options)->setEnabled(!bGameOver); // Hide on game over
 
 	cGameMenuLayout.Add(new DeprecatedGUI::CButton(DeprecatedGUI::BUT_CHAT, DeprecatedGUI::tMenu->bmpButtons), gm_Chat, 400, 360, 40, 20);
-	cGameMenuLayout.getWidget(gm_Chat)->setEnabled(!game.gameOver); // Hide on game over
+	cGameMenuLayout.getWidget(gm_Chat)->setEnabled(!bGameOver); // Hide on game over
 
-	if (game.isLocalGame())  {
-		if (game.gameOver)
+	if (tLX->iGameType == GME_LOCAL)  {
+		if (bGameOver)
 			cGameMenuLayout.Add(new DeprecatedGUI::CButton(DeprecatedGUI::BUT_OK, bmpMenuButtons), gm_Ok, 310, 360, 30, 20);
 		else  {
 			cGameMenuLayout.Add(new DeprecatedGUI::CButton(DeprecatedGUI::BUT_QUITGAME, bmpMenuButtons), gm_QuitGame, 25, 360, 100, 20);
 			cGameMenuLayout.Add(new DeprecatedGUI::CButton(DeprecatedGUI::BUT_RESUME, bmpMenuButtons), gm_Resume, 540, 360, 80, 20);
 		}
 	} else {  // Remote playing
-		if (game.gameOver)  {
+		if (bGameOver)  {
 			std::string ReturningTo = "Returning to Lobby in ";
 			int ReturningToWidth = tLX->cFont.GetWidth(ReturningTo);
 			cGameMenuLayout.Add(new DeprecatedGUI::CButton(DeprecatedGUI::BUT_LEAVE, bmpMenuButtons), gm_Leave, 25, 360, 80, 20);
@@ -1613,19 +1325,18 @@ void CClient::InitializeGameMenu()
 	}
 
 	cGameMenuLayout.Add(new DeprecatedGUI::CLabel("", tLX->clNormalLabel), gm_TopMessage, 440, 5, 0, 0);
-	if (game.gameOver)  {
-		if (getGameLobby()[FT_GameMode].as<GameModeInfo>()->generalGameType == GMT_TEAMS)  {
+	if (bGameOver)  {
+		if (tGameInfo.iGeneralGameType == GMT_TEAMS)  {
 			static const std::string teamnames[] = {"Blue team", "Red team", "Green team", "Yellow team"};
-			assert(sizeof(teamnames)/sizeof(teamnames[0]) == MAX_TEAMS);
 			std::string teamName = "noone";
-			if(game.iMatchWinnerTeam >= 0 && game.iMatchWinnerTeam < MAX_TEAMS)
-				teamName = teamnames[game.iMatchWinnerTeam];
-			else if(game.iMatchWinnerTeam >= MAX_TEAMS)
-				teamName = "team " + itoa(game.iMatchWinnerTeam);
+			if(iMatchWinnerTeam >= 0 && iMatchWinnerTeam < 4)
+				teamName = teamnames[iMatchWinnerTeam];
+			else if(iMatchWinnerTeam >= 4)
+				teamName = "team " + itoa(iMatchWinnerTeam);
 			
 			cGameMenuLayout.Add(new DeprecatedGUI::CLabel(teamName, tLX->clNormalLabel), gm_Winner, 515, 5, 0, 0);
-			if(game.iMatchWinnerTeam >= 0 && game.iMatchWinnerTeam < MAX_TEAMS) {
-				SmartPointer<SDL_Surface> pic = DeprecatedGUI::gfxGame.bmpTeamColours[game.iMatchWinnerTeam];
+			if(iMatchWinnerTeam >= 0 && iMatchWinnerTeam < 4) {
+				SmartPointer<SDL_Surface> pic = DeprecatedGUI::gfxGame.bmpTeamColours[iMatchWinnerTeam];
 				if (pic.get()) {
 					cGameMenuLayout.Add(new DeprecatedGUI::CImage(DynDrawFromSurface(pic)), gm_TopSkin, 490, 5, pic.get()->w, pic.get()->h);
 					cGameMenuLayout.getWidget(gm_TopSkin)->setKeyboardNavigationOrder(1);
@@ -1633,19 +1344,18 @@ void CClient::InitializeGameMenu()
 			}
 		} else {
 			std::string winnerName = "noone";
-			if(game.iMatchWinner >= 0 && game.iMatchWinner < MAX_WORMS) {
-				if(CWorm* w = game.wormById(game.iMatchWinner, false))
-					winnerName = w->getName();
+			if(iMatchWinner >= 0 && iMatchWinner < MAX_WORMS) {
+				if(cRemoteWorms[iMatchWinner].isUsed())
+					winnerName = cRemoteWorms[iMatchWinner].getName();
 				else
 					winnerName = "unknown worm";
 			}
-			else if(game.iMatchWinner >= MAX_WORMS)
+			else if(iMatchWinner >= MAX_WORMS)
 				winnerName = "invalid winner";
 			
 			cGameMenuLayout.Add(new DeprecatedGUI::CLabel(winnerName, tLX->clNormalLabel), gm_Winner, 515, 5, 0, 0);
-			if(game.iMatchWinner >= 0 && game.iMatchWinner < MAX_WORMS) {
-				CWorm* w = game.wormById(game.iMatchWinner, false);
-				SmartPointer<DynDrawIntf> pic = w ? w->getPicimg() : NULL;
+			if(iMatchWinner >= 0 && iMatchWinner < MAX_WORMS) {
+				SmartPointer<DynDrawIntf> pic = cRemoteWorms[iMatchWinner].getPicimg();
 				if (pic.get()) {
 					cGameMenuLayout.Add(new DeprecatedGUI::CImage(pic), gm_TopSkin, 490, 5, WORM_SKIN_WIDTH, WORM_SKIN_HEIGHT);
 					cGameMenuLayout.getWidget(gm_TopSkin)->setKeyboardNavigationOrder(1);
@@ -1675,12 +1385,6 @@ void CClient::InitializeGameMenu()
 
 	AddColumns(Left);
 	AddColumns(Right);
-
-	// The game menu is authored for a 640-wide canvas. On a wider local game
-	// it would sit against the left edge, so shift the whole layout to center
-	// it (DrawGameMenu offsets its background bitmap by the same amount). The
-	// offset is 0 for network games, which are already presented centered.
-	cGameMenuLayout.moveWidgets(VideoPostProcessor::get()->popupCenterOffsetX(), 0);
 }
 
 
@@ -1693,35 +1397,33 @@ void CClient::DrawGameMenu(SDL_Surface * bmpDest)
 		return;
 	}
 	
-	// Background. Offset to match the centered layout (see InitializeGameMenu).
-	const int popupOff = VideoPostProcessor::get()->popupCenterOffsetX();
-	if (game.gameOver)  {
-		DrawImage(bmpDest, DeprecatedGUI::gfxGame.bmpGameover, popupOff, 0);
+	// Background
+	if (bGameOver)  {
+		DrawImage(bmpDest, DeprecatedGUI::gfxGame.bmpGameover, 0, 0);
 	} else {
-		DrawImage(bmpDest, DeprecatedGUI::gfxGame.bmpScoreboard, popupOff, 0);
+		DrawImage(bmpDest, DeprecatedGUI::gfxGame.bmpScoreboard, 0, 0);
 	}
 
 	if (GetMouse()->Y >= DeprecatedGUI::gfxGame.bmpScoreboard.get()->h - GetMaxCursorHeight())
 		bShouldRepaintInfo = true;
 
 	// Update the coutdown
-	if (game.gameOver)  {
-		int sec = 5 + GAMEOVER_WAIT - (int)game.gameOverTime().seconds();
+	if (bGameOver)  {
+		int sec = 5 + GAMEOVER_WAIT - (int)(tLX->currentTime - fGameOverTime).seconds();
 		sec = MAX(0, sec); // Safety
 		cGameMenuLayout.SendMessage(gm_Coutdown, DeprecatedGUI::LBS_SETTEXT, itoa(sec), 0);
 	}
 
 	// Update the top message (winner/dirt count)
-	if (getGameLobby()[FT_GameMode].as<GameModeInfo>()->mode == GameMode(GM_DEMOLITIONS))  {
+	if (tGameInfo.gameMode == GameMode(GM_DEMOLITIONS))  {
 		// Get the dirt count
-		int dirtcount = 0;
-		for_each_iterator(CWorm*, w, game.worms())
-			dirtcount += w->get()->getDirtCount();
+		int dirtcount = 0, i = 0;
+		for (CWorm *w = cRemoteWorms; i < MAX_WORMS; i++, w++)  { if (w->isUsed()) dirtcount += w->getDirtCount(); }
 
 		cGameMenuLayout.SendMessage(gm_TopMessage, DeprecatedGUI::LBS_SETTEXT, "Total: " + itoa(dirtcount), 0);
 	}
 
-	if (game.gameOver)  {
+	if (bGameOver)  {
 		cGameMenuLayout.SendMessage(gm_TopMessage, DeprecatedGUI::LBS_SETTEXT, "Winner:", 0);
 	}
 
@@ -1761,16 +1463,28 @@ void CClient::DrawGameMenu(SDL_Surface * bmpDest)
 		case gm_Leave:
 		case gm_QuitGame:
 			if (ev->iEventMsg == DeprecatedGUI::BTN_CLICKED)  {
+
 				// If this is a host, we go back to the lobby
 				// The host can only quit the game via the lobby
-				if(game.isServer()) {
-					if(game.isLocalGame())
-						GotoLocalMenu();
-					else
-						game.gotoLobby("Client gamemenu -> quitgame");
-				}
-				else
+				switch (tLX->iGameType)  {
+				case GME_HOST:
+					cServer->gotoLobby(true, "Client gamemenu -> quitgame");
+					break;
+
+				case GME_JOIN:
 					GotoNetMenu();
+					break;
+
+				case GME_LOCAL:
+					GotoLocalMenu();
+					break;
+
+				// Should not happen
+				default:
+					warnings << "Client gamemenu -> quitgame: invalid gamestate" << endl;
+					QuittoMenu();
+				}
+
 			}
 			break;
 
@@ -1778,6 +1492,7 @@ void CClient::DrawGameMenu(SDL_Surface * bmpDest)
 		case gm_Resume:
 			if (ev->iEventMsg == DeprecatedGUI::BTN_CLICKED)  {
 				bGameMenu = false;
+				bRepaintChatbox = true;
 				bShouldRepaintInfo = true;
 				SetGameCursor(CURSOR_NONE);
 			}
@@ -1799,17 +1514,17 @@ void CClient::DrawGameMenu(SDL_Surface * bmpDest)
 
 		case gm_LeftList:
 		case gm_RightList:
-			if (ev->iEventMsg == DeprecatedGUI::LV_WIDGETEVENT)  {
-				ev = ((DeprecatedGUI::CListview *)ev->cWidget)->getWidgetEvent();
+			if (ev->iEventMsg == DeprecatedGUI::LV_WIDGETEVENT) {
+				DeprecatedGUI::gui_event_t * wev = ((DeprecatedGUI::CListview *)ev->cWidget)->getWidgetEvent();
 
 				// Do not display the host menu when not hosting
-				if (game.isClient())
+				if (tLX->iGameType == GME_JOIN)
 					break;
 
 				// Click on the command button
-				if (ev->cWidget->getType() == DeprecatedGUI::wid_Button && ev->iEventMsg == DeprecatedGUI::BTN_CLICKED)  {
-					iSelectedPlayer = ev->cWidget->getID();
-					DeprecatedGUI::Menu_HostActionsPopupMenuInitialize(cGameMenuLayout, gm_PopupMenu, gm_PopupPlayerInfo, iSelectedPlayer );
+				if (wev->cWidget->getType() == DeprecatedGUI::wid_Button && wev->iEventMsg == DeprecatedGUI::BTN_CLICKED) {
+					iSelectedPlayer = wev->cWidget->getID();
+					DeprecatedGUI::Menu_HostActionsPopupMenuInitialize(cGameMenuLayout, gm_PopupMenu, gm_PopupPlayerInfo, iSelectedPlayer);
 				}
 			}
 		break;
@@ -1837,12 +1552,12 @@ void CClient::DrawGameMenu(SDL_Surface * bmpDest)
 	// TODO: why is processing events in a draw-function? move it out here
 	// Process the keyboard
 	if (!bChat_Typing && !DeprecatedGUI::bShowFloatingOptions)  {
-
 		if (WasKeyboardEventHappening(SDLK_ESCAPE,false))  {
-			if (game.isLocalGame() && game.gameOver)  {
+			if (tLX->iGameType == GME_LOCAL && bGameOver)  {
 				GotoLocalMenu();
-			} else if (!game.gameOver)  {
+			} else if (!bGameOver)  {
 				bGameMenu = false;
+				bRepaintChatbox = true;
 				bShouldRepaintInfo = true;
 				SetGameCursor(CURSOR_NONE);
 			}
@@ -1850,65 +1565,17 @@ void CClient::DrawGameMenu(SDL_Surface * bmpDest)
 	}
 }
 
-
-struct ScoreCompare {
-	bool operator()(int i, int j) const {
-		CWorm *w1 = game.wormById(i), *w2 = game.wormById(j);
-		if(cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->mode) return cClient->getGameLobby()[FT_GameMode].as<GameModeInfo>()->mode->CompareWormsScore(w1, w2) > 0;
-		return GameMode(GM_DEATHMATCH)->CompareWormsScore(w1, w2) > 0;
-	}
-};
-
 ///////////////////
 // Update the player list in game menu
-// see also CClient::UpdateIngameScore
 void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListview *Right)
 {
-	// Clear the team scores
-	std::vector<int> iTeamList(MAX_TEAMS);
-	for(short i=0;i<MAX_TEAMS;i++) {
-		iTeamList[i]=i;
-		if(getServerVersion() < OLXBetaVersion(0,58,1))
-			game.writeTeamScore(i) = 0;
-	}
+	// No need to update
+	if (!bUpdateScore)
+		return;
 
-	// Add the worms to the list
-	std::vector<int> iScoreboard;
-	for_each_iterator(CWorm*, w_, game.worms()) {
-		CWorm* w = w_->get();
+	short i, n;
 
-		iScoreboard.push_back(w->getID());
-
-		// in other cases, we got the scores from the server
-		if(getServerVersion() < OLXBetaVersion(0,58,1)) {
-			// Add to the team score
-			if(getGeneralGameType() == GMT_TEAMS) {
-				int team = w->getTeam();
-				if (team < 0 || team >= MAX_TEAMS)  {  // prevents crashing sometimes
-					w->setTeam(0);
-					team = 0;
-				}
-				// Make the score at least zero to say we have
-				game.writeTeamScore(team) = MAX(0,game.writeTeamScore(team));
-
-				if(w->getLives() != WRM_OUT && w->getLives() != WRM_UNLIM)
-					game.writeTeamScore(team) += w->getLives();
-			}
-		}
-	}
-
-
-	// Sort the team lists
-	if(getGeneralGameType() == GMT_TEAMS) {
-		for(short i=0;i<MAX_TEAMS;i++) {
-			for(short j=0;j<MAX_TEAMS-i-1;j++) {
-				if(getTeamScore(iTeamList[j]) < getTeamScore(iTeamList[j+1]))
-					std::swap(iTeamList[j], iTeamList[j+1]);
-			}
-		}
-	}
-
-	std::sort(iScoreboard.begin(), iScoreboard.end(), ScoreCompare());
+	bUpdateScore = false;
 
 	// Clear any previous info
 	Left->Clear();
@@ -1916,7 +1583,7 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 
 	// Teams
 	static const std::string teamnames[] = {"Blue", "Red", "Green", "Yellow"};
-	assert(sizeof(teamnames)/sizeof(teamnames[0]) == MAX_TEAMS);
+	static const std::string VIPteamnames[] = {"VIP Defenders", "VIP Attackers", "VIPs"};
 
 	// Normal scoreboard
 	switch(getGeneralGameType()) {
@@ -1924,22 +1591,20 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 
 		// Fill the left listview
 		DeprecatedGUI::CListview *lv = Left;
-		for(size_t i=0; i < iScoreboard.size(); i++) {
+		for(i=0; i < iScorePlayers; i++) {
 			// Left listview overflowed, fill the right one
 			if (i >= 14)	// With 16 players we'll have ugly scrollbar in left menu, it will be in right one anyway with 29+ players
 				lv = Right;
 
-			CWorm *p = game.wormById(iScoreboard[i], false);
-			if(!p)
-				return;
+			CWorm *p = &cRemoteWorms[iScoreboard[i]];
 			DeprecatedGUI::CButton *cmd_button = new DeprecatedGUI::CButton(0, DeprecatedGUI::gfxGUI.bmpCommandBtn);
 			cmd_button->setRedrawMenu(false);
 			cmd_button->setType(DeprecatedGUI::BUT_TWOSTATES);
 			cmd_button->setID(p->getID());
-			cmd_button->setEnabled(game.isServer());  // Disable for client games
+			cmd_button->setEnabled(tLX->iGameType != GME_JOIN);  // Disable for client games
 
 			// Add the player
-			lv->AddItem(p->getName(), (int)i, tLX->clNormalLabel);
+			lv->AddItem(p->getName(), i, tLX->clNormalLabel);
 
 			// Add the command button
 			lv->AddSubitem(DeprecatedGUI::LVS_WIDGET, "", (DynDrawIntf*)NULL, cmd_button);
@@ -1950,17 +1615,22 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 			// Name
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->getName(), (DynDrawIntf*)NULL, NULL);
 
-			// Lives
-			switch (p->getLives())  {
-			case WRM_UNLIM:
-				lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
-				break;
-			case WRM_OUT:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
-				break;
-			default:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
-				break;
+			if (p->getLives() == WRM_UNLIM && tLXOptions->tGameInfo.iLives < 0 &&
+				getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getDeaths()), (DynDrawIntf*)NULL, NULL);
+			} else {
+				// Lives
+				switch (p->getLives())  {
+				case WRM_UNLIM:
+					lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
+					break;
+				case WRM_OUT:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
+					break;
+				default:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
+					break;
+				}
 			}
 
 			// Kills
@@ -1970,7 +1640,7 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(Round(p->getDamage())), (DynDrawIntf*)NULL, NULL);
 
 			// Ping
-			if ((game.isServer() && !game.isLocalGame()))  {
+			if (tLX->iGameType == GME_HOST)  {
 				CServerConnection *remoteClient = cServer->getClient(p->getID());
 				if (remoteClient && p->getID())
 					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(remoteClient->getPing()), (DynDrawIntf*)NULL, NULL);
@@ -1985,21 +1655,20 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 
 		// Draw the players
 		DeprecatedGUI::CListview *lv = Left;
-		for(size_t i = 0; i < iScoreboard.size(); i++) {
+		for(i = 0; i < iScorePlayers; i++) {
 			// If the left listview overflowed, use the right one
 			if (i >= 14)	// With 16 players we'll have ugly scrollbar in left menu, it will be in right one anyway with 29+ players
 				lv = Right;
 
-			CWorm *p = game.wormById(iScoreboard[i], false);
-			if(!p) return;
+			CWorm *p = &cRemoteWorms[iScoreboard[i]];
 			DeprecatedGUI::CButton *cmd_button = new DeprecatedGUI::CButton(0, DeprecatedGUI::gfxGUI.bmpCommandBtn);
 			cmd_button->setRedrawMenu(false);
 			cmd_button->setType(DeprecatedGUI::BUT_TWOSTATES);
 			cmd_button->setID(p->getID());
-			cmd_button->setEnabled(game.isServer());  // Disable for client games
+			cmd_button->setEnabled(tLX->iGameType != GME_JOIN);  // Disable for client games
 
 			// Add the player
-			lv->AddItem(p->getName(), (int)i, tLX->clNormalLabel);
+			lv->AddItem(p->getName(), i, tLX->clNormalLabel);
 
 			// Add the command button
 			lv->AddSubitem(DeprecatedGUI::LVS_WIDGET, "", (DynDrawIntf*)NULL, cmd_button);
@@ -2010,17 +1679,22 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 			// Name
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->getName(), (DynDrawIntf*)NULL, NULL);
 
-			// Lives
-			switch (p->getLives())  {
-			case WRM_UNLIM:
-				lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
-				break;
-			case WRM_OUT:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
-				break;
-			default:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
-				break;
+			if (p->getLives() == WRM_UNLIM && tLXOptions->tGameInfo.iLives < 0 &&
+				getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getDeaths()), (DynDrawIntf*)NULL, NULL);
+			} else {
+				// Lives
+				switch (p->getLives())  {
+				case WRM_UNLIM:
+					lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
+					break;
+				case WRM_OUT:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
+					break;
+				default:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
+					break;
+				}
 			}
 
 			// Dirt count
@@ -2035,23 +1709,22 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 
 		// Draw the players
 		DeprecatedGUI::CListview *lv = Left;
-		for(size_t i = 0; i < iScoreboard.size(); i++) {
+		for(i = 0; i < iScorePlayers; i++) {
 			// If the left listview overflowed, use the right one
 			if (i >= 14)	// With 16 players we'll have ugly scrollbar in left menu, it will be in right one anyway with 29+ players
 				lv = Right;
 
-			CWorm *p = game.wormById(iScoreboard[i], false);
-			if(!p) return;
+			CWorm *p = &cRemoteWorms[iScoreboard[i]];
 			DeprecatedGUI::CButton *cmd_button = new DeprecatedGUI::CButton(0, DeprecatedGUI::gfxGUI.bmpCommandBtn);
 			cmd_button->setRedrawMenu(false);
 			cmd_button->setType(DeprecatedGUI::BUT_TWOSTATES);
 			cmd_button->setID(p->getID());
-			cmd_button->setEnabled(game.isServer());  // Disable for client games
+			cmd_button->setEnabled(tLX->iGameType != GME_JOIN);  // Disable for client games
 
 			if(p->getTagIT())
-				lv->AddItem(p->getName(), (int)i, tLX->clTagHighlight);
+				lv->AddItem(p->getName(), i, tLX->clTagHighlight);
 			else
-				lv->AddItem(p->getName(), (int)i, tLX->clNormalLabel);
+				lv->AddItem(p->getName(), i, tLX->clNormalLabel);
 
 			// Add the command button
 			lv->AddSubitem(DeprecatedGUI::LVS_WIDGET, "", (DynDrawIntf*)NULL, cmd_button);
@@ -2062,24 +1735,29 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 			// Name
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->getName(), (DynDrawIntf*)NULL, NULL);
 
-			// Lives
-			switch (p->getLives())  {
-			case WRM_UNLIM:
-				lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
-				break;
-			case WRM_OUT:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
-				break;
-			default:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
-				break;
+			if (p->getLives() == WRM_UNLIM && tLXOptions->tGameInfo.iLives < 0 &&
+				getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getDeaths()), (DynDrawIntf*)NULL, NULL);
+			} else {
+				// Lives
+				switch (p->getLives())  {
+				case WRM_UNLIM:
+					lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
+					break;
+				case WRM_OUT:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
+					break;
+				default:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
+					break;
+				}
 			}
 
 			// Kills
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getKills()), (DynDrawIntf*)NULL, NULL);
 
 			// Ping
-			if ((game.isServer() && !game.isLocalGame()))  {
+			if (tLX->iGameType == GME_HOST)  {
 				CServerConnection *remoteClient = cServer->getClient(p->getID());
 				if (remoteClient && p->getID())
 					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(remoteClient->getPing()), (DynDrawIntf*)NULL, NULL);
@@ -2101,7 +1779,7 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 		// Go through each team
 		DeprecatedGUI::CListview *lv = Left;
 
-		for(short n = 0; n < MAX_TEAMS; n++) {
+		for(n = 0; n < 4; n++) {
 			int team = iTeamList[n];
 			int score = getTeamScore(team);
 
@@ -2123,17 +1801,17 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, teamnames[team] + " (" + itoa(score) + ")", (DynDrawIntf*)NULL, NULL);  // Name and score
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "L", (DynDrawIntf*)NULL, NULL);  // Lives label
 			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "K", (DynDrawIntf*)NULL, NULL);  // Kills label
-			if ((game.isServer() && !game.isLocalGame()))  // Ping label
+			if (tLX->iGameType == GME_HOST)  // Ping label
 				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "P", (DynDrawIntf*)NULL, NULL);
 
 			// Draw the players
-			for(size_t i = 0; i < iScoreboard.size(); i++) {
+			CWorm *p;
+			for(i = 0; i < iScorePlayers; i++) {
 				// If the left listview overflowed, fill the right one
 				if (lv->getItemCount() >= 16)
 					lv = Right;
 
-				CWorm* p = game.wormById(iScoreboard[i], false);
-				if(!p) return;
+				p = &cRemoteWorms[iScoreboard[i]];
 
 				if(p->getTeam() != team)
 					continue;
@@ -2142,7 +1820,7 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 				cmd_button->setRedrawMenu(false);
 				cmd_button->setType(DeprecatedGUI::BUT_TWOSTATES);
 				cmd_button->setID(p->getID());
-				cmd_button->setEnabled(game.isServer());  // Disable for client games
+				cmd_button->setEnabled(tLX->iGameType != GME_JOIN);  // Disable for client games
 
 				lv->AddItem(p->getName(), lv->getItemCount(), tLX->clNormalLabel);
 
@@ -2155,17 +1833,22 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 				// Name
 				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->getName(), (DynDrawIntf*)NULL, NULL);
 
-				// Lives
-				switch (p->getLives())  {
-				case WRM_UNLIM:
-					lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
-					break;
-				case WRM_OUT:
-					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
-					break;
-				default:
-					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
-					break;
+				if (p->getLives() == WRM_UNLIM && tLXOptions->tGameInfo.iLives < 0 &&
+					getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getDeaths()), (DynDrawIntf*)NULL, NULL);
+				} else {
+					// Lives
+					switch (p->getLives())  {
+					case WRM_UNLIM:
+						lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
+						break;
+					case WRM_OUT:
+						lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
+						break;
+					default:
+						lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
+						break;
+					}
 				}
 
 				// Kills
@@ -2175,7 +1858,7 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(Round(p->getDamage())), (DynDrawIntf*)NULL, NULL);
 
 				// Ping
-				if ((game.isServer() && !game.isLocalGame()))  {
+				if (tLX->iGameType == GME_HOST)  {
 					CServerConnection *remoteClient = cServer->getClient(p->getID());
 					if (remoteClient && p->getID())
 						lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(remoteClient->getPing()), (DynDrawIntf*)NULL, NULL);
@@ -2191,7 +1874,7 @@ void CClient::UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListvi
 // Draw the bonuses
 void CClient::DrawBonuses(SDL_Surface * bmpDest, CViewport *v)
 {
-	if(!getGameLobby()[FT_Bonuses])
+	if(!tGameInfo.bBonusesOn)
 		return;
 
 	CBonus *b = cBonuses;
@@ -2200,7 +1883,7 @@ void CClient::DrawBonuses(SDL_Surface * bmpDest, CViewport *v)
 		if(!b->getUsed())
 			continue;
 
-		b->Draw(bmpDest, v, getGameLobby()[FT_ShowBonusName]);
+		b->Draw(bmpDest, v, tGameInfo.bShowBonusName);
 	}
 }
 
@@ -2228,8 +1911,6 @@ void CClient::DrawLocalChat(SDL_Surface * bmpDest)
 		return;
 
 	int y = tInterfaceSettings.LocalChatY;
-	if(game.hudPermanentText != "") y += tLX->cFont.GetHeight(game.hudPermanentText) + tLX->cFont.GetHeight();
-	
 	lines_riterator it = cChatbox.RBegin();
 	if(it != cChatbox.REnd()) it++;
 
@@ -2254,17 +1935,15 @@ void CClient::DrawLocalChat(SDL_Surface * bmpDest)
 // Draw the remote chat
 void CClient::DrawRemoteChat(SDL_Surface * bmpDest)
 {
-	DeprecatedGUI::CBrowser *lv = cChatList;
-	if (!lv)
+	if (!cChatList)
 		return;
 
-	int y = tInterfaceSettings.LocalChatY;
-	if(game.hudPermanentText != "") y += tLX->cFont.GetHeight(game.hudPermanentText) + tLX->cFont.GetHeight();
-
-	lv->Setup(lv->getID(), tInterfaceSettings.LocalChatX, y, lv->getWidth(), lv->getHeight());
+	DeprecatedGUI::CBrowser *lv = cChatList;
 
 	// Get any new lines
 	line_t l;
+	//int id = (lv->getLastItem() && lv->getItems()) ? lv->getLastItem()->iIndex + 1 : 0;
+
 	while(cChatbox.GetNewLine(l)) {
 		lv->AddChatBoxLine(l.strLine, l.iColour, l.iTextType);
 	}
@@ -2279,39 +1958,27 @@ void CClient::DrawRemoteChat(SDL_Surface * bmpDest)
 	*/
 	mouse_t *Mouse = GetMouse();
 
-	// Events
-	if (lv->InBox(Mouse->X, Mouse->Y))  {
-		SetGameCursor(CURSOR_ARROW);
-		lv->showScrollbar(true);
-		lv->setFocused(true);
+	// Small hack: count the mouse height so we avoid "freezing"
+	// the mouse image when the user moves cursor away
+	int inbox = MouseInRect(lv->getX(),lv->getY() - GetCursorWidth(CURSOR_ARROW), lv->getWidth() + GetCursorWidth(CURSOR_ARROW), lv->getHeight()+GetCursorHeight(CURSOR_ARROW)) ||
+				MouseInRect(tInterfaceSettings.ChatboxScrollbarX, tInterfaceSettings.ChatboxScrollbarY, 14 + GetCursorWidth(CURSOR_ARROW), tInterfaceSettings.ChatboxScrollbarH);
+	bool painted = false;
 
-		lv->MouseOver(Mouse);
-
-		if (Mouse->WheelScrollDown)
-			lv->MouseWheelDown(Mouse);
-		else if (Mouse->WheelScrollUp)
-			lv->MouseWheelUp(Mouse);
-
-		if (Mouse->Down)
-			lv->MouseDown(Mouse,true);
-		else if (Mouse->Up)
-			lv->MouseUp(Mouse,false);
-
-	} else {
-		SetGameCursor(CURSOR_NONE);
-		lv->showScrollbar(false);
-		lv->setFocused(false);
-	}
+	// Repainting when new messages/scrolling,
+	if (lv->NeedsRepaint() || tLX->bVideoModeChanged || bGameMenu || 
+			(inbox && (Mouse->deltaX || Mouse->deltaY)))
+		bRepaintChatbox = true;
 
 	// TODO: ... (Issue about double buffering; see comment about it in CClient::Draw)
-	/*
-	if( !(game.gameScript() && game.gameScript()->gusEngineUsed()) )
+	if( true /*bRepaintChatbox*/ )
 	{	
 																		// or when user is moving the mouse over the chat
 		// Local and net play use different backgrounds
 		SmartPointer<SDL_Surface> bgImage = DeprecatedGUI::gfxGame.bmpGameNetBackground;
-		if (game.isLocalGame())
+		if (tLX->iGameType == GME_LOCAL)
 			bgImage = DeprecatedGUI::gfxGame.bmpGameLocalBackground;
+
+		painted = true;
 
 		// TODO: Move that to CBrowser. Then we could also use the internal CBrowser draw cache.
 		if (bgImage.get())  // Due to backward compatibility, this doesn't have to exist
@@ -2327,12 +1994,32 @@ void CClient::DrawRemoteChat(SDL_Surface * bmpDest)
 		else
 			DrawRectFill(bmpDest,165,382,541,480,tLX->clGameBackground);
 		lv->Draw(bmpDest);
-	}
-	else */
-	lv->Draw(bmpDest); // Chatbox in Gus has transparent background
 
-	if(lv->getFocused())
-		DrawCursor(bmpDest);
+		bRepaintChatbox = false;
+	}
+
+	lv->setFocused(true);
+	// Events
+	if (Mouse->WheelScrollDown)
+		lv->MouseWheelDown(Mouse);
+	else if (Mouse->WheelScrollUp)
+		lv->MouseWheelUp(Mouse);
+
+	if (lv->InBox(Mouse->X, Mouse->Y))  {
+		
+		SetGameCursor(CURSOR_ARROW);
+
+		// Draw the mouse
+		if (Mouse->deltaX || Mouse->deltaY || painted)
+			DrawCursor(bmpDest);
+		lv->MouseOver(Mouse);
+		if (Mouse->Down)
+			lv->MouseDown(Mouse,true);
+		else if (Mouse->Up)
+			lv->MouseUp(Mouse,false);
+	} else {
+		SetGameCursor(CURSOR_NONE);
+	}
 }
 
 
@@ -2365,7 +2052,14 @@ void CClient::InitializeViewportManager()
 
     bool v2On = true;
     // If there is only 1 player total, turn the second viewport off
-    if( game.worms()->size() <= 1 )
+    short count = 0;
+	short i;
+    for(i=0; i<MAX_WORMS; i++ ) {
+        if(cRemoteWorms[i].isUsed())
+            count++;
+    }
+
+    if( count <= 1 )
         v2On = false;
 
 	DeprecatedGUI::CCombobox *v1Target = new DeprecatedGUI::CCombobox();
@@ -2384,15 +2078,26 @@ void CClient::InitializeViewportManager()
 
     // Fill in the combo boxes
 
+    // If the first player is a human, and is still playing: Only show the follow option
     ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Follow", VW_FOLLOW );
-    ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Cycle", VW_CYCLE);
-    ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Free Look", VW_FREELOOK);
-    ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Action Cam", VW_ACTIONCAM);
+    if( cLocalWorms[0]->getLives() == WRM_OUT || cLocalWorms[0]->getType() == PRF_COMPUTER ) {
+        ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Cycle", VW_CYCLE);
+        ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Free Look", VW_FREELOOK);
+        ViewportMgr.SendMessage( v1_Type, DeprecatedGUI::CBS_ADDITEM, "Action Cam", VW_ACTIONCAM);
+    }
+
+    // If the second player is a human and is still playing: Only show the follow option
+    bool show = true;
+    if( iNumWorms > 1 )
+        if( cLocalWorms[1]->getLives() != WRM_OUT && cLocalWorms[1]->getType() == PRF_HUMAN )
+            show = false;
 
     ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Follow", VW_FOLLOW );
-    ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Cycle", VW_CYCLE);
-    ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Free Look",VW_FREELOOK);
-    ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Action Cam",VW_ACTIONCAM);
+    if( show ) {
+        ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Cycle", VW_CYCLE);
+        ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Free Look",VW_FREELOOK);
+        ViewportMgr.SendMessage( v2_Type, DeprecatedGUI::CBS_ADDITEM, "Action Cam",VW_ACTIONCAM);
+    }
 
 	// Get the targets
 	int v1trg = 0, v2trg = 0;
@@ -2408,17 +2113,17 @@ void CClient::InitializeViewportManager()
 	}
 
 	// Fill in the target worms boxes
-	for_each_iterator(CWorm*, w, game.worms()) {
-        if(w->get()->getLives() == WRM_OUT)
+    for(i=0; i<MAX_WORMS; i++ ) {
+        if(!cRemoteWorms[i].isUsed() || cRemoteWorms[i].getLives() == WRM_OUT)
             continue;
 
-		v1Target->addItem(w->get()->getName(), w->get()->getName(), w->get()->getPicimg(), w->get()->getID());
-		v2Target->addItem(w->get()->getName(), w->get()->getName(), w->get()->getPicimg(), w->get()->getID());
+		v1Target->addItem(cRemoteWorms[i].getName(), cRemoteWorms[i].getName(), cRemoteWorms[i].getPicimg(), cRemoteWorms[i].getID());
+		v2Target->addItem(cRemoteWorms[i].getName(), cRemoteWorms[i].getName(), cRemoteWorms[i].getPicimg(), cRemoteWorms[i].getID());
 
-		if (w->get()->getID() == v1trg)
+		if (cRemoteWorms[i].getID() == v1trg)
 			v1Target->setCurItem(v1Target->getLastItem());
 
-		if (w->get()->getID() == v2trg)
+		if (cRemoteWorms[i].getID() == v2trg)
 			v2Target->setCurItem(v2Target->getLastItem());
     }
 
@@ -2463,14 +2168,21 @@ void CClient::DrawViewportManager(SDL_Surface * bmpDest)
         return;
 
 
+    // Get the worm count
+    short Wormcount = 0;
+    for(short i=0; i<MAX_WORMS; i++ ) {
+        if(cRemoteWorms[i].isUsed())
+            Wormcount++;
+    }
+
     switch(ev->iControlID) {
 
         // V2 On
         case v2_On:
             if(ev->iEventMsg == DeprecatedGUI::CHK_CHANGED) {
                 // If there is only one worm, disable the 2nd viewport
-                if( game.worms()->size() <= 1 )
-                    ViewportMgr.SendMessage(v2_On, DeprecatedGUI::CKM_SETCHECK,(uintptr_t)0,0);
+                if( Wormcount <= 1 )
+                    ViewportMgr.SendMessage(v2_On, DeprecatedGUI::CKM_SETCHECK,(DWORD)0,0);
             }
             break;
 
@@ -2479,34 +2191,45 @@ void CClient::DrawViewportManager(SDL_Surface * bmpDest)
             if(ev->iEventMsg == DeprecatedGUI::BTN_CLICKED) {
 
                 // If there is only one worm, disable the 2nd viewport
-                if( game.worms()->size() <= 1 )
-                    ViewportMgr.SendMessage(v2_On, DeprecatedGUI::CKM_SETCHECK,(uintptr_t)0,0);
+                if( Wormcount <= 1 )
+                    ViewportMgr.SendMessage(v2_On, DeprecatedGUI::CKM_SETCHECK,(DWORD)0,0);
 
 				DeprecatedGUI::CCombobox *v1Target = (DeprecatedGUI::CCombobox *)ViewportMgr.getWidget(v1_Target);
 				DeprecatedGUI::CCombobox *v2Target = (DeprecatedGUI::CCombobox *)ViewportMgr.getWidget(v2_Target);
 
                 // Grab settings
-                int a_type = (int) ViewportMgr.SendMessage(v1_Type, DeprecatedGUI::CBM_GETCURINDEX, (uintptr_t)0,0);
-                int b_on = (int) ViewportMgr.SendMessage(v2_On, DeprecatedGUI::CKM_GETCHECK, (uintptr_t)0,0);
-                int b_type = (int) ViewportMgr.SendMessage(v2_Type, DeprecatedGUI::CBM_GETCURINDEX, (uintptr_t)0,0);
-				if (!v1Target->getSelectedItem().get() || !v2Target->getSelectedItem().get())
+                int a_type = ViewportMgr.SendMessage(v1_Type, DeprecatedGUI::CBM_GETCURINDEX, (DWORD)0,0);
+                int b_on = ViewportMgr.SendMessage(v2_On, DeprecatedGUI::CKM_GETCHECK, (DWORD)0,0);
+                int b_type = ViewportMgr.SendMessage(v2_Type, DeprecatedGUI::CBM_GETCURINDEX, (DWORD)0,0);
+				if (!v1Target->getSelectedItem() || !v2Target->getSelectedItem())
 					return;
 
-				int v1_target = v1Target->getSelectedItem()->tag();
-				int v2_target = v2Target->getSelectedItem()->tag();
+				int v1_target = v1Target->getSelectedItem()->iTag;
+				int v2_target = v2Target->getSelectedItem()->iTag;
 
                 for( int i=0; i<NUM_VIEWPORTS; i++ ) {
-					cViewports[i].shutdown();
+                    cViewports[i].setUsed(false);
 					cViewports[i].setTarget(NULL);
                     cViewports[i].reset();
                 }
 
                 // Re-setup the viewports
                 if( !b_on) {
-                    SetupViewports(game.wormById(v1_target, false), NULL, a_type, VW_FOLLOW);
+                    SetupViewports(&cRemoteWorms[v1_target], NULL, a_type, VW_FOLLOW);
                 } else {
-                    SetupViewports(game.wormById(v1_target, false), game.wormById(v2_target, false), a_type, b_type);
+                    SetupViewports(&cRemoteWorms[v1_target], &cRemoteWorms[v2_target], a_type, b_type);
                 }
+
+				// Set the worms to follow
+				CWorm *trg_v1 = &cRemoteWorms[v1_target];
+				if (trg_v1)
+					if (trg_v1->isUsed() && trg_v1->getAlive())
+						cViewports[0].setTarget(trg_v1);
+
+				CWorm *trg_v2 = &cRemoteWorms[v2_target];
+				if (trg_v2)
+					if (trg_v2->isUsed() && trg_v2->getAlive())
+						cViewports[1].setTarget(trg_v2);
 
                 // Shutdown & leave
                 ViewportMgr.Shutdown();
@@ -2525,47 +2248,24 @@ void CClient::InitializeSpectatorViewportKeys()
 	cSpectatorViewportKeys.Left.Setup( tLXOptions->sPlayerControls[0][SIN_LEFT] );
 	cSpectatorViewportKeys.Right.Setup( tLXOptions->sPlayerControls[0][SIN_RIGHT] );
 	cSpectatorViewportKeys.V1Type.Setup( tLXOptions->sPlayerControls[0][SIN_SHOOT] );
-	cSpectatorViewportKeys.V2Type.Setup( tLXOptions->sPlayerControls[0][SIN_ROPE] );
+	cSpectatorViewportKeys.V2Type.Setup( tLXOptions->sPlayerControls[0][SIN_JUMP] );
 	cSpectatorViewportKeys.V2Toggle.Setup( tLXOptions->sPlayerControls[0][SIN_SELWEAP] );
 }
 
 void CClient::ProcessSpectatorViewportKeys()
-{	
-	if( fSpectatorViewportMsgTimeout + 1.0 < tLX->currentTime )
-		sSpectatorViewportMsg = "";
-
-	if( game.state != Game::S_Playing )
-		return;
-
-	if( !game.gameScript() || game.gameScript()->gusEngineUsed() )
-		// TODO: only for now
-		return;
-
-	// reset viewports when spawned
-	for(int i = 0; i < NUM_VIEWPORTS; ++i) {
-		if(!cViewports[i].getUsed()) continue;
-		CWorm* w = cViewports[i].getOrigTarget();
-		if(!w) continue;
-		if(w->getLocal() && w->getType() == PRF_HUMAN && w->getAlive()) {
-			cViewports[i].setTarget(w);
-			cViewports[i].setType(VW_FOLLOW);
-		}
-	}
+{
+	if(!cLocalWorms) return;
 	
-	for_each_iterator(CWorm*, w, game.localWorms()) {
-		if(w->get()->getType() == PRF_HUMAN) {
-			// don't proceed if any of the local human worms is not out of the game
-			if(w->get()->getAlive()) {
-				sSpectatorViewportMsg = "";
+	if( iNetStatus != NET_PLAYING )
+		return;
+
+	// don't proceed if any of the local human worms is not out of the game
+	// (also don't proceed when waiting for respawn)
+	for(uint i = 0; i < iNumWorms; ++i) {
+		if(cLocalWorms[i] && cLocalWorms[i]->isUsed() && cLocalWorms[i]->getType() == PRF_HUMAN) {
+			if(cLocalWorms[i]->getAlive())
 				return;
-			}
-			// dont proceed when selecting weapons
-			if(!w->get()->bWeaponsReady) {
-				sSpectatorViewportMsg = "";
-				return;
-			}
-			// also don't proceed when waiting for respawn
-			if(tLX->currentTime <= w->get()->getTimeofDeath() + 3.0f)
+			if(tLX->currentTime <= cLocalWorms[i]->getTimeofDeath() + 3.0f)
 				return;
 		}
 	}
@@ -2582,25 +2282,26 @@ void CClient::ProcessSpectatorViewportKeys()
 	CWorm * v2_targetPtr = cViewports[1].getTarget();
 	int v1_target = -1, v2_target = -1, v1_prev = -1, v2_prev = -1, v1_next = -1, v2_next = -1, fallbackWorm = -1;
 
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if( fallbackWorm == -1 )
-			fallbackWorm = w->get()->getID();
-		if( w->get()->getAlive() )
-			fallbackWorm = w->get()->getID();
-        if( w->get()->getLives() == WRM_OUT )
+    for(int i=0; i<MAX_WORMS; i++ )
+	{
+		if( cRemoteWorms[i].isUsed() && fallbackWorm == -1 )
+			fallbackWorm = i;
+		if( cRemoteWorms[i].isUsed() && cRemoteWorms[i].getAlive() )
+			fallbackWorm = i;
+        if( ! cRemoteWorms[i].isUsed() || cRemoteWorms[i].getLives() == WRM_OUT )
 			continue;
 		if( v1_target != -1 && v1_next == -1 )
-				v1_next = w->get()->getID();
+				v1_next = i;
 		if( v2_target != -1 && v2_next == -1 )
-				v2_next = w->get()->getID();
-		if( v1_targetPtr == w->get() )
-			v1_target = w->get()->getID();
-		if( v2_targetPtr == w->get() )
-			v2_target = w->get()->getID();
+				v2_next = i;
+		if( v1_targetPtr == &cRemoteWorms[i] )
+			v1_target = i;
+		if( v2_targetPtr == &cRemoteWorms[i] )
+			v2_target = i;
 		if( v1_target == -1 )
-			v1_prev = w->get()->getID();
+			v1_prev = i;
 		if( v2_target == -1 )
-			v2_prev = w->get()->getID();
+			v2_prev = i;
     }
 
 	if( v1_target == -1 )
@@ -2644,7 +2345,7 @@ void CClient::ProcessSpectatorViewportKeys()
 			Changed = true;
 		}
 		// Spectate timeout just passed - move to another worm without user keypresses
-		if( v1_targetPtr && v1_targetPtr->getLocal() )
+		if( v1_targetPtr == cLocalWorms[0] )
 		{
 			v1_target = fallbackWorm;
 			Changed = true;
@@ -2675,7 +2376,7 @@ void CClient::ProcessSpectatorViewportKeys()
 		Changed = true;
 	}
 
-	if( cSpectatorViewportKeys.V2Type.isDownOnce() && v2_on )
+	if( cSpectatorViewportKeys.V2Type.isDownOnce() )
 	{
 		v2_type ++;
 		if( v2_type > VW_ACTIONCAM )
@@ -2699,12 +2400,15 @@ void CClient::ProcessSpectatorViewportKeys()
 		fSpectatorViewportMsgTimeout = tLX->currentTime;
 	}
 
+	if( fSpectatorViewportMsgTimeout + 1.0 < tLX->currentTime )
+		sSpectatorViewportMsg = "";
+
 	// Print message that we are in spectator mode for 3 seconds
-	if( CWorm* w = game.firstLocalHumanWorm() )
+	if( cLocalWorms[0] && cLocalWorms[0]->getType() == PRF_HUMAN )
 	{
-		if( tLX->currentTime <= w->getTimeofDeath() + 6.0f )
+		if( tLX->currentTime <= cLocalWorms[0]->getTimeofDeath() + 6.0f )
 		{
-			if( w->getLives() != WRM_OUT )
+			if( cLocalWorms[0]->getLives() != WRM_OUT )
 				sSpectatorViewportMsg = "Spectator mode - waiting for respawn";
 			else
 				sSpectatorViewportMsg = "Spectator mode";
@@ -2714,14 +2418,10 @@ void CClient::ProcessSpectatorViewportKeys()
 
 	if( Changed )
 	{
-		if(CWorm* w = game.wormById(v1_target, false))
-			cViewports[0].setTarget(w);
-		cViewports[0].setType(v1_type);
-		if(v2_on) {
-			if(CWorm* w = game.wormById(v2_target, false))
-				cViewports[1].setTarget(w);
-			cViewports[1].setType(v2_type);
-		}
+		if( !v2_on )
+			SetupViewports(&cRemoteWorms[v1_target], NULL, v1_type, v2_type);
+		else
+			SetupViewports(&cRemoteWorms[v1_target], &cRemoteWorms[v2_target], v1_type, v2_type);
 	}
 }
 
@@ -2732,7 +2432,7 @@ enum  {
 	sb_Right,
 };
 
-void CClient::InitializeIngameScore()
+void CClient::InitializeIngameScore(bool WaitForPlayers)
 {
 	// Clear and initialize
 	cScoreLayout.Shutdown();
@@ -2760,21 +2460,27 @@ void CClient::InitializeIngameScore()
 	Right->AddColumn("ID", 15, tLX->clHeading);
 	Left->AddColumn("", 30, tLX->clHeading);  // Skin
 	Right->AddColumn("", 30, tLX->clHeading);
-	Left->AddColumn("Player", (game.isServer() && !game.isLocalGame()) ? 110 : 140, tLX->clHeading);  // Player
-	Right->AddColumn("Player", (game.isServer() && !game.isLocalGame()) ? 110 : 140, tLX->clHeading);
-	if (game.state <= Game::S_Preparing)  {
+	Left->AddColumn("Player", tLX->iGameType == GME_HOST ? 110 : 140, tLX->clHeading);  // Player
+	Right->AddColumn("Player", tLX->iGameType == GME_HOST ? 110 : 140, tLX->clHeading);
+	if (WaitForPlayers)  {
 		Left->AddColumn("", 120, tLX->clHeading);
 		Right->AddColumn("", 120, tLX->clHeading);
 	} else {
-		Left->AddColumn("L", 40, tLX->clHeading);  // Lives
-		Right->AddColumn("L", 40, tLX->clHeading);
+		if (tLXOptions->tGameInfo.iLives < 0 &&
+			getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+			Left->AddColumn("D", 40, tLX->clHeading);  // Lives
+			Right->AddColumn("D", 40, tLX->clHeading);
+		} else {
+			Left->AddColumn("L", 40, tLX->clHeading);  // Lives
+			Right->AddColumn("L", 40, tLX->clHeading);
+		}
 		Left->AddColumn("K", 40, tLX->clHeading);  // Kills
 		Right->AddColumn("K", 40, tLX->clHeading);
-		Left->AddColumn("D", 40, tLX->clHeading);  // Damage
-		Right->AddColumn("D", 40, tLX->clHeading); // TODO: check if it fits the screen
+		Left->AddColumn("Dmg", 40, tLX->clHeading);  // Damage
+		Right->AddColumn("Dmg", 40, tLX->clHeading); // TODO: check if it fits the screen
 	}
 
-	if ((game.isServer() && !game.isLocalGame()))  {
+	if (tLX->iGameType == GME_HOST)  {
 		Left->AddColumn("P", 30, tLX->clHeading);  // Ping
 		Right->AddColumn("P", 30, tLX->clHeading);
 	}
@@ -2783,7 +2489,6 @@ void CClient::InitializeIngameScore()
 
 ////////////////////
 // Update the scoreboard
-// see also CClient::UpdateScore
 void CClient::UpdateIngameScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListview *Right, bool WaitForPlayers)
 {
 	DeprecatedGUI::CListview *lv = Left;
@@ -2793,30 +2498,23 @@ void CClient::UpdateIngameScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::C
 	Left->Clear();
 	Right->Clear();
 
-	std::vector<int> iScoreboard;
-	for_each_iterator(CWorm*, w, game.worms()) {
-		iScoreboard.push_back(w->get()->getID());
-	}
-	std::sort(iScoreboard.begin(), iScoreboard.end(), ScoreCompare());
-
 	// Fill the listviews
-	for(size_t i=0; i < iScoreboard.size(); i++) {
+    for(int i=0; i < iScorePlayers; i++) {
 		if (i >= 16)  // Left listview overflowed, fill in the right one
 			lv = Right;
 
-		CWorm *p = game.wormById(iScoreboard[i], false);
-		if(!p) return;
+        CWorm *p = &cRemoteWorms[iScoreboard[i]];
 
 		// Get colour
-		if (tLXOptions->bColorizeNicks && getGameLobby()[FT_GameMode].as<GameModeInfo>()->generalGameType == GMT_TEAMS)
+		if (tLXOptions->bColorizeNicks && tGameInfo.iGeneralGameType == GMT_TEAMS)
 			iColor = tLX->clTeamColors[p->getTeam()];
 		else
 			iColor = tLX->clNormalLabel;
 
         // Add the player and if this player is local & human, highlight it
-		lv->AddItem(p->getName(), (int)i, tLX->clNormalLabel);
-		if (p->getLocal() && (p->getType() != PRF_COMPUTER || game.isClient()))  {
-			DeprecatedGUI::lv_item_t *it = lv->getItem((int)i);
+		lv->AddItem(p->getName(), i, tLX->clNormalLabel);
+		if (p->getLocal() && (p->getType() != PRF_COMPUTER || tLX->iGameType == GME_JOIN))  {
+			DeprecatedGUI::lv_item_t *it = lv->getItem(i);
 			it->iBgColour = tLX->clScoreHighlight;
 			it->iBgColour.a = 64;
 		}
@@ -2831,19 +2529,24 @@ void CClient::UpdateIngameScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::C
 		lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->getName(), (DynDrawIntf*)NULL, NULL, DeprecatedGUI::VALIGN_MIDDLE, iColor);
 
 		if (WaitForPlayers)
-			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->bWeaponsReady ? "Ready" : "Waiting", (DynDrawIntf*)NULL, NULL, DeprecatedGUI::VALIGN_MIDDLE, p->bWeaponsReady ? tLX->clReady : tLX->clWaiting);
+			lv->AddSubitem(DeprecatedGUI::LVS_TEXT, p->getGameReady() ? "Ready" : "Waiting", (DynDrawIntf*)NULL, NULL, DeprecatedGUI::VALIGN_MIDDLE, p->getGameReady() ? tLX->clReady : tLX->clWaiting);
 		else  {
-			// Lives
-			switch (p->getLives())  {
-			case WRM_OUT:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
-				break;
-			case WRM_UNLIM:
-				lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
-				break;
-			default:
-				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
-				break;
+			if (p->getLives() == WRM_UNLIM && tLXOptions->tGameInfo.iLives < 0 &&
+				getServerVersion() >= OLXRcVersion(0,58,5) && getServerVersion() < OLXBetaVersion(0,59,0)) {
+				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getDeaths()), (DynDrawIntf*)NULL, NULL);
+			} else {
+				// Lives
+				switch (p->getLives())  {
+				case WRM_OUT:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, "out", (DynDrawIntf*)NULL, NULL);
+					break;
+				case WRM_UNLIM:
+					lv->AddSubitem(DeprecatedGUI::LVS_IMAGE, "", DeprecatedGUI::gfxGame.bmpInfinite, NULL);
+					break;
+				default:
+					lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(p->getLives()), (DynDrawIntf*)NULL, NULL);
+					break;
+				}
 			}
 
 			// Kills
@@ -2853,12 +2556,15 @@ void CClient::UpdateIngameScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::C
 		}
 
 		// Ping
-		if((game.isServer() && !game.isLocalGame()))  {
+		if(tLX->iGameType == GME_HOST)  {
 			CServerConnection *remoteClient = cServer->getClient(p->getID());
 			if (remoteClient && p->getID())
 				lv->AddSubitem(DeprecatedGUI::LVS_TEXT, itoa(remoteClient->getPing()), (DynDrawIntf*)NULL, NULL);
 		}
     }
+
+	bUpdateScore = false;
+	fLastScoreUpdate = tLX->currentTime;
 }
 
 #define WAIT_COL_W 180
@@ -2869,7 +2575,7 @@ void CClient::DrawPlayerWaitingColumn(SDL_Surface * bmpDest, int x, int y, std::
 {
 	const int h = getBottomBarTop() - y;
 
-	SDL_Rect newclip = { (SDLRect::Type) x, (SDLRect::Type) y, (SDLRect::TypeS) WAIT_COL_W, (SDLRect::TypeS) h };
+	SDL_Rect newclip = {(SDLRect::Type) x, (SDLRect::Type) y, WAIT_COL_W, (SDLRect::TypeS) h};
 	ScopedSurfaceClip clip(bmpDest, newclip);
 
 	DrawRectFill(bmpDest, x, y, x + WAIT_COL_W, y + h, tLX->clScoreBackground);
@@ -2886,7 +2592,7 @@ void CClient::DrawPlayerWaitingColumn(SDL_Surface * bmpDest, int x, int y, std::
 		int cur_x = x + 5;
 
 		// Ready
-		if (wrm->bWeaponsReady)
+		if (wrm->getGameReady())
 			DrawImage(bmpDest, DeprecatedGUI::tMenu->bmpLobbyReady, cur_x, cur_y + (wrmPicImg->h - DeprecatedGUI::tMenu->bmpLobbyReady.get()->h) / 2);
 		else
 			DrawImage(bmpDest, DeprecatedGUI::tMenu->bmpLobbyNotReady, cur_x, cur_y + (wrmPicImg->h - DeprecatedGUI::tMenu->bmpLobbyNotReady.get()->h) / 2);
@@ -2910,13 +2616,16 @@ void CClient::DrawPlayerWaiting(SDL_Surface * bmpDest)
 	int x = 0;
 	int y = tLXOptions->bTopBarVisible ? getTopBarBottom() : 0;
 
-	if (game.state == Game::S_Playing || game.isLocalGame() || bGameMenu)
+	if (iNetStatus == NET_PLAYING || tLX->iGameType == GME_LOCAL || bGameMenu)
 		return;
 
 	// Get the number of players
 	std::list<CWorm *> worms;
-	for_each_iterator(CWorm*, w, game.worms())
-		worms.push_back(w->get());
+	CWorm *w = cRemoteWorms;
+	for (int i=0; i < MAX_WORMS; i++, w++)  {
+		if (w->isUsed())
+			worms.push_back(w);
+	}
 
 	std::list<CWorm *>::iterator it = worms.begin();
 
@@ -2945,7 +2654,7 @@ void CClient::DrawScoreboard(SDL_Surface * bmpDest)
         return;
     if(cShowScore.isDown() && !bChat_Typing)
         bShowScore = true;
-	if(game.state == Game::S_Preparing && !game.isLocalGame()) {
+    if(iNetStatus == NET_CONNECTED && bGameReady && tLX->iGameType != GME_LOCAL) {
         bShowScore = true;
         bShowReady = true;
     }
@@ -2956,11 +2665,11 @@ void CClient::DrawScoreboard(SDL_Surface * bmpDest)
 	DrawImageAdv(bmpDest, bmpIngameScoreBg, 0, tLXOptions->bTopBarVisible ? getTopBarBottom() : 0, 0,
 				tLXOptions->bTopBarVisible ? getTopBarBottom() : 0, bmpIngameScoreBg.get()->w, bmpIngameScoreBg.get()->h);
 
-	//if (bUpdateScore || tLX->currentTime - fLastScoreUpdate >= 2.0f)
+	if (bUpdateScore || tLX->currentTime - fLastScoreUpdate >= 2.0f)
 		UpdateIngameScore(((DeprecatedGUI::CListview *)cScoreLayout.getWidget(sb_Left)), ((DeprecatedGUI::CListview *)cScoreLayout.getWidget(sb_Right)), bShowReady);
 
 	// Hide the second list if there are no players
-	cScoreLayout.getWidget(sb_Right)->setEnabled(game.worms()->size() > 16);
+	cScoreLayout.getWidget(sb_Right)->setEnabled(iNumWorms > 16);
 
 	// Draw it!
 	cScoreLayout.Draw(bmpDest);
@@ -2974,10 +2683,10 @@ void CClient::DrawCurrentSettings(SDL_Surface * bmpDest)
 	bCurrentSettings = true;
 
     // Do checks on whether or not to show
-	if(game.state == Game::S_Playing && !cShowSettings.isDown() && !game.gameOver)
+    if(iNetStatus != NET_CONNECTED && !cShowSettings.isDown() && !bGameOver)
 		bCurrentSettings = false;
 
-	if (game.gameOver && bGameMenu)
+	if (bGameOver && bGameMenu)
 		bCurrentSettings = true;
 	
 	if( bOldCurrentSettings != bCurrentSettings )
@@ -2997,43 +2706,47 @@ void CClient::DrawCurrentSettings(SDL_Surface * bmpDest)
 
 	int cur_y = y;
 	/*tLX->cFont.Draw(bmpDest, x+5, y+25, tLX->clNormalLabel,"%s","Level:");
-	tLX->cFont.Draw(bmpDest, x+105, y+25, tLX->clNormalLabel,"%s",getGameLobby()->sMapname.c_str());*/
+	tLX->cFont.Draw(bmpDest, x+105, y+25, tLX->clNormalLabel,"%s",tGameInfo.sMapname.c_str());*/
 	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel, "Mod:");
-	std::string mod = getGameLobby()[FT_Mod].as<ModInfo>()->name;
+	std::string mod = tGameInfo.sModName;
 	stripdot(mod, tInterfaceSettings.ChatBoxX - 105); // 10 - leave some space
 	tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel, mod);
 	cur_y += tLX->cFont.GetHeight();
 
+	static const std::string gmt_names[] = {"Death Match", "Team DM", "Tag", "Demolition"};
 	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel,"Game Type:");
-	tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel, getGameLobby()[FT_GameMode].as<GameModeInfo>()->toString()); // TODO: Limit the name length?
+	if(tGameInfo.sGameMode == "")
+		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel, gmt_names[CLAMP(tGameInfo.iGeneralGameType, (int)0, (int)(sizeof(gmt_names)/sizeof(std::string)))]);
+	else
+		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel, tGameInfo.sGameMode); // TODO: Limit the name length?
 	cur_y += tLX->cFont.GetHeight();
 
 	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel,"Loading Time:");
-	tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,itoa((int)getGameLobby()[FT_LoadingTime]) + "%");
+	tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,itoa(tGameInfo.iLoadingTime) + "%");
 	cur_y += tLX->cFont.GetHeight();
 
 	// TODO: this takes too much place in the small info
 /*	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel,"Game Speed:");
-	tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,ftoa(getGameLobby()->fGameSpeed));
+	tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,ftoa(tGameInfo.fGameSpeed));
 	cur_y += tLX->cFont.GetHeight();
 */
 
 	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel,"Lives:");
-	if ((int)getGameLobby()[FT_Lives] < 0)
+	if (tGameInfo.iLives < 0)
 		DrawImage(bmpDest,DeprecatedGUI::gfxGame.bmpInfinite, x+95, cur_y + (tLX->cFont.GetHeight() - DeprecatedGUI::gfxGame.bmpInfinite.get()->h)/2);
 	else
-		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,itoa((int)getGameLobby()[FT_Lives]));
+		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,itoa(tGameInfo.iLives));
 	cur_y += tLX->cFont.GetHeight();
 
 	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel,"Max Kills:");
-	if ((int)getGameLobby()[FT_KillLimit] < 0)
+	if (tGameInfo.iKillLimit < 0)
 		DrawImage(bmpDest,DeprecatedGUI::gfxGame.bmpInfinite,x+95,cur_y + (tLX->cFont.GetHeight() - DeprecatedGUI::gfxGame.bmpInfinite.get()->h)/2);
 	else
-		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,itoa((int)getGameLobby()[FT_KillLimit]));
+		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,itoa(tGameInfo.iKillLimit));
 	cur_y += tLX->cFont.GetHeight();
 
 	tLX->cFont.Draw(bmpDest, x+5, cur_y, tLX->clNormalLabel,"Bonuses:");
-	if (getGameLobby()[FT_Bonuses])
+	if (tGameInfo.bBonusesOn)
 		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,"On");
 	else
 		tLX->cFont.Draw(bmpDest, x+95, cur_y, tLX->clNormalLabel,"Off");

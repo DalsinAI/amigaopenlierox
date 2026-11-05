@@ -33,9 +33,15 @@ void	CTextButton::Draw(SDL_Surface * bmpDest)
 	CLabel::Draw( bmpDest );
 }
 
-int	CTextButton::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
+int CTextButton::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 {
-	if (isActivationKey(keysym))
+	if (keysym == SDLK_RETURN ||
+		keysym == SDLK_KP_ENTER ||
+		keysym == SDLK_LALT ||
+		keysym == SDLK_LCTRL ||
+		keysym == SDLK_LSHIFT ||
+		keysym == SDLK_x ||
+		keysym == SDLK_z)
 		return TXB_MOUSEUP;
 	return CLabel::KeyDown( c, keysym, modstate );
 }

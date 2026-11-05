@@ -27,11 +27,11 @@
 #include "DedicatedControl.h"
 #include "FindFile.h"
 #include "StringUtils.h"
-#include "game/CMap.h"
+#include "CMap.h"
 #include "ProfileSystem.h"
 #include "CClient.h"
 #include "CServer.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "CGameScript.h"
 #include "Unicode.h"
 #include "Protocol.h"
@@ -40,7 +40,7 @@
 #include "CChannel.h"
 #include "CServerConnection.h"
 #include "CServerNetEngine.h"
-#include "OLXCommand.h"
+#include "Command.h"
 #include "Process.h"
 #include "Event.h"
 #include "CGameMode.h"
@@ -78,7 +78,7 @@ void DedicatedControl::Uninit() {
 
 struct ScriptCmdLineIntf : CmdLineIntf {
 	Process pipe;
-	SmartPointer<ThreadPoolItem> thread;
+	ThreadPoolItem* thread;
 	
 
 	ScriptCmdLineIntf() : thread(NULL) {
@@ -112,13 +112,13 @@ struct ScriptCmdLineIntf : CmdLineIntf {
 	}
 	
 	bool havePipe() {
-		return thread.get() != NULL;
+		return thread != NULL;
 	}
 
 	
 	
 	bool breakCurrentScript() {
-		if(thread.get()) {
+		if(thread) {
 			notes << "waiting for pipeThread ..." << endl;
 			pipe.close();
 			threadPool->wait(thread, NULL);
@@ -169,7 +169,7 @@ struct ScriptCmdLineIntf : CmdLineIntf {
 	// Pipe functions
 	
 	// reading lines from pipe-out and put them to pipeOutput
-	static Result pipeThreadFunc(void* o) {
+	static int pipeThreadFunc(void* o) {
 		ScriptCmdLineIntf* owner = (ScriptCmdLineIntf*)o;
 
 		while(!owner->pipe.out().eof()) {
@@ -178,10 +178,70 @@ struct ScriptCmdLineIntf : CmdLineIntf {
 			
 			Execute( owner, buf );
 		}
-		return true;
+		return 0;
 	}
 	
 };
+
+struct StdinCmdLineIntf : CmdLineIntf {
+	ThreadPoolItem* thread;
+	
+	StdinCmdLineIntf() {
+		thread = threadPool->start(&StdinCmdLineIntf::stdinThreadFunc, this, "Ded stdin watcher");
+	}
+	
+	~StdinCmdLineIntf() {
+		notes << "waiting for stdinThread ..." << endl;
+		threadPool->wait(thread, NULL);
+		thread = NULL;
+	}
+	
+	void pushReturnArg(const std::string& str) {
+		notes << "Dedicated return: " << str << endl;
+	}
+	
+	void finalizeReturn() {
+		notes << "Dedicated return." << endl;
+	}
+
+	void writeMsg(const std::string& str, CmdLineMsgType type) {
+		// TODO: handle type
+		hints << "STDIN Dedicated: " << str << endl;
+	}
+	
+	
+	// reading lines from stdin and put them to pipeOutput
+	static int stdinThreadFunc(void* o) {
+		StdinCmdLineIntf* owner = (StdinCmdLineIntf*)o;
+
+#ifndef WIN32
+		// TODO: there's no fcntl for Windows!
+		if(fcntl(0, F_SETFL, O_NONBLOCK) == -1)
+#endif
+			warnings << "ERROR setting standard input into non-blocking mode" << endl;
+
+		while(true) {
+			std::string buf;
+			while(true) {
+				SDL_Delay(10); // TODO: select() here
+				if(tLX->bQuitGame) return 0;
+
+				char c;
+
+				if(read(0, &c, 1) >= 0) {
+					if(c == '\n') break;
+					// TODO: why is this needed? is that WIN32 only?
+					if(c == -52) return 0;  // CTRL-C
+					buf += c;
+				}
+			}
+
+			Execute( owner, buf );
+		}
+		return 0;
+	}	
+};
+
 
 
 
@@ -190,6 +250,7 @@ struct DedIntern {
 	static DedIntern* Get() { return (DedIntern*)dedicatedControlInstance->internData; }
 
 	ScriptCmdLineIntf* scriptInterface;
+	StdinCmdLineIntf* stdinInterface;
 	
 	bool quitSignal;
 	SDL_mutex* pendingSignalsMutex;
@@ -204,7 +265,7 @@ struct DedIntern {
 	
 
 	DedIntern() :
-		scriptInterface(NULL),
+		scriptInterface(NULL), stdinInterface(NULL),
 		quitSignal(false),
 		pendingSignalsMutex(NULL), waitingForNextSignal(false)
 	{
@@ -212,12 +273,14 @@ struct DedIntern {
 		pendingSignalsMutex = SDL_CreateMutex();
 
 		scriptInterface = new ScriptCmdLineIntf();
+		stdinInterface = new StdinCmdLineIntf();
 	}
 	
 	~DedIntern() {
 		Sig_Quit();
 		quitSignal = true;
 
+		delete stdinInterface; stdinInterface = NULL;
 		delete scriptInterface; scriptInterface = NULL;
 		
 		SDL_DestroyMutex(pendingSignalsMutex);
@@ -271,7 +334,7 @@ struct DedIntern {
 	void Sig_GameLoopStart() { pushSignal("gameloopstart"); }
 	void Sig_GameLoopEnd() {
 		pushSignal("gameloopend");
-		if(game.state != Game::S_Lobby)
+		if(currentGameState() != S_SVRLOBBY && currentGameState() != S_CLILOBBY)
 			// This is because of the current game logic: It will end the game
 			// loop and then return to the lobby but only in the case if we got a
 			// BackToLobby-signal before; if we didn't get such a signal and
@@ -308,6 +371,9 @@ struct DedIntern {
 	// ---------- frame handlers --------
 
 	void Frame_ServerLobby() {
+		// Process the server & client frames
+		cServer->Frame();
+		cClient->Frame();
 	}
 
 	void Frame_Playing() {
@@ -315,6 +381,8 @@ struct DedIntern {
 	}
 
 	void Frame_ClientConnecting() {
+		cClient->Frame();
+
 		// are we connected?
 		if(cClient->getStatus() == NET_CONNECTED) {
 			Sig_Connected();
@@ -325,15 +393,39 @@ struct DedIntern {
 		if(cClient->getBadConnection()) {
 			warnings << "Bad connection: " << cClient->getBadConnectionMsg() << endl;
 			Sig_ConnectError(cClient->getBadConnectionMsg());
-			game.state = Game::S_Inactive;
+			cClient->Shutdown();
 			return;
 		}
 	}
 
 	void Frame_ClientLobby() {
+		// Process the client
+		cClient->Frame();
+
+		// If there is a client error, leave
+		if(cClient->getClientError()) {
+			Sig_ClientError();
+			return;
+		}
+
 		// If we have started, leave the frontend
-		if(game.state >= Game::S_Preparing) {
+		if(cClient->getGameReady()) {
+			// Leave the frontend
+			*DeprecatedGUI::bGame = true;
+			DeprecatedGUI::tMenu->bMenuRunning = false;
+			tLX->iGameType = GME_JOIN;
 			Sig_ClientGameStarted();
+			return;
+		}
+
+
+		// Check if the communication link between us & server is still ok
+		if(cClient->getServerError()) {
+			warnings << "Client connection error: " << cClient->getServerErrorMsg() << endl;
+			Sig_ClientConnectionError(cClient->getServerErrorMsg());
+			cClient->Disconnect();
+			cClient->Shutdown();
+			SetQuitEngineFlag("Frame_ClientLobby: connection error");
 			return;
 		}
 	}
@@ -370,13 +462,13 @@ struct DedIntern {
 			float down = 0;
 			
 			// Get the rates
-			if( game.isClient() ) {
+			if( tLX->iGameType == GME_JOIN ) {
 				if(cClient->getChannel()) {
 					down = cClient->getChannel()->getIncomingRate() / 1024.0f;
 					up = cClient->getChannel()->getOutgoingRate() / 1024.0f;
 				}
 			}
-			else if( (game.isServer() && !game.isLocalGame()) ) {
+			else if( tLX->iGameType == GME_HOST ) {
 				down = cServer->GetDownload() / 1024.0f;
 				up = cServer->GetUpload() / 1024.0f;
 			}
@@ -387,22 +479,16 @@ struct DedIntern {
 		}
 #endif
 
-		switch(game.state) {
-		case Game::S_Inactive: break;
-		case Game::S_Connecting:
-			if(game.isServer()) {}
-			else Frame_ClientConnecting();
-			break;
-		case Game::S_Lobby:
-			if(game.isServer()) Frame_ServerLobby();
-			else Frame_ClientLobby();
-			break;
-		case Game::S_Preparing:
-		case Game::S_Playing:
-			Frame_Playing();
-			break;
-		default:
-			warnings << "game.state is invalid: " << game.state << endl;
+
+		switch(currentGameState()) {
+			case S_INACTIVE: break;
+			case S_SVRLOBBY: Frame_ServerLobby(); break;
+			case S_SVRWEAPONS: Frame_Playing(); break;
+			case S_SVRPLAYING: Frame_Playing(); break;
+			case S_CLICONNECTING: Frame_ClientConnecting(); break;
+			case S_CLILOBBY: Frame_ClientLobby(); break;
+			case S_CLIPLAYING: Frame_Playing(); break;
+			case S_CLIWEAPONS: Frame_Playing(); break;
 		}
 	}
 };
@@ -442,16 +528,15 @@ void DedicatedControl::BackToServerLobby_Signal() { internData->Sig_BackToLobby(
 void DedicatedControl::BackToClientLobby_Signal() { internData->Sig_ClientGotoLobby(); }
 void DedicatedControl::WeaponSelections_Signal() { internData->Sig_WeaponSelections(); }
 void DedicatedControl::GameStarted_Signal() { internData->Sig_GameStarted(); }
-void DedicatedControl::ClientConnectionError_Signal(const std::string &msg) { internData->Sig_ClientConnectionError(msg); }
 void DedicatedControl::Connecting_Signal(const std::string& addr) { internData->Sig_Connecting(addr); }
 void DedicatedControl::NewWorm_Signal(CWorm* w) { internData->Sig_NewWorm(w); }
 void DedicatedControl::WormLeft_Signal(CWorm* w) { internData->Sig_WormLeft(w); }
 void DedicatedControl::ChatMessage_Signal(CWorm* w, const std::string& message) { internData->Sig_ChatMessage(w,message); }
 void DedicatedControl::PrivateMessage_Signal(CWorm* w, CWorm* to, const std::string& message) { internData->Sig_PrivateMessage(w,to,message); }
 void DedicatedControl::WormDied_Signal(CWorm* worm, CWorm* killer) { internData->Sig_WormDied(worm->getID(), killer ? killer->getID() : -1); }
-void DedicatedControl::WormSpawned_Signal(CWorm* worm){ internData->Sig_WormSpawned(worm); }
-void DedicatedControl::WormGotAdmin_Signal(CWorm* worm){ internData->Sig_WormGotAdmin(worm); }
-void DedicatedControl::WormAuthorized_Signal(CWorm* worm){ internData->Sig_WormAuthorized(worm); }
+void DedicatedControl::WormSpawned_Signal(CWorm* worm){ internData->Sig_WormSpawned(worm); };
+void DedicatedControl::WormGotAdmin_Signal(CWorm* worm){ internData->Sig_WormGotAdmin(worm); };
+void DedicatedControl::WormAuthorized_Signal(CWorm* worm){ internData->Sig_WormAuthorized(worm); };
 void DedicatedControl::Custom_Signal(const std::list<std::string>& args) { internData->pushSignal("custom", args); }
 
 void DedicatedControl::Menu_Frame() { internData->Frame_Basic(); }

@@ -19,21 +19,17 @@
 #include "StringUtils.h"
 #include "CClient.h"
 #include "Protocol.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "MathLib.h"
 #include "ChatCommand.h"
-#include "OLXCommand.h"
+#include "Command.h"
 #include "EndianSwap.h"
 #include "CServer.h"
 #include "AuxLib.h"
 #include "CChannel.h"
 #include "DeprecatedGUI/Menu.h"
 #include "IRC.h"
-#include "OLXConsole.h"
-#include "game/Game.h"
-#include "gusanos/network.h"
-#include "CGameScript.h"
-#include "game/GameState.h"
+#include "console.h"
 
 
 
@@ -45,68 +41,76 @@ std::string OldLxCompatibleString(const std::string &Utf8String);
 // Send the worm details
 void CClientNetEngine::SendWormDetails()
 {
-	if(game.isServer()) return;
-
 	// Don't flood packets so often
 	// we are checking in w->checkPacketNeeded() if we need to send an update
 	// we are checking with bandwidth if we should add an update
 	/*if ((tLX->currentTime - fLastUpdateSent) <= tLXOptions->fUpdatePeriod)
-		if (getGameLobby()->iGameType != GME_LOCAL)
+		if (tGameInfo.iGameType != GME_LOCAL)
 			return; */
+			
+	CBytestream bs;
+	uint i;
+
+	// If all my worms are dead, don't send
+	bool Alive = false;
+	for(i=0;i<client->iNumWorms;i++) {
+		if(client->cLocalWorms[i] && client->cLocalWorms[i]->getAlive()) {
+			Alive = true;
+			break;
+		}
+	}
+
+	if(!Alive)
+		return;
+
+
+	// Check if we need to write the state update
+	bool update = false;
+	for(i = 0; i < client->iNumWorms; i++)
+		if (client->cLocalWorms[i] && client->cLocalWorms[i]->checkPacketNeeded())  {
+			update = true;
+			break;
+		}
+
+	// No update, just quit
+	if (!update)
+		return;
 
 	// TODO: Have we always used the limitcheck from GameServer here?
 	// We should perhaps move it out from GameServer. Looks a bit strange here to use something from GameServer.
-	if(	game.isClient() // we are a client in a netgame
-	   && !GameServer::checkUploadBandwidth(client->getChannel()->getOutgoingRate()) )
+	if(	tLX->iGameType == GME_JOIN // we are a client in a netgame
+	&& !GameServer::checkUploadBandwidth(client->getChannel()->getOutgoingRate()) )
 		return;
 
-	if(!game.gameScript()->gusEngineUsed() && client->getServerVersion() < OLXBetaVersion(0,59,10)) {
-		// Check if we need to write the state update
-		bool update = false;
-		for_each_iterator(CWorm*, w, game.localWorms())
-			if (w->get()->getAlive() && w->get()->checkPacketNeeded())  {
-				update = true;
-				break;
-			}
+	client->fLastUpdateSent = tLX->currentTime;
 
-		if(update) {
-			// Write the update
-			CBytestream bs;
-			bs.writeByte(C2S_UPDATE);
+	// Write the update
+	bs.writeByte(C2S_UPDATE);
 
-			for_each_iterator(CWorm*, w, game.localWorms())
-				w->get()->writePacket(&bs, false, NULL);
+	for(i = 0; i < client->iNumWorms; i++)
+		if(client->cLocalWorms[i])
+			client->cLocalWorms[i]->writePacket(&bs, false, NULL);
 
-			client->bsUnreliable.Append(&bs);
-
-			client->fLastUpdateSent = tLX->currentTime;
-		}
-	}
-	
-	// handle Gusanos updates
-	// only for join-mode because otherwise, we would handle it in CServer
-	if(game.isClient() && network.getNetControl()) {
-		const size_t maxBytes = size_t(-1); // TODO ?
-		if(maxBytes > 0 && network.getNetControl()->olxSendNodeUpdates(NetConnID_server(), maxBytes))
-			client->fLastUpdateSent = tLX->currentTime;
-	}
+	client->bsUnreliable.Append(&bs);
 }
 
 
 void CClientNetEngine::SendGameReady()
 {
-	if(client->getServerVersion() >= OLXBetaVersion(0,59,10)) return;
-
 	CBytestream bs;
 	bs.writeByte(C2S_IMREADY);
 	
-	if(game.bServerChoosesWeapons) {
+	if(client->serverChoosesWeapons()) {
 		bs.writeByte(0);
-	} else {		
+	} else {
+		std::list<CWorm*> worms;
+		for(unsigned int i=0;i<client->iNumWorms;i++)
+			if(client->cLocalWorms[i]) worms.push_back(client->cLocalWorms[i]);
+		
 		// Send my worm's weapon details
-		bs.writeByte(game.localWorms()->size());
-		for_each_iterator(CWorm*, w, game.localWorms())
-			w->get()->writeWeapons( &bs );
+		bs.writeByte(worms.size());
+		for(std::list<CWorm*>::iterator i = worms.begin(); i != worms.end(); ++i)
+			(*i)->writeWeapons( &bs );
 	}
 	
 	client->cNetChan->AddReliablePacketToSend(bs);
@@ -153,7 +157,7 @@ void CClientNetEngine::SendText(const std::string& sText, std::string sWormName)
 	}
 
 	// We can safely send long messages to servers >= beta8
-	if (client->getServerVersion() >= OLXBetaVersion(0,57,8))  {
+	if (client->getServerVersion() >= OLXBetaVersion(8))  {
 
 		// HTML support since beta 8
 		SendTextInternal(OldLxCompatibleString(sText), sWormName);
@@ -163,7 +167,7 @@ void CClientNetEngine::SendText(const std::string& sText, std::string sWormName)
 	} else {
 
 		if (chat_command &&
-			client->getServerVersion() < OLXBetaVersion(0,57,3) && // <beta3 clients don't have chat command support
+			client->getServerVersion() < OLXBetaVersion(3) && // <beta3 clients don't have chat command support
 			sText.find("/me ") != 0) // Ignores "/me" special command
 		{
 			// Try if we can execute the same command in console (mainly for "/suicide" command to work on all servers)
@@ -175,7 +179,7 @@ void CClientNetEngine::SendText(const std::string& sText, std::string sWormName)
 			return;
 
 		} else if (chat_command &&
-				   client->getServerVersion() >= OLXBetaVersion(0,57,3)) {
+				   client->getServerVersion() >= OLXBetaVersion(3)) {
 			// we don't have to split chat commands
 			// "/me ..." is also save, because server uses SendGlobalText for sending and it splits the text there
 			SendTextInternal(OldLxCompatibleString(sText), sWormName);
@@ -212,7 +216,7 @@ void CClientNetEngineBeta7::SendChatCommandCompletionRequest(const std::string& 
 }
 
 void CClientNetEngineBeta7::SendAFK(int wormid, AFK_TYPE afkType, const std::string & message ) {
-	if( client->getServerVersion() < OLXBetaVersion(0,57,7) )
+	if( client->getServerVersion() < OLXBetaVersion(7) )
 		return;
 	
 	std::string msg = message;
@@ -229,10 +233,9 @@ void CClientNetEngineBeta7::SendAFK(int wormid, AFK_TYPE afkType, const std::str
 	}
 
 
-	{
-		CWorm* w = game.wormById(wormid, false);
-		if(w) w->setAFK(afkType, msg);
-	}
+	for( int i=0; i < client->getNumWorms(); i++ )
+		if(	client->getWorm(i)->getID() == wormid )
+			client->getWorm(i)->setAFK(afkType, msg);
 	
 	CBytestream bs;
 	bs.writeByte(C2S_AFK);
@@ -277,7 +280,7 @@ void CClientNetEngine::SendTextInternal(const std::string& sText, const std::str
 void CClientNetEngine::SendRandomPacket()
 {
 	// don't send random packets from the local client to our own server
-	if( getGameLobby()->iGameType != GME_JOIN ) return;
+	if( tGameInfo.iGameType != GME_JOIN ) return;
 
 	CBytestream bs;
 
@@ -309,7 +312,7 @@ void CClientNetEngine::SendGrabBonus(int id, int wormid)
 	bs.writeByte(C2S_GRABBONUS);
 	bs.writeByte(id);
 	bs.writeByte(wormid);
-	bs.writeByte(game.wormById(wormid)->getCurrentWeapon());
+	bs.writeByte(client->cRemoteWorms[wormid].getCurrentWeapon());
 
 	client->cNetChan->AddReliablePacketToSend(bs);
 }
@@ -376,27 +379,4 @@ void CClientNetEngineBeta9::SendReportDamage(bool flush)
 
 	cDamageReport.clear();
 	fLastDamageReportSent = tLX->currentTime;
-}
-
-void CClient::SendGameStateUpdates() {
-	if(getStatus() != NET_CONNECTED)
-		return;
-	if(getServerVersion() < OLXBetaVersion(0,59,10))
-		return;
-	if(cNetChan->getBufferFull())
-		return;
-
-	GameState& state = *serverGameState;
-	GameStateUpdates updates;
-	updates.diffFromStateToCurrent(state);
-	if(!updates) return;
-
-	{
-		CBytestream bs;
-		bs.writeByte(C2S_GAMEATTRUPDATE);
-		updates.writeToBs(&bs, state);
-		cNetChan->AddReliablePacketToSend(bs);
-	}
-
-	state.updateToCurrent();
 }
