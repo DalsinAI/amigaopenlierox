@@ -17,17 +17,14 @@
 // By Jason Boettcher
 
 #include <assert.h>
-#include <vector>
 
 
 #include "LieroX.h"
-#include "Consts.h"  // for MAX_LOCAL_PLAYERS
 
 #include "AuxLib.h"  // for GetConfig()
 #include "Error.h"
 #include "ConfigHandler.h"
 #include "InputEvents.h"
-#include "Options.h"  // tLXOptions, SIN_*, __SIN_PLY_BOTTOM
 #include "StringUtils.h"
 #include "CInput.h"
 #include "Debug.h"
@@ -37,6 +34,7 @@
 
 
 keys_t Keys[] = {
+	{ "", 0 },
 	{ "a", SDLK_a },
 	{ "b", SDLK_b },
 	{ "c", SDLK_c },
@@ -73,16 +71,16 @@ keys_t Keys[] = {
 	{ "8", SDLK_8 },
 	{ "9", SDLK_9 },
 	{ "0", SDLK_0 },
-	{ "kp 0", SDLK_KP_0},
-	{ "kp 1", SDLK_KP_1},
-	{ "kp 2", SDLK_KP_2},
-	{ "kp 3", SDLK_KP_3},
-	{ "kp 4", SDLK_KP_4},
-	{ "kp 5", SDLK_KP_5},
-	{ "kp 6", SDLK_KP_6},
-	{ "kp 7", SDLK_KP_7},
-	{ "kp 8", SDLK_KP_8},
-	{ "kp 9", SDLK_KP_9},
+	{ "kp 0", SDLK_KP0},
+	{ "kp 1", SDLK_KP1},
+	{ "kp 2", SDLK_KP2},
+	{ "kp 3", SDLK_KP3},
+	{ "kp 4", SDLK_KP4},
+	{ "kp 5", SDLK_KP5},
+	{ "kp 6", SDLK_KP6},
+	{ "kp 7", SDLK_KP7},
+	{ "kp 8", SDLK_KP8},
+	{ "kp 9", SDLK_KP9},
 	{ "kp .",SDLK_KP_PERIOD },
 	{ "kp enter",SDLK_KP_ENTER },
 	{ "kp /",SDLK_KP_DIVIDE },
@@ -100,22 +98,10 @@ keys_t Keys[] = {
 	{ "=", SDLK_EQUALS},
 	{ ">", SDLK_GREATER},
 	{ "?", SDLK_QUESTION},
-	{ "@", SDLK_AT},
-	{ "(", SDLK_LEFTPAREN},
-	{ ")", SDLK_RIGHTPAREN},
-	{ "*", SDLK_ASTERISK},
-	{ "+", SDLK_PLUS},
 	{ "-", SDLK_MINUS},
 	{ "'", SDLK_QUOTE},
 	{ ",", SDLK_COMMA},
 	{ ".", SDLK_PERIOD},
-	{ "#", SDLK_HASH},
-	{ "%", SDLK_PERCENT},
-	{ "$", SDLK_DOLLAR},
-	{ "&", SDLK_AMPERSAND},
-	{ "\"", SDLK_QUOTEDBL},
-	{ "`", SDLK_BACKQUOTE},
-	{ "^", SDLK_CARET},
 	{ "enter", SDLK_RETURN},
 	{ "tab", SDLK_TAB},
 	{ "space",SDLK_SPACE },
@@ -126,23 +112,22 @@ keys_t Keys[] = {
 	{ "lctrl",SDLK_LCTRL },
 	{ "lshift",SDLK_LSHIFT },
 	{ "lalt",SDLK_LALT },
-	{ "lmeta",SDLK_LGUI },
-	{ "lsuper",SDLK_LGUI },
+	{ "lmeta",SDLK_LMETA },
+	{ "lsuper",SDLK_LSUPER },
 	{ "rctrl",SDLK_RCTRL },
 	{ "rshift",SDLK_RSHIFT },
 	{ "ralt",SDLK_RALT },
-	{ "rmeta",SDLK_RGUI },
-	{ "rsuper",SDLK_RGUI },
+	{ "rmeta",SDLK_RMETA },
+	{ "rsuper",SDLK_RSUPER },
 	{ "insert", SDLK_INSERT},
 	{ "home", SDLK_HOME},
 	{ "pg up", SDLK_PAGEUP},
 	{ "end", SDLK_END},
 	{ "pg Dn", SDLK_PAGEDOWN},
 	{ "delete", SDLK_DELETE},
-	{ "num lk", SDLK_NUMLOCKCLEAR},
+	{ "num lk", SDLK_NUMLOCK},
 	{ "caps", SDLK_CAPSLOCK},
-	{ "scr lk", SDLK_SCROLLLOCK},
-	{ "pause", SDLK_PAUSE},
+	{ "scr lk", SDLK_SCROLLOCK},
 	{ "F1", SDLK_F1 },
 	{ "F2", SDLK_F2 },
 	{ "F3", SDLK_F3 },
@@ -154,332 +139,237 @@ keys_t Keys[] = {
 	{ "F9", SDLK_F9 },
 	{ "F10", SDLK_F10 },
 	{ "F11", SDLK_F11 },
-	{ "F12", SDLK_F12 },
-	{ "F13", SDLK_F13 },
-	{ "F14", SDLK_F14 },
-	{ "F15", SDLK_F15 },
-	{ "F16", SDLK_F16 },
-	{ "F17", SDLK_F17 },
-	{ "F18", SDLK_F18 },
-	{ "F19", SDLK_F19 },
-	{ "F20", SDLK_F20 },
-	{ "F21", SDLK_F21 },
-	{ "F22", SDLK_F22 },
-	{ "F23", SDLK_F23 },
-	{ "F24", SDLK_F24 }
+	{ "F12", SDLK_F12 }
 	};
 
 int keys_t::keySymFromName(const std::string & name)
 {
 	for(uint n = 0; n<sizeof(Keys) / sizeof(keys_t); n++)
-		if( strcasecmp(Keys[n].text, name.c_str()) == 0 )
+		if( Keys[n].text == name )
 			return Keys[n].value;
-
+			
 	return 0;
-}
-
-bool isPlayer1KeyBinding(SDL_Keycode sym) {
-	if(!tLXOptions) return false;
-	if(tLXOptions->sPlayerControls.empty()) return false;
-	for(int i = 0; i < __SIN_PLY_BOTTOM; i++) {
-		const std::string& name = tLXOptions->sPlayerControls[0][i];
-		int boundSym = keys_t::keySymFromName(name);
-		if(boundSym != 0 && (SDL_Keycode)boundSym == sym)
-			return true;
-	}
-	return false;
-}
+};
 
 	
 	
-// Analog stick deadzone, expressed as a percentage of full stick deflection
-// (SDL analog axes range -32768..32767). Kept as a percentage so it's easy to
-// expose in a configuration UI later; the raw axis threshold used by the input
-// code is derived from it. Defined here (outside the dedicated/non-dedicated
-// split) so both the real readers and the dedicated stubs share one value.
-static const int JOY_DEADZONE_PERCENT = 60;
-static const int JOY_DEADZONE = (32767 * JOY_DEADZONE_PERCENT) / 100; // 60% -> 19660
-
-#ifdef DEDICATED_ONLY
+#if defined(DEDICATED_ONLY) || defined(DISABLE_JOYSTICK)
 
 void updateAxisStates() {}
 void CInput::InitJoysticksTemp() {}
 void CInput::UnInitJoysticksTemp() {}
-bool CInput::IsWaitingForInput() { return false; }
-void CInput::OnControllerAdded(int) {}
-void CInput::OnControllerRemoved(int) {}
-int getControllerPlayerSlot(SDL_JoystickID) { return -1; }
-
-// Twin-stick control helpers — no joystick support in dedicated builds.
-bool isPadPresent(int) { return false; }
-int getPadLeftStickX(int) { return 0; }
-int getPadLeftStickY(int) { return 0; }
-int getPadRightStickX(int) { return 0; }
-int getPadRightStickY(int) { return 0; }
-int getPadStickDeadzone() { return JOY_DEADZONE; } // unused without joystick support
 
 #else
 
 #define HAVE_JOYSTICK
 
-// JOY_DEADZONE is defined above (shared with the dedicated stubs).
-// Trigger threshold: triggers range 0..32767; fire at 75% travel
-static const int JOY_TRIGGER_THRESHOLD = 24576;
-
-// Binding table — maps the per-pad suffix to JOY_* flag and SDL constant.
-// Config strings use the form "j<N>_<suffix>" where N is 1-based pad index
-// (e.g. "j1_button_south", "j2_triggerright"). Pad count is unbounded; the N is
-// parsed at Setup() time and the suffix is matched against this table.
-// Text names use SDL's naming: SDL_GameControllerGetStringForButton/Axis
-// For axes:    sdl_index = SDL_GameControllerAxis
-// For buttons: sdl_index = SDL_GameControllerButton
-//
-// The analog sticks are deliberately NOT in this table: both sticks are
-// reserved for twin-stick controls (left stick walks, right stick aims; see
-// CWormHumanInputHandler::getInput), which read them directly rather than
-// through a binding. Only buttons, the d-pad and the triggers are bindable.
-joystick_t Joysticks[] = {
-	{ "button_south",  JOY_BUTTON,         SDL_CONTROLLER_BUTTON_A},
-	{ "button_east",   JOY_BUTTON,         SDL_CONTROLLER_BUTTON_B},
-	{ "button_west",   JOY_BUTTON,         SDL_CONTROLLER_BUTTON_X},
-	{ "button_north",  JOY_BUTTON,         SDL_CONTROLLER_BUTTON_Y},
-	{ "back",          JOY_BUTTON,         SDL_CONTROLLER_BUTTON_BACK},
-	{ "guide",         JOY_BUTTON,         SDL_CONTROLLER_BUTTON_GUIDE},
-	{ "start",         JOY_BUTTON,         SDL_CONTROLLER_BUTTON_START},
-	{ "leftstick",     JOY_BUTTON,         SDL_CONTROLLER_BUTTON_LEFTSTICK},
-	{ "rightstick",    JOY_BUTTON,         SDL_CONTROLLER_BUTTON_RIGHTSTICK},
-	{ "lshoulder",     JOY_BUTTON,         SDL_CONTROLLER_BUTTON_LEFTSHOULDER},
-	{ "rshoulder",     JOY_BUTTON,         SDL_CONTROLLER_BUTTON_RIGHTSHOULDER},
-	{ "d_up",          JOY_HAT,            SDL_CONTROLLER_BUTTON_DPAD_UP},
-	{ "d_down",        JOY_HAT,            SDL_CONTROLLER_BUTTON_DPAD_DOWN},
-	{ "d_left",        JOY_HAT,            SDL_CONTROLLER_BUTTON_DPAD_LEFT},
-	{ "d_right",       JOY_HAT,            SDL_CONTROLLER_BUTTON_DPAD_RIGHT},
-	{ "triggerleft",   JOY_TRIGGER_LEFT,   SDL_CONTROLLER_AXIS_TRIGGERLEFT},
-	{ "triggerright",  JOY_TRIGGER_RIGHT,  SDL_CONTROLLER_AXIS_TRIGGERRIGHT},
+// Joystick axes
+// TODO: these are set up according to my joystick, are they general enough?
+enum {
+	axis_None = -1,
+	axis_X = 0,
+	axis_Y = 1,
+	axis_Z = 3,
+	axis_Throttle = 2
 };
 
-// Pad slots grow on demand; closed pads remain as NULL holes so existing
-// jN_* bindings keep referring to the same physical position.
-static std::vector<SDL_GameController*> controllers;
-static std::vector<bool> controllers_inited_temp;
+joystick_t Joysticks[] = {
+	{ "joy1_up",JOY_UP,0, axis_Y},
+	{ "joy1_down",JOY_DOWN,0, axis_Y},
+	{ "joy1_left",JOY_LEFT,0, axis_X},
+	{ "joy1_right",JOY_RIGHT,0, axis_X},
+	{ "joy1_but1",JOY_BUTTON,0, axis_None},
+	{ "joy1_but2",JOY_BUTTON,1, axis_None},
+	{ "joy1_but3",JOY_BUTTON,2, axis_None},
+	{ "joy1_but4",JOY_BUTTON,3, axis_None},
+	{ "joy1_but5",JOY_BUTTON,4, axis_None},
+	{ "joy1_but6",JOY_BUTTON,5, axis_None},
+	{ "joy1_but7",JOY_BUTTON,6, axis_None},
+	{ "joy1_but8",JOY_BUTTON,7, axis_None},
+	{ "joy1_but9",JOY_BUTTON,8, axis_None},
+	{ "joy1_but10",JOY_BUTTON,9, axis_None},
+	{ "joy1_but11",JOY_BUTTON,10, axis_None},
+	{ "joy1_but12",JOY_BUTTON,11, axis_None},
+	{ "joy1_turnleft",JOY_TURN_LEFT,0, axis_Z},
+	{ "joy1_turnright",JOY_TURN_RIGHT,0, axis_Z},
+	{ "joy1_thr_up",JOY_THROTTLE_LEFT,0, axis_Throttle},
+	{ "joy1_thr_down",JOY_THROTTLE_RIGHT,0, axis_Throttle},
+	{ "joy2_up",JOY_UP,0, axis_Y},
+	{ "joy2_down",JOY_DOWN,0, axis_Y},
+	{ "joy2_left",JOY_LEFT,0, axis_X},
+	{ "joy2_right",JOY_RIGHT,0, axis_X},
+	{ "joy2_but1",JOY_BUTTON,0, axis_None},
+	{ "joy2_but2",JOY_BUTTON,1, axis_None},
+	{ "joy2_but3",JOY_BUTTON,2, axis_None},
+	{ "joy2_but4",JOY_BUTTON,3, axis_None},
+	{ "joy2_but5",JOY_BUTTON,4, axis_None},
+	{ "joy2_but6",JOY_BUTTON,5, axis_None},
+	{ "joy2_but7",JOY_BUTTON,6, axis_None},
+	{ "joy2_but8",JOY_BUTTON,7, axis_None},
+	{ "joy2_but9",JOY_BUTTON,8, axis_None},
+	{ "joy2_but10",JOY_BUTTON,9, axis_None},
+	{ "joy2_but11",JOY_BUTTON,10, axis_None},
+	{ "joy2_but12",JOY_BUTTON,11, axis_None},
+	{ "joy2_turnleft",JOY_TURN_LEFT,0, axis_Z},
+	{ "joy2_turnright",JOY_TURN_RIGHT,0, axis_Z},
+	{ "joy2_thr_up",JOY_THROTTLE_LEFT,0, axis_Throttle},
+	{ "joy2_thr_down",JOY_THROTTLE_RIGHT,0, axis_Throttle},
+};
 
-static SDL_GameController* getController(int idx) {
-	if(idx < 0 || (size_t)idx >= controllers.size()) return NULL;
-	return controllers[idx];
-}
+static SDL_Joystick* joys[2] = {NULL, NULL};
+static short oldJoystickAxisValues[2][4]; // Used for checking if any of the joystick axes changed its value
 
-static void ensureControllerSlot(int idx) {
-	if(idx < 0) return;
-	if((size_t)idx >= controllers.size()) {
-		controllers.resize(idx + 1, NULL);
-		controllers_inited_temp.resize(idx + 1, false);
+///////////////////
+// Updates the oldJoystickAcisValues array
+void updateAxisStates()
+{
+	for (size_t i = 0; i < sizeof(joys)/sizeof(SDL_Joystick *); i++)  {
+		oldJoystickAxisValues[i][axis_X] = SDL_JoystickGetAxis(joys[i], axis_X);
+		oldJoystickAxisValues[i][axis_Y] = SDL_JoystickGetAxis(joys[i], axis_Y);
+		oldJoystickAxisValues[i][axis_Z] = SDL_JoystickGetAxis(joys[i], axis_Z);
+		oldJoystickAxisValues[i][axis_Throttle] = SDL_JoystickGetAxis(joys[i], axis_Throttle);
 	}
 }
 
-int getControllerPlayerSlot(SDL_JoystickID instanceID) {
-	SDL_GameController* gc = SDL_GameControllerFromInstanceID(instanceID);
-	if(!gc) return -1;
-	// Pad N drives local player N (0-based). Bounds-checked so this is safe with
-	// any number of connected pads (including fewer than MAX_LOCAL_PLAYERS).
-	for(size_t i = 0; i < controllers.size() && i < (size_t)MAX_LOCAL_PLAYERS; i++)
-		if(gc == controllers[i]) return (int)i;
-	return -1;
-}
-
-// Called each frame by the event loop — nothing to snapshot with the GameController API
-void updateAxisStates() {}
-
-static int getControllerValue(int flag, int sdl_index, int idx)
+static int getJoystickControlValue(int flag, int extra, SDL_Joystick* joy)
 {
-	SDL_GameController *gc = getController(idx);
-	if(!gc) return 0;
-
 	switch(flag) {
 		case JOY_UP:
+			return SDL_JoystickGetAxis(joy, axis_Y);
 		case JOY_DOWN:
+			return SDL_JoystickGetAxis(joy, axis_Y);
 		case JOY_LEFT:
+			return SDL_JoystickGetAxis(joy, axis_X);
 		case JOY_RIGHT:
-		case JOY_TURN_LEFT:
-		case JOY_TURN_RIGHT:
-		case JOY_THROTTLE_LEFT:
-		case JOY_THROTTLE_RIGHT:
-		case JOY_TRIGGER_LEFT:
-		case JOY_TRIGGER_RIGHT:
-			return SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)sdl_index);
+			return SDL_JoystickGetAxis(joy, axis_X);
 		case JOY_BUTTON:
-		case JOY_HAT:
-			return SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)sdl_index);
+			return SDL_JoystickGetButton(joy, extra);
+		case JOY_TURN_LEFT:
+			return SDL_JoystickGetAxis(joy, axis_Z);
+		case JOY_TURN_RIGHT:
+			return SDL_JoystickGetAxis(joy, axis_Z);
+		case JOY_THROTTLE_LEFT:
+			return SDL_JoystickGetAxis(joy, axis_Throttle);
+		case JOY_THROTTLE_RIGHT:
+			return SDL_JoystickGetAxis(joy, axis_Throttle);
+
 		default:
-			warnings << "getControllerValue: unknown flag" << endl;
+			warnings << "getJoystickValue: unknown flag" << endl;
 	}
+
 	return 0;
 }
 
-static bool checkControllerState(int flag, int sdl_index, int idx)
-{
+static bool checkJoystickState(int flag, int extra, int j_index) {
+	SDL_Joystick *joy = joys[j_index];
 	if(!bJoystickSupport) return false;
-	SDL_GameController *gc = getController(idx);
-	if(!gc) return false;
+	if(joy == NULL) return false;
 
+	int val;
+
+	// TODO: atm these limits are hardcoded; make them constants (or perhaps also configurable)
 	switch(flag) {
 		case JOY_UP:
-		case JOY_LEFT:
-		case JOY_TURN_LEFT:
-		case JOY_THROTTLE_LEFT:
-			return SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)sdl_index) < -JOY_DEADZONE;
+			val = SDL_JoystickGetAxis(joy, axis_Y);
+			if(val < -3200)
+				return true;
+			break;
 		case JOY_DOWN:
+			val = SDL_JoystickGetAxis(joy, axis_Y);
+			if(val > 3200)
+				return true;
+			break;
+		case JOY_LEFT:
+			val = SDL_JoystickGetAxis(joy, axis_X);
+			if(val < -3200)
+				return true;
+			break;
 		case JOY_RIGHT:
-		case JOY_TURN_RIGHT:
-		case JOY_THROTTLE_RIGHT:
-			return SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)sdl_index) >  JOY_DEADZONE;
-		case JOY_TRIGGER_LEFT:
-		case JOY_TRIGGER_RIGHT:
-			return SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)sdl_index) > JOY_TRIGGER_THRESHOLD;
+			val = SDL_JoystickGetAxis(joy, axis_X);
+			if(val > 3200)
+				return true;
+			break;
 		case JOY_BUTTON:
-		case JOY_HAT:
-			return SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)sdl_index) != 0;
+			if(SDL_JoystickGetButton(joy,extra))
+				return true;
+			break;
+		case JOY_TURN_LEFT:
+			val = SDL_JoystickGetAxis(joy, axis_Z);
+			if (val < -3200)
+				return true;
+			break;
+		case JOY_TURN_RIGHT:
+			val = SDL_JoystickGetAxis(joy, axis_Z);
+			if (val > 3200)
+				return true;
+			break;
+
+		// HINT: throttle is "static", i.e. it doesn't return back to a default position
+		// Therefore we check if the value has changed instead of getting the state
+		case JOY_THROTTLE_LEFT:
+			if (SDL_JoystickGetAxis(joy, axis_Throttle) - oldJoystickAxisValues[j_index][axis_Throttle] < -50)
+				return true;
+			break;
+		case JOY_THROTTLE_RIGHT:
+			if (SDL_JoystickGetAxis(joy, axis_Throttle) - oldJoystickAxisValues[j_index][axis_Throttle] > 50)
+				return true;
+			break;
+
 		default:
-			warnings << "checkControllerState: unknown flag" << endl;
+			warnings << "checkJoystickState: unknown flag" << endl;
 	}
+
+
 	return false;
 }
 
-// --- Twin-stick control helpers (raw analog values, -32768..32767) ---
-bool isPadPresent(int padIndex) { return getController(padIndex) != NULL; }
-static int rawAxis(int padIndex, SDL_GameControllerAxis axis) {
-	SDL_GameController* gc = getController(padIndex);
-	if(!gc) return 0;
-	return SDL_GameControllerGetAxis(gc, axis);
-}
-int getPadLeftStickX(int padIndex)  { return rawAxis(padIndex, SDL_CONTROLLER_AXIS_LEFTX); }
-int getPadLeftStickY(int padIndex)  { return rawAxis(padIndex, SDL_CONTROLLER_AXIS_LEFTY); }
-int getPadRightStickX(int padIndex) { return rawAxis(padIndex, SDL_CONTROLLER_AXIS_RIGHTX); }
-int getPadRightStickY(int padIndex) { return rawAxis(padIndex, SDL_CONTROLLER_AXIS_RIGHTY); }
-int getPadStickDeadzone() { return JOY_DEADZONE; }
+static bool joysticks_inited_temp[2] = {false, false};
 
-static void initController(int i, bool isTemp) {
-	if(i < 0) return;
+static void initJoystick(int i, bool isTemp) {
+	assert(i == 0 || i == 1);
 	if(!bJoystickSupport) return;
-	ensureControllerSlot(i);
-	if(controllers[i] != NULL) return;
-	if(SDL_NumJoysticks() <= i) return;
 
-	const char* name = SDL_GameControllerNameForIndex(i);
-	notes << "opening controller " << i << " (\"" << (name ? name : "unknown") << "\")" << endl;
-
-	if(!SDL_IsGameController(i)) {
-		warnings << "  Device is not a recognised SDL GameController — skipping" << endl;
-		return;
+	if(joys[i] == NULL && SDL_NumJoysticks() > i && !SDL_JoystickOpened(i)) {
+		notes << "opening joystick " << i << endl;
+		notes << " (\"" << SDL_JoystickName(i) << "\")" << endl;
+		joys[i] = SDL_JoystickOpen(i);
+		if(joys[i]) {
+			notes << "  Number of Axes: " << SDL_JoystickNumAxes(joys[i]) << endl;
+			notes << "  Number of Buttons: " << SDL_JoystickNumButtons(joys[i]) << endl;
+			notes << "  Number of Balls: " << SDL_JoystickNumBalls(joys[i]) << endl;
+			if(isTemp) joysticks_inited_temp[i] = true;
+		} else
+			warnings << "Could not open joystick" << endl;
 	}
 
-	controllers[i] = SDL_GameControllerOpen(i);
-	if(!controllers[i]) {
-		warnings << "  Could not open game controller: " << SDL_GetError() << endl;
-		return;
-	}
+	// Save the initial axis values
+	SDL_Delay(40); // Small hack: this little delay is needed here for the joysticks to initialize correctly (bug in SDL?)
+	SDL_JoystickUpdate();
+	updateAxisStates();
 
-	SDL_Joystick* joy = SDL_GameControllerGetJoystick(controllers[i]);
-	notes << "  Axes: "    << SDL_JoystickNumAxes(joy)    << endl;
-	notes << "  Buttons: " << SDL_JoystickNumButtons(joy) << endl;
-	notes << "  Hats: "    << SDL_JoystickNumHats(joy)    << endl;
-
-	if(isTemp) controllers_inited_temp[i] = true;
-
-	// Small delay needed for the controller to initialise correctly (SDL bug workaround)
-	SDL_Delay(40);
-	SDL_GameControllerUpdate();
+	if(!isTemp) joysticks_inited_temp[i] = false;
 }
-
-static int gTempJoysticksUsers = 0;
-
-bool CInput::IsWaitingForInput() { return gTempJoysticksUsers > 0; }
 
 void CInput::InitJoysticksTemp() {
-	gTempJoysticksUsers++;
 	if(!bJoystickSupport) return;
-	const int n = SDL_NumJoysticks();
-	notes << "Initing controllers temporary..." << endl;
-	notes << "Available joysticks: " << n << endl;
-	for(int i = 0; i < n; ++i) initController(i, true);
+	notes << "Initing joysticks temporary..." << endl;
+	notes << "Amout of available joysticks: " << SDL_NumJoysticks() << endl;
+	initJoystick(0, true);
+	initJoystick(1, true);
 }
 
-static void uninitTempController(int i) {
-	if(i < 0 || (size_t)i >= controllers.size()) return;
-	if(controllers_inited_temp[i]) {
-		notes << "Uninit temporary controller " << i << endl;
-		SDL_GameControllerClose(controllers[i]);
-		controllers[i] = NULL;
-		controllers_inited_temp[i] = false;
+static void uninitTempJoystick(int i) {
+	if(joysticks_inited_temp[i] && SDL_JoystickOpened(i)) {
+		notes << "Uninit temporary loaded joystick " << i << endl;
+		SDL_JoystickClose(joys[i]);
+		joys[i] = NULL;
+		joysticks_inited_temp[i] = false;
 	}
 }
 
 void CInput::UnInitJoysticksTemp() {
-	if(gTempJoysticksUsers > 0) gTempJoysticksUsers--;
-	for(size_t i = 0; i < controllers.size(); ++i) uninitTempController((int)i);
-}
-
-void CInput::OnControllerAdded(int deviceIndex) {
-	if(!bJoystickSupport) return;
-	// SDL fires SDL_CONTROLLERDEVICEADDED for every controller present
-	// during SDL_INIT_GAMECONTROLLER (not only true hot-plug events).
-	// Skip if this device is already open in some slot — otherwise the
-	// boot-time scan in InitJoysticksTemp() and this handler will both
-	// open the same physical pad and we'll bind it to two slots.
-	SDL_JoystickID newId = SDL_JoystickGetDeviceInstanceID(deviceIndex);
-	if(newId >= 0) {
-		for(size_t j = 0; j < controllers.size(); ++j) {
-			if(!controllers[j]) continue;
-			SDL_Joystick* joy = SDL_GameControllerGetJoystick(controllers[j]);
-			if(joy && SDL_JoystickInstanceID(joy) == newId) return;
-		}
-	}
-	if(!SDL_IsGameController(deviceIndex)) {
-		warnings << "OnControllerAdded: device " << deviceIndex
-		         << " is not a recognised SDL GameController — skipping" << endl;
-		return;
-	}
-	// Fill the first free slot, or append a new one. Slots freed by
-	// OnControllerRemoved stay as NULL holes so existing bindings keep
-	// pointing at the same physical position.
-	int slot = -1;
-	for(size_t i = 0; i < controllers.size(); ++i) {
-		if(controllers[i] == NULL) { slot = (int)i; break; }
-	}
-	if(slot < 0) {
-		slot = (int)controllers.size();
-		ensureControllerSlot(slot);
-	}
-	const char* name = SDL_GameControllerNameForIndex(deviceIndex);
-	notes << "OnControllerAdded: opening device " << deviceIndex
-	      << " (\"" << (name ? name : "unknown") << "\") in slot " << slot << endl;
-	controllers[slot] = SDL_GameControllerOpen(deviceIndex);
-	if(!controllers[slot]) {
-		warnings << "  Could not open game controller: " << SDL_GetError() << endl;
-		return;
-	}
-	SDL_Joystick* joy = SDL_GameControllerGetJoystick(controllers[slot]);
-	notes << "  Axes: "    << SDL_JoystickNumAxes(joy)    << endl;
-	notes << "  Buttons: " << SDL_JoystickNumButtons(joy) << endl;
-	notes << "  Hats: "    << SDL_JoystickNumHats(joy)    << endl;
-	// Hot-plugged controllers persist past the menu's temp-init
-	// teardown — leave controllers_inited_temp[slot] false.
-	SDL_GameControllerUpdate();
-}
-
-void CInput::OnControllerRemoved(int instanceId) {
-	if(!bJoystickSupport) return;
-	for(size_t i = 0; i < controllers.size(); ++i) {
-		if(!controllers[i]) continue;
-		SDL_Joystick* joy = SDL_GameControllerGetJoystick(controllers[i]);
-		if(!joy) continue;
-		if(SDL_JoystickInstanceID(joy) != (SDL_JoystickID)instanceId) continue;
-		notes << "OnControllerRemoved: closing slot " << i
-		      << " (instance " << instanceId << ")" << endl;
-		SDL_GameControllerClose(controllers[i]);
-		controllers[i] = NULL;
-		controllers_inited_temp[i] = false;
-		return;
-	}
+	uninitTempJoystick(0);
+	uninitTempJoystick(1);
 }
 
 #endif // !DEDICATED_ONLY
@@ -490,7 +380,12 @@ void CInput::OnControllerRemoved(int instanceId) {
 
 
 CInput::CInput() {
+	Type = INP_NOTUSED;
+	Data = 0;
+	Extra = 0;
 	resetEachFrame = true;
+	bDown = false;
+	reset();
 
 	RegisterCInput(this);
 }
@@ -499,6 +394,18 @@ CInput::~CInput() {
 	UnregisterCInput(this);
 }
 
+
+///////////////////
+// Load the input from a config file
+int CInput::Load(const std::string& name, const std::string& section)
+{
+	std::string string;
+
+	if(!ReadString(GetConfigFile(),section,name,string,""))
+		return false;
+
+	return Setup(string);
+}
 
 
 ///////////////////
@@ -509,7 +416,7 @@ int CInput::Wait(std::string& strText)
 	keyboard_t *kb = GetKeyboard();
 
 	// First check the mouse
-	for(uint n = 1; n <= MAX_MOUSEBUTTONS; n++) {
+	for(uint n = 0; n < MAX_MOUSEBUTTONS; n++) {
 		uint i = n;
 		if(Mouse->Up & SDL_BUTTON(n)) {
 			// Swap rmb id wih mmb (mouse buttons)
@@ -525,28 +432,7 @@ int CInput::Wait(std::string& strText)
 	// Keyboard
 	for(int i = 0; i < kb->queueLength; ++i) {
 		if(kb->keyQueue[i].down) continue;
-		if(kb->keyQueue[i].sym == 0) continue;
-
-		// Skip bare modifier key releases — they are not useful as standalone bindings
-		// when combined with other modifiers (e.g. releasing Alt after Alt+Enter).
-		// Pure modifier presses (Alt alone) still work since the state will show no other mods.
-		SDL_Keycode sym = kb->keyQueue[i].sym;
-		bool isModifierKey = (sym == SDLK_LALT || sym == SDLK_RALT ||
-		                      sym == SDLK_LCTRL || sym == SDLK_RCTRL ||
-		                      sym == SDLK_LSHIFT || sym == SDLK_RSHIFT ||
-		                      sym == SDLK_LGUI || sym == SDLK_RGUI);
-		const ModifiersState& evMods = kb->keyQueue[i].state;
-		bool anyModHeld = evMods.bAlt || evMods.bCtrl || evMods.bShift || evMods.bGui;
-		if(isModifierKey && anyModHeld)
-			continue;
-
-		// Build modifier prefix string from the event's modifier state
-		std::string modPrefix;
-		if(evMods.bAlt)   modPrefix += "alt+";
-		if(evMods.bCtrl)  modPrefix += "ctrl+";
-		if(evMods.bShift) modPrefix += "shift+";
-		if(evMods.bGui)   modPrefix += "gui+";
-
+		
 		for(uint n = 0; n<sizeof(Keys) / sizeof(keys_t); n++) {
 			if(kb->keyQueue[i].sym == Keys[n].value) {
 #ifdef WIN32
@@ -561,7 +447,7 @@ int CInput::Wait(std::string& strText)
 				}
 #endif
 
-				strText = modPrefix + Keys[n].text;
+				strText = Keys[n].text;
 				return true;
 			}
 		}
@@ -569,19 +455,21 @@ int CInput::Wait(std::string& strText)
 		// Our description is not enough, let's call SDL for help
 		// We use SDL only for the left unknown keys to stay backward and forward compatible.
 		if (kb->keyQueue[i].sym != SDLK_ESCAPE)  {
-			strText = modPrefix + SDL_GetKeyName(kb->keyQueue[i].sym);
+			strText = SDL_GetKeyName((SDLKey)kb->keyQueue[i].sym);
 			return true;
 		}
 	}
 
 #ifdef HAVE_JOYSTICK
-	for(size_t idx = 0; idx < controllers.size(); ++idx) {
-		if(!controllers[idx]) continue;
-		for(uint n = 0; n < sizeof(Joysticks) / sizeof(joystick_t); n++) {
-			if(checkControllerState(Joysticks[n].value, Joysticks[n].sdl_index, (int)idx)) {
-				strText = "j" + itoa((int)idx + 1) + "_" + Joysticks[n].text;
-				return true;
-			}
+	// joystick
+	// TODO: more joysticks
+	for(uint n = 0; n < sizeof(Joysticks) / sizeof(joystick_t); n++) {
+		int i = Joysticks[n].text[3] - '1'; // at pos 3, there is the number ("joy1_...")
+
+		// Check if any of the axes has been moved or a button press occured
+		if(joys[i] != NULL && checkJoystickState(Joysticks[n].value, Joysticks[n].extra, i)) {
+			strText = Joysticks[n].text;
+			return true;
 		}
 	}
 #endif
@@ -592,136 +480,66 @@ int CInput::Wait(std::string& strText)
 
 ///////////////////
 // Setup
-// The config value may be a single binding or a comma-separated list of
-// bindings (e.g. "lalt, j1_button_south"). Each token is parsed into its own
-// Binding; the action is active when any of them is active.
 int CInput::Setup(const std::string& string)
 {
+	unsigned int n;
+
 	m_EventName = string;
 	resetEachFrame = true;
-	m_bindings.clear();
-
-	int ret = false;
-	std::vector<std::string> tokens = explode(string, ",");
-	for(std::vector<std::string>::iterator it = tokens.begin(); it != tokens.end(); ++it) {
-		std::string token = Trimmed(*it);
-		if(token.empty()) continue;
-		Binding b;
-		bool ok = b.setup(token);
-		m_bindings.push_back(b);
-		if(ok) ret = true;
-	}
-
-	// Fallback: nothing usable came out of splitting (e.g. the binding is the
-	// comma key itself, written as ","). Treat the whole string as one token.
-	if(m_bindings.empty()) {
-		std::string whole = Trimmed(string);
-		if(!whole.empty()) {
-			Binding b;
-			ret = b.setup(whole);
-			m_bindings.push_back(b);
-		}
-	}
-
-	// Always keep at least one (unused) binding so the rest of the code can
-	// treat a control uniformly whether or not it parsed to anything.
-	if(m_bindings.empty())
-		m_bindings.push_back(Binding());
-
-	return ret;
-}
-
-///////////////////
-// Parse a single binding token
-bool CInput::Binding::setup(const std::string& string)
-{
-	Type = INP_NOTUSED;
-	Data = 0;
-	SdlIndex = 0;
-	JoystickIndex = 0;
-	m_name = string;
-	m_modifiers.clear();
-
-	// Parse optional modifier prefixes: "alt+", "ctrl+", "shift+"
-	std::string remaining = string;
-	bool foundModifier = true;
-	while(foundModifier && remaining.size() >= 4) {
-		foundModifier = false;
-		std::string lower = remaining.substr(0, 6);
-		for(char& c : lower) c = tolower(c);
-		if(lower.substr(0, 4) == "alt+") {
-			m_modifiers.bAlt = true;
-			remaining = remaining.substr(4);
-			foundModifier = true;
-		} else if(lower.substr(0, 5) == "ctrl+") {
-			m_modifiers.bCtrl = true;
-			remaining = remaining.substr(5);
-			foundModifier = true;
-		} else if(lower.substr(0, 6) == "shift+") {
-			m_modifiers.bShift = true;
-			remaining = remaining.substr(6);
-			foundModifier = true;
-		} else if(lower.substr(0, 4) == "gui+") {
-			m_modifiers.bGui = true;
-			remaining = remaining.substr(4);
-			foundModifier = true;
-		}
-	}
 
 	// Check if it's a mouse
-	if(remaining.substr(0,2) == "ms") {
+	if(string.substr(0,2) == "ms") {
 		Type = INP_MOUSE;
-		Data = atoi(remaining.substr(2).c_str());
+		Data = atoi(string.substr(2).c_str());
 		if( Data == 3 ) Data = 2;
 		else if( Data == 2 ) Data = 3;
-		if(Data < 1 || Data > MAX_MOUSEBUTTONS) {
-			warnings << "CInput::Setup " << string << ": mouse button index must be between 1 and " << MAX_MOUSEBUTTONS << endl;
-			// those might be good fallbacks
-			if(Data == 0) Data = 1;
-			else Data = MAX_MOUSEBUTTONS;
-		}
 		return true;
-	}
-	
-	{
-		SDL_Keycode key = SDL_GetKeyFromName(remaining.c_str());
-		if(key != SDLK_UNKNOWN) {
-			Type = INP_KEYBOARD;
-			Data = key;
-			return true;
-		}
 	}
 
 #ifdef HAVE_JOYSTICK
-	// Joystick binding: "j<N>_<suffix>" — N is the 1-based pad index, any N.
-	if(remaining.size() >= 3 && remaining[0] == 'j' && remaining[1] >= '1' && remaining[1] <= '9') {
-		size_t digitsEnd = 1;
-		while(digitsEnd < remaining.size() && remaining[digitsEnd] >= '0' && remaining[digitsEnd] <= '9')
-			++digitsEnd;
-		if(digitsEnd < remaining.size() && remaining[digitsEnd] == '_') {
-			int padNumber = atoi(remaining.substr(1, digitsEnd - 1).c_str());
-			int padIndex = padNumber - 1;
-			Type = INP_JOYSTICK;
-			JoystickIndex = padIndex;
-			Data = 0;
+	// Check if it's a joystick #1
+	// TODO: allow more joysticks
+	if(string.substr(0,5) == "joy1_") {
+		Type = INP_JOYSTICK1;
+		Data = 0;
 
-			// Open the pad now if it's already connected. If it isn't yet —
-			// e.g. a browser only exposes a gamepad to the page after its first
-			// button press — don't bail out: the hotplug path
-			// (OnControllerAdded) opens it the moment it appears. We still
-			// resolve the binding's action below regardless, so it works as
-			// soon as the pad is initialised, with no trip through the controls
-			// menu needed to "wake" it.
-			if(SDL_NumJoysticks() > padIndex)
-				initController(padIndex, false);
+		// Make sure there is a joystick present
+		if(SDL_NumJoysticks()<=0) {
+			SetError("Could not open joystick1");
+			return false;
+		}
 
-			std::string suffix = remaining.substr(digitsEnd + 1);
-			for(uint32_t n=0; n<sizeof(Joysticks) / sizeof(joystick_t); n++) {
-				if(strcasecmp(Joysticks[n].text, suffix.c_str()) == 0) {
-					Data = Joysticks[n].value;
-					SdlIndex = Joysticks[n].sdl_index;
-					return true;
-				}
+		// Open the joystick if it hasn't been already opened
+		initJoystick(0, false);
+
+		// Go through the joystick list
+		for(n=0;n<sizeof(Joysticks) / sizeof(joystick_t);n++) {
+			if(Joysticks[n].text == string) {
+				Data = Joysticks[n].value;
+				Extra = Joysticks[n].extra;
+				return true;
+			}
+		}
+	}
+	
+	// Check if it's a joystick #2
+	if(string.substr(0,5) == "joy2_") {
+		Type = INP_JOYSTICK2;
+		Data = 0;
+
+		// Make sure there is a joystick present
+		if(SDL_NumJoysticks()<=1)
+			return false;
+
+		// Open the joystick if it hasn't been already opened
+		initJoystick(1, false);
+
+		// Go through the joystick list
+		for(n=0;n<sizeof(Joysticks) / sizeof(joystick_t);n++) {
+			if(Joysticks[n].text == string) {
+				Data = Joysticks[n].value;
+				Extra = Joysticks[n].extra;
+				return true;
 			}
 		}
 	}
@@ -733,9 +551,17 @@ bool CInput::Binding::setup(const std::string& string)
 	Data = 0;
 
 	// Go through the key list checking with piece of text it was
-	for(uint32_t n=0; n < sizeof(Keys) / sizeof(keys_t); n++) {
-		if(strcasecmp(Keys[n].text, remaining.c_str()) == 0) {
+	for(n=0;n<sizeof(Keys) / sizeof(keys_t);n++) {
+		if(Keys[n].text == string) {
 			Data = Keys[n].value;
+			return true;
+		}
+	}
+
+	// Try if SDL knows the key
+	for(n=0; n < SDLK_LAST; n++)  {
+		if (string == SDL_GetKeyName((SDLKey)n))  {
+			Data = n;
 			return true;
 		}
 	}
@@ -745,52 +571,49 @@ bool CInput::Binding::setup(const std::string& string)
 
 ////////////////////
 // Returns the "force" value for a joystick axis
-int CInput::Binding::getJoystickValue() const
+int CInput::getJoystickValue()
 {
 #ifdef HAVE_JOYSTICK
-	if(Type == INP_JOYSTICK)
-		return getControllerValue(Data, SdlIndex, JoystickIndex);
+	switch (Type)  {
+	case INP_JOYSTICK1:
+		return getJoystickControlValue(Data, Extra, joys[0]);
+	case INP_JOYSTICK2:
+		return getJoystickControlValue(Data, Extra, joys[1]);
+	default:
+		return 0;
+	}
 #endif
 	return 0;
 }
 
-int CInput::getJoystickValue()
-{
-	// Return the joystick binding with the largest force (by magnitude).
-	int best = 0;
-	for(std::vector<Binding>::iterator it = m_bindings.begin(); it != m_bindings.end(); ++it) {
-		int v = it->getJoystickValue();
-		int vMag = (v < 0) ? -v : v;
-		int bestMag = (best < 0) ? -best : best;
-		if(vMag > bestMag) best = v;
-	}
-	return best;
-}
-
-
-////////////////////
-// Returns true if this joystick is a throttle
-bool CInput::Binding::isJoystickThrottle() const
+/////////////////////
+// Returns true if this input is a joystick axis
+bool CInput::isJoystickAxis()
 {
 #ifdef HAVE_JOYSTICK
-	if (Type == INP_JOYSTICK)
-		return (Data == JOY_THROTTLE_LEFT) || (Data == JOY_THROTTLE_RIGHT);
+	if (Type == INP_JOYSTICK1 || Type == INP_JOYSTICK2)
+		return Data != JOY_BUTTON;
 #endif
 	return false;
 }
 
+////////////////////
+// Returns true if this joystick is a throttle
 bool CInput::isJoystickThrottle()
 {
-	for(std::vector<Binding>::iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isJoystickThrottle()) return true;
+#ifdef HAVE_JOYSTICK
+	if (Type == INP_JOYSTICK1 || Type == INP_JOYSTICK2)
+		return (Data == JOY_THROTTLE_LEFT) || (Data == JOY_THROTTLE_RIGHT);
+#endif
 	return false;
 }
 
 
 ///////////////////
 // Returns if the input has just been released
-bool CInput::Binding::isUp() const
+bool CInput::isUp()
 {
+
 	switch(Type) {
 
 		// Keyboard
@@ -801,13 +624,15 @@ bool CInput::Binding::isUp() const
 
 		// Mouse
 		case INP_MOUSE:
-			if(GetMouse()->Up & SDL_BUTTON(Data))
+			// TODO: fix: this calculates mouse_up for ALL the buttons
+			if(GetMouse()->Up)
 				return true;
 			break;
 
 #ifdef HAVE_JOYSTICK
 		// Joystick
-		case INP_JOYSTICK:
+		case INP_JOYSTICK1:
+		case INP_JOYSTICK2:
 			return nUp > 0;
 #endif
 	}
@@ -815,56 +640,15 @@ bool CInput::Binding::isUp() const
 	return false;
 }
 
-bool CInput::isUp()
-{
-	for(std::vector<Binding>::iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isUp()) return true;
-	return false;
-}
-
 
 ///////////////////
 // Returns if the input is down
-bool CInput::Binding::isDown() const
+bool CInput::isDown() const
 {
 	switch(Type) {
 
 		// Keyboard
 		case INP_KEYBOARD:
-#ifdef __EMSCRIPTEN__
-			// On the wasm port we poll keyboard state directly each
-			// frame, the same model gamepad uses (CInput::INP_JOYSTICK*
-			// → checkControllerState). The event-driven path still
-			// updates bDown via HandleCInputs_KeyEvent, but events have
-			// to traverse browser → SDL → wasm-worker → OLX mainQueue
-			// → game-thread; polling skips that whole chain so a held
-			// key shows up the same frame the simulation runs.
-			if(Data > 0) {
-				SDL_Scancode sc = SDL_GetScancodeFromKey(Data);
-				if(sc != SDL_SCANCODE_UNKNOWN) {
-					const Uint8* state = SDL_GetKeyboardState(NULL);
-					if(state && state[sc]) {
-						// If the binding requires modifiers, enforce
-						// an exact match; otherwise fire regardless.
-						if(m_modifiers.bAlt || m_modifiers.bCtrl ||
-						   m_modifiers.bShift || m_modifiers.bGui) {
-							SDL_Keymod mod = SDL_GetModState();
-							const bool alt   = (mod & KMOD_ALT)   != 0;
-							const bool ctrl  = (mod & KMOD_CTRL)  != 0;
-							const bool shift = (mod & KMOD_SHIFT) != 0;
-							const bool gui   = (mod & KMOD_GUI)   != 0;
-							if(m_modifiers.bAlt   == alt &&
-							   m_modifiers.bCtrl  == ctrl &&
-							   m_modifiers.bShift == shift &&
-							   m_modifiers.bGui   == gui)
-								return true;
-						} else {
-							return true;
-						}
-					}
-				}
-			}
-#endif
 			if(wasDown()) return true; // in this case, we want to return true here to get it recognised at least once
 			return bDown;
 
@@ -876,18 +660,13 @@ bool CInput::Binding::isDown() const
 
 #ifdef HAVE_JOYSTICK
 		// Joystick
-		case INP_JOYSTICK:
-			return checkControllerState(Data, SdlIndex, JoystickIndex);
+		case INP_JOYSTICK1:
+			return checkJoystickState(Data, Extra, 0);
+		case INP_JOYSTICK2:
+			return checkJoystickState(Data, Extra, 1);
 #endif
 	}
 
-	return false;
-}
-
-bool CInput::isDown() const
-{
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isDown()) return true;
 	return false;
 }
 
@@ -896,215 +675,63 @@ bool CInput::isDown() const
 // Returns if the input was pushed down once
 bool CInput::isDownOnce()
 {
-	for(std::vector<Binding>::iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->nDownOnce != 0) return true;
-	return false;
+	return nDownOnce != 0;
+}
+
+int CInput::wasDown_withoutRepeats() const {
+	return nDownOnce;
 }
 
 // goes through the event-signals and searches for the event
-int CInput::Binding::wasDown() const {
-	switch(Type) {
-	case INP_KEYBOARD:
-		return nDown;
-
-	case INP_MOUSE:
-		// TODO: to make this possible, we need to go extend HandleNextEvent to save the mouse events
-		return nDownOnce; // no other way at the moment
-
-#ifdef HAVE_JOYSTICK
-	case INP_JOYSTICK:
-		return nDownOnce; // no other way at the moment
-#endif
-	}
-
-	return 0;
-}
-
 int CInput::wasDown() const {
 	int counter = 0;
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		counter += it->wasDown();
-	return counter;
-}
 
-int CInput::wasDown(bool withRepeats) const {
-	if(withRepeats) return wasDown();
-	int counter = 0;
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		counter += it->wasDown_withoutRepeats();
+	switch(Type) {
+	case INP_KEYBOARD:
+		counter = nDown;
+		break;
+
+	case INP_MOUSE:
+		// TODO: to make this possible, we need to go extend HandleNextEvent to save the mouse events
+		counter = nDownOnce; // no other way at the moment
+		break;
+
+#ifdef HAVE_JOYSTICK
+	case INP_JOYSTICK1:
+	case INP_JOYSTICK2:
+		counter = nDownOnce; // no other way at the moment
+		break;
+#endif
+	}
+
 	return counter;
 }
 
 // goes through the event-signals and searches for the event
-int CInput::Binding::wasUp() const {
+int CInput::wasUp() {
+	int counter = 0;
+
 	switch(Type) {
 	case INP_KEYBOARD:
-		return nUp;
+		counter = nDown;
+		break;
 
 	case INP_MOUSE:
 		// TODO: to make this possible, we need to go extend HandleNextEvent to save the mouse events
-		return 0;  // no other way at the moment
+		counter = 0;  // no other way at the moment
+		break;
 
 #ifdef HAVE_JOYSTICK
-	case INP_JOYSTICK:
-		return 0; // no other way at the moment
+	case INP_JOYSTICK1:
+	case INP_JOYSTICK2:
+		counter = 0; // no other way at the moment
+		break;
 #endif
 	}
 
-	return 0;
-}
-
-int CInput::wasUp() {
-	int counter = 0;
-	for(std::vector<Binding>::iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		counter += it->wasUp();
 	return counter;
-}
-
-bool CInput::isUsed() const {
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isUsed()) return true;
-	return false;
-}
-
-bool CInput::isJoystick() const {
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isJoystick()) return true;
-	return false;
-}
-
-bool CInput::isJoystickDown() const {
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isJoystick() && it->isDown()) return true;
-	return false;
-}
-
-bool CInput::isJoystickDownOnce() const {
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isJoystick() && it->nDownOnce != 0) return true;
-	return false;
-}
-
-bool CInput::isKeyboard() const {
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isKeyboard()) return true;
-	return false;
-}
-
-std::string CInput::getEventName(bool onlyAvailable) const {
-	if(!onlyAvailable) return m_EventName;
-	std::string res;
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it) {
-		if(it->m_name.empty()) continue;
-		// A joystick binding for a pad that isn't plugged in can't fire; hide it.
-		if(it->isJoystick() && !isPadPresent(it->JoystickIndex)) continue;
-		if(!res.empty()) res += ", ";
-		res += it->m_name;
-	}
-	// Nothing usable (unbound, or bound only to an absent pad):
-	// say so explicitly rather than render a blank.
-	if(res.empty()) return "<none>";
-	return res;
-}
-
-bool CInput::usesKeyboardKey(int sym) const {
-	for(std::vector<Binding>::const_iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		if(it->isKeyboard() && it->Data == sym) return true;
-	return false;
 }
 
 void CInput::reset() {
-	for(std::vector<Binding>::iterator it = m_bindings.begin(); it != m_bindings.end(); ++it)
-		it->reset();
-}
-
-
-///////////////////
-// Update keyboard bindings from a key event
-void CInput::handleKeyEvent(const KeyboardEvent& ev) {
-	for(std::vector<Binding>::iterator b = m_bindings.begin(); b != m_bindings.end(); ++b) {
-		if(!b->isKeyboard() || b->Data != ev.sym)
-			continue;
-		// If the binding requires specific modifiers, enforce an exact match.
-		// If no modifiers are required, fire regardless of modifier state (backward compat).
-		const ModifiersState& req = b->m_modifiers;
-		if(req.bAlt || req.bCtrl || req.bShift || req.bGui) {
-			if(req.bAlt   != ev.state.bAlt)   continue;
-			if(req.bCtrl  != ev.state.bCtrl)  continue;
-			if(req.bShift != ev.state.bShift) continue;
-			if(req.bGui   != ev.state.bGui)   continue;
-		}
-		if(ev.down) {
-			b->nDown++;
-			if(!b->bDown) {
-				b->nDownOnce++;
-				b->bDown = true;
-			}
-		} else {
-			b->bDown = false;
-			b->nUp++;
-		}
-	}
-}
-
-
-///////////////////
-// Update down-once state for non-keyboard bindings (polled each frame)
-void CInput::updateDownOnceForNonKeyboard() {
-	for(std::vector<Binding>::iterator b = m_bindings.begin(); b != m_bindings.end(); ++b) {
-		// Skip keyboard bindings, on wasm too.
-		// Their edge state (nDownOnce/nUp/bDown) is derived from the key
-		// event queue in handleKeyEvent, which runs on all platforms.
-		// Re-deriving it here from the polled state double-counts every press:
-		// the wasUp() branch below fires again on release, so e.g. the rope
-		// would shoot once on key-down and once on key-up (#972).
-		// The wasm held-key latency shortcut lives in Binding::isDown, which
-		// still polls the keyboard directly; only the edges are event-driven.
-		if(!b->isUsed() || b->isKeyboard())
-			continue;
-
-		// HINT: It is possible that wasUp() and !Down (a case which is not covered in further code)
-		if(b->wasUp() && !b->bDown) {
-			b->nDownOnce++;
-			continue;
-		}
-
-		// HINT: It's possible that wasDown() > 0 and !isDown().
-		// That is the case when we press a key and release it directly after (in one frame).
-		// Though wasDown() > 0 doesn't mean directly isDownOnce because it also counts keypresses.
-		// HINT: It's also possible that wasDown() == 0 and isDown().
-		// That is the case when we have pressed the key in a previous frame and we still hold it
-		// and the keyrepeat-interval is bigger than FPS. (Rare case.)
-		if(b->wasDown() || b->isDown()) {
-			// wasUp() > 0 always means that it was down once (though it is not down anymore).
-			// Though the released key in wasUp() > 0 was probably already recognised before.
-			if(b->wasUp()) {
-				b->bDown = b->isDown();
-				if(b->bDown) // if it is again down, there is another new press
-					b->nDownOnce++;
-				continue;
-			}
-			// !Down means that we haven't recognised yet that it is down.
-			if(!b->bDown) {
-				b->bDown = b->isDown();
-				b->nDownOnce++;
-				continue;
-			}
-		}
-		else
-			b->bDown = false;
-	}
-}
-
-
-///////////////////
-// Update up state for non-keyboard bindings (polled each frame)
-void CInput::updateUpForNonKeyboard() {
-	for(std::vector<Binding>::iterator b = m_bindings.begin(); b != m_bindings.end(); ++b) {
-		// Skip keyboard bindings, on wasm too; see updateDownOnceForNonKeyboard.
-		if(!b->isUsed() || b->isKeyboard())
-			continue;
-		if(b->isDown() && !b->bDown)
-			b->nUp++;
-	}
+	nDown = nDownOnce = nUp = 0;
 }

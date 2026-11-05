@@ -139,7 +139,7 @@ protected:
 
   static BOOL __stdcall myReadProcMem(HANDLE hProcess, DWORD64 qwBaseAddress, PVOID lpBuffer, DWORD nSize, LPDWORD lpNumberOfBytesRead);
 
-  friend class StackWalkerInternal;
+  friend StackWalkerInternal;
 };
 
 
@@ -154,7 +154,7 @@ protected:
 //       But I currently use it in x64/IA64 environments...
 //#if defined(_M_IX86) && (_WIN32_WINNT <= 0x0500) && (_MSC_VER < 1400)
 
-#if defined(_M_IX86)
+#if defined(_M_IX86) && !defined(__MINGW32__)
 #ifdef CURRENT_THREAD_VIA_EXCEPTION
 // TODO: The following is not a "good" implementation, 
 // because the callstack is only valid in the "__except" block...
@@ -168,20 +168,6 @@ protected:
     if (pExp != NULL) \
       memcpy(&c, pExp->ContextRecord, sizeof(CONTEXT)); \
       c.ContextFlags = contextFlags; \
-  } while(0);
-#elif defined(__MINGW32_VERSION)
-#define GET_CURRENT_CONTEXT(c, contextFlags) \
-  do { \
-    memset(&c, 0, sizeof(CONTEXT)); \
-    c.ContextFlags = contextFlags; \
-    __asm__("call xXx \n" \
-            "xXx: pop %%eax \n" \
-            "movl %%eax, %0 \n" \
-            "movl %%ebp, %1 \n" \
-            "movl %%esp, %2 \n" \
-            : "=m" (c.Eip), "=m" (c.Ebp), "=m" (c.Esp) \
-            : \
-            : "%eax" ); \
   } while(0);
 #else
 // The following should be enough for walking the callstack...

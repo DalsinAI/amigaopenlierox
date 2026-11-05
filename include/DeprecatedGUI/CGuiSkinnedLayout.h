@@ -16,9 +16,6 @@
 #include "DeprecatedGUI/CWidgetList.h"
 #include <string>
 #include <map>
-#include <vector>
-
-class ScriptVar_t;
 
 namespace DeprecatedGUI {
 
@@ -94,9 +91,9 @@ public:
 	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate);
 
 	// Other functions are empty, because GUI layout don't do any actions itself
-	uintptr_t	SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2) { return 0; };
-	uintptr_t	SendMessage(int iMsg, const std::string& sStr, uintptr_t Param) { return 0; };
-	uintptr_t	SendMessage(int iMsg, std::string *sStr, uintptr_t Param) { return 0; };
+	DWORD	SendMessage(int iMsg, DWORD Param1, DWORD Param2) { return 0; };
+	DWORD	SendMessage(int iMsg, const std::string& sStr, DWORD Param) { return 0; };
+	DWORD	SendMessage(int iMsg, std::string *sStr, DWORD Param) { return 0; };
 
 	virtual void ProcessChildEvent(int iEvent, CWidget * child) { };
 

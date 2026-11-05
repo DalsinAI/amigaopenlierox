@@ -23,8 +23,6 @@
 #include "StringUtils.h"
 #include "Timer.h"
 #include "MathLib.h"
-#include "CServer.h"
-#include "CodeAttributes.h"
 
 
 
@@ -48,7 +46,12 @@ void CChannel::Clear()
 	fLastSent = fLastPckRecvd = fLastPingSent = AbsTime();
 	iCurrentIncomingBytes = 0;
 	iCurrentOutgoingBytes = 0;
-	Messages.clear();	
+	Messages.clear();
+	
+	ReliableStreamBandwidthCounter = 0.0f;
+	ReliableStreamLastSentTime = tLX->currentTime;
+	ReliableStreamBandwidthCounterLastUpdate = tLX->currentTime;
+	LimitReliableStreamBandwidth( -1.0f, 5.0f, 1024.0f );
 }
 
 ///////////////////
@@ -84,7 +87,7 @@ void CChannel::AddReliablePacketToSend(CBytestream& bs)
 	// The messages are joined in Transmit() in one bigger packet, until it will hit bandwidth limit
 }
 
-void CChannel::UpdateTransmitStatistics( size_t sentDataSize )
+void CChannel::UpdateTransmitStatistics( int sentDataSize )
 {
 	// Update statistics
 	iOutgoingBytes += sentDataSize;
@@ -92,10 +95,10 @@ void CChannel::UpdateTransmitStatistics( size_t sentDataSize )
 	fLastSent = tLX->currentTime;
 
 	// Calculate the bytes per second
-	cOutgoingRate.addData( sentDataSize );
+	cOutgoingRate.addData( tLX->currentTime, sentDataSize );
 }
 
-void CChannel::UpdateReceiveStatistics( size_t receivedDataSize )
+void CChannel::UpdateReceiveStatistics( int receivedDataSize )
 {
 	// Got a packet (good or bad), update the received time
 	fLastPckRecvd = tLX->currentTime;
@@ -105,9 +108,54 @@ void CChannel::UpdateReceiveStatistics( size_t receivedDataSize )
 	// so skipped packet header, I think it's not that important, check this Albert and remove this TODO
 	iIncomingBytes += receivedDataSize;
 	iCurrentIncomingBytes += receivedDataSize;
-	cIncomingRate.addData( receivedDataSize );
+	cIncomingRate.addData( tLX->currentTime, receivedDataSize );
 }
 
+void CChannel::LimitReliableStreamBandwidth( float BandwidthLimit, float MaxPacketRate, float BandwidthCounterMaxValue )
+{
+	ReliableStreamBandwidthLimit = BandwidthLimit;
+	ReliableStreamMaxPacketRate = MaxPacketRate;
+	ReliableStreamBandwidthCounterMaxValue = BandwidthCounterMaxValue;
+	// That's all, we won't reset ReliableStreamBandwidthCounter here
+}
+
+void CChannel::UpdateReliableStreamBandwidthCounter()
+{
+	ReliableStreamBandwidthCounter += 
+		( tLX->currentTime - ReliableStreamBandwidthCounterLastUpdate ).seconds() *
+		ReliableStreamBandwidthLimit;
+
+	ReliableStreamBandwidthCounterLastUpdate = tLX->currentTime;
+	
+	if( ReliableStreamBandwidthCounter > ReliableStreamBandwidthCounterMaxValue )
+		ReliableStreamBandwidthCounter = ReliableStreamBandwidthCounterMaxValue;
+}
+
+bool CChannel::CheckReliableStreamBandwidthLimit( float dataSizeToSend )
+{
+	if( ReliableStreamBandwidthLimit <= 0 ) // No bandwidth limit
+		return true;
+
+	if( ReliableStreamBandwidthCounter >= dataSizeToSend ||
+		// Allow sending packets that exceed MaxValue, if Counter == MaxValue, then Counter will become negative
+		ReliableStreamBandwidthCounter >= ReliableStreamBandwidthCounterMaxValue ) 
+	{
+		ReliableStreamBandwidthCounter -= dataSizeToSend;
+		ReliableStreamLastSentTime = tLX->currentTime;
+		return true;
+	}
+
+	return false;
+}
+
+bool CChannel::ReliableStreamBandwidthLimitHit()
+{
+	if( ReliableStreamBandwidthLimit <= 0 ||
+		ReliableStreamBandwidthCounter >= ReliableStreamBandwidthCounterMaxValue / 2.0f ||
+		ReliableStreamLastSentTime + 1.0f / ReliableStreamMaxPacketRate <= tLX->currentTime )
+		return false;
+	return true;
+}
 
 ///////////////////
 // CChannel for LX 0.56b implementation - LOSES PACKETS, and that cannot be fixed.
@@ -138,14 +186,17 @@ void CChannel_056b::Create(const NetworkAddr& _adr, const SmartPointer<NetworkSo
 ///////////////////
 // Transmitt data, as well as handling reliable packets
 void CChannel_056b::Transmit( CBytestream *bs )
-{	
+{
+	UpdateReliableStreamBandwidthCounter();
+	
 	CBytestream outpack;
 	Uint32 SendReliable = 0;
 	ulong r1,r2;
 
 	// If the remote side dropped the last reliable packet, re-send it
 	if( iIncomingAcknowledged > iLast_ReliableSequence && 
-		iIncoming_ReliableAcknowledged != iReliableSequence )
+		iIncoming_ReliableAcknowledged != iReliableSequence &&
+		CheckReliableStreamBandwidthLimit( (float)Reliable.GetLength() ) )
 	{
 		//hints << "Remote side dropped a reliable packet, resending..." << endl;
 		SendReliable = 1;
@@ -156,10 +207,12 @@ void CChannel_056b::Transmit( CBytestream *bs )
 	// 1. The reliable buffer is empty, we copy the reliable message into it and send it
 	// 2. We need to refresh ping
 	if( Reliable.GetLength() == 0 && 
+		! ReliableStreamBandwidthLimitHit() &&
 		( !Messages.empty() || (tLX->currentTime >= fLastPingSent + 1.0f && iPongSequence == -1)))
 	{
 		while( ! Messages.empty() && 
-				Reliable.GetLength() + Messages.front().GetLength() <= MAX_PACKET_SIZE - RELIABLE_HEADER_LEN )
+				Reliable.GetLength() + Messages.front().GetLength() <= MAX_PACKET_SIZE - RELIABLE_HEADER_LEN &&
+				CheckReliableStreamBandwidthLimit( (float)Messages.front().GetLength() ) )
 		{
 				Reliable.Append( & Messages.front() );
 				Messages.pop_front();
@@ -178,8 +231,8 @@ void CChannel_056b::Transmit( CBytestream *bs )
 
 	iOutgoingSequence++;
 
-	outpack.writeInt((uint)r1,4);
-	outpack.writeInt((uint)r2,4);
+	outpack.writeInt(r1,4);
+	outpack.writeInt(r2,4);
 
 
 	// If were sending a reliable message, send it first
@@ -340,37 +393,40 @@ then CChannel will act like old CChannel_056b, when only one packet is allowed
 to be flying through network at any time.
 */
 
+enum { 
+
 // SEQUENCE_WRAPAROUND is where sequence wraps to zero - sequence range is from 0 to SEQUENCE_WRAPAROUND-1.
 // All sequences (or packet indexes) used are wrapping around at this number
 // We cannot allow four leadinf 0xFF bytes in reliable packet, so SEQUENCE_WRAPAROUND
 // is slightly less than 0x7FFF.
-static const int SEQUENCE_WRAPAROUND = 32766;
+	SEQUENCE_WRAPAROUND = 32766,
 
 // SEQUENCE_SAFE_DIST is the max distance between two sequences when packets will get ignored as erroneous ones.
-static const int SEQUENCE_SAFE_DIST = 100;
+	SEQUENCE_SAFE_DIST = 100,
 
 // MAX_NON_ACKNOWLEDGED_PACKETS is max amount of packets that can be flying through the net at the same time.
-static const int MAX_NON_ACKNOWLEDGED_PACKETS = 3;	// 1 is minimum - it behaves like old CChannel then.
+	MAX_NON_ACKNOWLEDGED_PACKETS = 3,	// 1 is minimum - it behaves like old CChannel then.
 
 // SEQUENCE_HIGHEST_BIT is highest bit in a 2-byte int, for convenience.
-static const int SEQUENCE_HIGHEST_BIT = 0x8000;
+	SEQUENCE_HIGHEST_BIT = 0x8000
+};
 
 // How much to wait before sending another empty keep-alive packet, sec.
-static const float KEEP_ALIVE_PACKET_TIMEOUT = 1.0f;
+const float KEEP_ALIVE_PACKET_TIMEOUT = 1.0f;
 
 // How much to wait before sending data packet again, sec - 
 // if packets rarely get lost over net it will decrease bandwidth dramatically, for little lag tradeoff.
 // Set to 0 to flood net with packets instantly as in CChannel_056b.
 // If any new data available to send, or unreliable data present, packet is sent anyway.
 // This is only inital value, it will get changed with time according to ping.
-static const float DATA_PACKET_TIMEOUT = 0.2f;
+const float DATA_PACKET_TIMEOUT = 0.2f;
 
 // DataPacketTimeout = ping / DATA_PACKET_TIMEOUT_PING_COEFF, 
 // the bigger that value is, the more often channel will re-send data delayed in network.
-static const float DATA_PACKET_TIMEOUT_PING_COEFF = 1.5f;
+const float DATA_PACKET_TIMEOUT_PING_COEFF = 1.5f;
 
 #ifdef DEBUG
-static const float DEBUG_SIMULATE_LAGGY_CONNECTION_SEND_DELAY = 0.0f; // Self-explanatory
+const float DEBUG_SIMULATE_LAGGY_CONNECTION_SEND_DELAY = 0.0f; // Self-explanatory
 #endif
 
 // Do not check "if( sequence1 < sequence2 )", use this function instead, it will handle wraparound issues.
@@ -563,6 +619,8 @@ bool CChannel2::Process(CBytestream *bs)
 
 void CChannel2::Transmit(CBytestream *unreliableData)
 {
+	UpdateReliableStreamBandwidthCounter();
+
 	#ifdef DEBUG
 	// Very simple laggy connection emulation - send next packet once per DEBUG_SIMULATE_LAGGY_CONNECTION_SEND_DELAY
 	if( DEBUG_SIMULATE_LAGGY_CONNECTION_SEND_DELAY > 0.0f )
@@ -583,7 +641,7 @@ void CChannel2::Transmit(CBytestream *unreliableData)
 	bs.writeInt( LastReliableIn, 2 );
 
 	// Add reliable packet to ReliableOut buffer
-	while( (int)ReliableOut.size() < MaxNonAcknowledgedPackets && ! Messages.empty() )
+	while( (int)ReliableOut.size() < MaxNonAcknowledgedPackets && ! Messages.empty() && ! ReliableStreamBandwidthLimitHit() )
 	{
 		LastAddedToOut ++ ;
 		if( LastAddedToOut >= SEQUENCE_WRAPAROUND )
@@ -634,7 +692,8 @@ void CChannel2::Transmit(CBytestream *unreliableData)
 	{
 		if( SequenceDiff( it->second, NextReliablePacketToSend ) >= 0 )
 		{
-			if( bs.GetLength() + 4 + packetData.GetLength() + it->first.GetLength() > MAX_PACKET_SIZE && ! firstPacket )
+			if( ! CheckReliableStreamBandwidthLimit( (float)(it->first.GetLength() + 4) ) ||
+				( bs.GetLength() + 4 + packetData.GetLength() + it->first.GetLength() > MAX_PACKET_SIZE && ! firstPacket ) )
 				break;
 
 			if( !firstPacket )
@@ -643,7 +702,7 @@ void CChannel2::Transmit(CBytestream *unreliableData)
 				bs.writeInt( packetSize, 2 );
 			};
 			packetIndex = it->second;
-			packetSize = (int)it->first.GetLength();
+			packetSize = it->first.GetLength();
 
 			firstPacket = false;
 			unreliableOnly = false;
@@ -691,7 +750,7 @@ void CChannel2::Transmit(CBytestream *unreliableData)
 		// non-acknowledged packets for halfsecond.
 		// CChannel_056b will always send packet on each frame, so we're conserving bandwidth compared to it, hehe.
 
-		cOutgoingRate.addData( 0 );
+		cOutgoingRate.addData( tLX->currentTime, 0 );
 		return;
 	}
 
@@ -1103,6 +1162,8 @@ bool CChannel3::Process(CBytestream *bs)
 
 void CChannel3::Transmit(CBytestream *unreliableData)
 {
+	UpdateReliableStreamBandwidthCounter();
+
 	#ifdef DEBUG
 	// Very simple laggy connection emulation - send next packet once per DEBUG_SIMULATE_LAGGY_CONNECTION_SEND_DELAY
 	if( DEBUG_SIMULATE_LAGGY_CONNECTION_SEND_DELAY > 0.0f )
@@ -1123,7 +1184,7 @@ void CChannel3::Transmit(CBytestream *unreliableData)
 	bs.writeInt( LastReliableIn, 2 );
 
 	// Add reliable packet to ReliableOut buffer
-	while( (int)ReliableOut.size() < MaxNonAcknowledgedPackets && !Messages.empty() )
+	while( (int)ReliableOut.size() < MaxNonAcknowledgedPackets && !Messages.empty() && ! ReliableStreamBandwidthLimitHit() )
 	{
 		LastAddedToOut ++ ;
 		if( LastAddedToOut >= SEQUENCE_WRAPAROUND )
@@ -1188,7 +1249,8 @@ void CChannel3::Transmit(CBytestream *unreliableData)
 	{
 		if( SequenceDiff( it->idx, NextReliablePacketToSend ) >= 0 )
 		{
-			if( bs.GetLength() + 4 + packetData.GetLength() + it->data.GetLength() > MAX_PACKET_SIZE-2 && !firstPacket )  // Substract CRC16 size
+			if( ! CheckReliableStreamBandwidthLimit( (float)(it->data.GetLength() + 4) ) ||
+				( bs.GetLength() + 4 + packetData.GetLength() + it->data.GetLength() > MAX_PACKET_SIZE-2 && !firstPacket ) )  // Substract CRC16 size
 				break;
 
 			if( !firstPacket )
@@ -1197,7 +1259,7 @@ void CChannel3::Transmit(CBytestream *unreliableData)
 				bs.writeInt( packetSize, 2 );
 			};
 			packetIndex = it->idx;
-			packetSize = (int) it->data.GetLength();
+			packetSize = it->data.GetLength();
 			if( it->fragmented )
 				packetSize |= SEQUENCE_HIGHEST_BIT;
 
@@ -1229,7 +1291,16 @@ void CChannel3::Transmit(CBytestream *unreliableData)
 		}
 	}
 
-	if( unreliableData->GetLength() == 0 && packetData.GetLength() == 0 &&
+	if( unreliableData->GetLength() == 0 &&
+		LastReliablePacketSent == LastAddedToOut &&
+		tLX->currentTime - fLastSent < DataPacketTimeout )
+	{
+		// No unreliable data to send, and we've just sent the same packet -
+		// send it again after some timeout, don't flood net.
+		return;
+	}
+	
+	if( unreliableData->GetLength() == 0 && packetData.GetLength() == 0 && 
 		LastReliableIn == LastReliableIn_SentWithLastPacket &&
 		tLX->currentTime - fLastSent < KeepAlivePacketTimeout )
 	{
@@ -1237,15 +1308,15 @@ void CChannel3::Transmit(CBytestream *unreliableData)
 		// but always send first packet with acknowledges, or other side will flood
 		// non-acknowledged packets for halfsecond.
 		// CChannel_056b will always send packet on each frame, so we're conserving bandwidth compared to it, hehe.
-
-		cOutgoingRate.addData( 0 );
+		
+		cOutgoingRate.addData( tLX->currentTime, 0 );
 		return;
 	}
 
 	// Add CRC16 
 	
 	CBytestream bs1;
-	bs1.writeInt( crc16( bs.data().c_str(), bs.GetLength() ), 2);
+	bs1.writeInt( crc16( bs.peekData( bs.GetLength() ).c_str(), bs.GetLength() ), 2);
 	bs1.Append(&bs);
 	
 	// Send the packet
@@ -1266,8 +1337,6 @@ void CChannel3::AddReliablePacketToSend(CBytestream& bs) // The same as in CChan
 	Messages.push_back(bs);
 	// The messages are joined in Transmit() in one bigger packet, until it will hit bandwidth limit
 }
-
-
 
 
 // CRC16 stolen from Linux kernel sources
@@ -1307,7 +1376,7 @@ Uint16 const crc16_table[256] = {
         0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 };
 
-INLINE Uint16 crc16_byte(Uint16 crc, const Uint8 data)
+inline Uint16 crc16_byte(Uint16 crc, const Uint8 data)
 {
 	return (crc >> 8) ^ crc16_table[(crc ^ data) & 0xff];
 }

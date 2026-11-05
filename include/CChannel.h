@@ -19,9 +19,8 @@
 
 #include <list>
 #include "CBytestream.h"
-#include "olx-types.h"
+#include "types.h"
 #include "Networking.h"
-#include "Timer.h"
 
 template< int AMOUNT, int TIMERANGEMS, typename _Amount = size_t >
 class Rate {
@@ -36,16 +35,14 @@ public:
 
 	TimeDiff timeRange() { return TimeDiff(TIMERANGEMS); }
 
-	void addData(_Amount amount) {
-		AbsTime curtime = GetTime();
-
+	void addData(const AbsTime& curtime, _Amount amount) {
 		// calc diff of oldindex to newindex
 		size_t dindex = 0;
 		if(curIndex >= 0) {
 			dindex = (int) ( (float)AMOUNT * ((curtime - curIndexTime) / timeRange()) );
-			if(dindex >= AMOUNT)
-				// our data is too old, just clear it
+			if(dindex >= AMOUNT) { // our data is too old, just clear it
 				clear();
+			}
 		}
 		if(curIndex == -1) {
 			curIndex = 0;
@@ -54,19 +51,18 @@ public:
 		}
 
 		// reset the buckets in between
-		for(size_t i = 0; i < dindex; i++)
+		for(size_t i = 0; i < dindex; i++) {
 			buckets[ (curIndex + i + 1) % AMOUNT ] = 0;
+		}
 
 		// do updates
-		curIndex += dindex; curIndex %= AMOUNT;
-		curIndexTime += TimeDiff((float)dindex * timeRange().seconds() / (float)AMOUNT);
+		curIndex += dindex; curIndex %= AMOUNT; curIndexTime += TimeDiff((float)dindex * timeRange().seconds() / (float)AMOUNT);
 
 		// add data
 		buckets[curIndex] += amount;
 	}
 
 	float getRate() {
-		addData(0); // update time
 		_Amount sum = 0;
 		for(int i = 0; i < AMOUNT; i++)
 			sum += buckets[i];
@@ -74,7 +70,8 @@ public:
 	}
 	
 	float getRate(int timerange) {
-		addData(0); // update time
+		if(curIndex == -1)
+			return 0;
 
 		if(timerange >= TIMERANGEMS)
 			return getRate(); // we cannot get a smaller range
@@ -122,14 +119,33 @@ protected:
 	size_t			iOutgoingBytes;
 	size_t			iIncomingBytes;
 
-	void			UpdateTransmitStatistics( size_t sentDataSize );
-	void			UpdateReceiveStatistics( size_t receivedDataSize );
-			
-public:
+	void			UpdateTransmitStatistics( int sentDataSize );
+	void			UpdateReceiveStatistics( int receivedDataSize );
 
 	// Packets
 	std::list<CBytestream>	Messages;					// List of reliable messages to be sent
-
+	
+	// Bandwidth limiter - for reliable stream only, it won't count unreliable data - you should limit it outside of CChannel
+	// Each time Transmit() it increases BandwidthCounter for (CurTime - LastUpdate) * BandwidthLimit
+	// If the next reliable packet is smaller than BandwidthCounter it will send it and decrease BandwidthCounter
+	// Also if bandwidth limit is hit it will accumulate and send bigger packets, controlled by MaxPacketRate var.
+	// And if it is not hit, CChannel will act as usual - send as much data as possible, right when data to send is available
+	// TODO: Albert you may wish to put here your advanced bandwidth calculating class
+	// Also I love long long names for variables
+	float			ReliableStreamBandwidthLimit; // In bytes/sec
+	float			ReliableStreamMaxPacketRate; // In packets/sec
+	float			ReliableStreamBandwidthCounter; // In bytes
+	float			ReliableStreamBandwidthCounterMaxValue; // In bytes, to prevent ReliableDataBandwidthCounter to accumulate gigabyte of bandwidth and send it in single Transmit()
+	AbsTime			ReliableStreamLastSentTime;
+	AbsTime			ReliableStreamBandwidthCounterLastUpdate;
+	
+	void			UpdateReliableStreamBandwidthCounter(); // Should be called in the beginning of each Transmit()
+	bool			CheckReliableStreamBandwidthLimit( float dataSizeToSend ); // Returns true if data is allowed to send, and decreases counter value
+	bool			ReliableStreamBandwidthLimitHit(); // Should we wait and accumulate packets instead of sending many small packets immediately
+	
+	
+public:
+	
 	CChannel() { Clear(); }
 	virtual ~CChannel() { Clear(); };
 
@@ -165,11 +181,12 @@ public:
 	float 			getIncomingRate()		{ return cIncomingRate.getRate(); }
 	float 			getOutgoingRate()		{ return cOutgoingRate.getRate(); }
 	float 			getOutgoingRate(float timeRange)		{ return cOutgoingRate.getRate((int)(timeRange * 1000.0f)); }
-		
+
 	SmartPointer<NetworkSocket>	getSocket()			{ return Socket; }
 	
 	virtual void	recheckSeqs() {} // Implemented only in CChannel_056b, not required for others
 
+	void			LimitReliableStreamBandwidth( float BandwidthLimit, float MaxPacketRate = 5.0f, float BandwidthCounterMaxValue = 512.0f );
 };
 
 // CChannel for LX 0.56b implementation - LOSES PACKETS, and that cannot be fixed.

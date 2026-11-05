@@ -20,18 +20,8 @@
 #include "Debug.h"
 #include "ConversationLogger.h"
 #include "FindFile.h"
-#include "StdinCLISupport.h"
 
 #include "../breakpad/BreakPad.h"
-
-
-
-class DummyCrashHandler : public CrashHandler {
-public:
-	DummyCrashHandler() {
-		notes << "Dummy CrashHandler implementation" << endl;
-	}
-};
 
 
 #ifdef NBREAKPAD
@@ -44,7 +34,6 @@ public:
 
 #define itoa _itoa
 
-#include <Windows.h>
 #include <DbgHelp.h>
 #include <ShlObj.h>
 #include "FindFile.h" // for IsFileAvailable and mkdir
@@ -162,7 +151,7 @@ LONG WINAPI CustomUnhandledExceptionFilter(PEXCEPTION_POINTERS pExInfo)
 
 
 
-#elif !defined(WIN32) // MacOSX, Linux, Unix
+#elif !defined(WIN32) && !defined(__amigaos__) // MacOSX, Linux, Unix
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,6 +161,26 @@ LONG WINAPI CustomUnhandledExceptionFilter(PEXCEPTION_POINTERS pExInfo)
 #include <sys/wait.h>
 #include <ctype.h>
 #include <unistd.h>
+
+#if defined(__linux__) || defined(__APPLE__)
+// TODO: why is execinfo needed here? at least on MacOSX, it's not needed here
+//#include <execinfo.h>
+/* get REG_EIP / REG_RIP from ucontext.h */
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 1
+#endif
+#include <ucontext.h>
+#endif
+
+#ifndef EIP
+#define EIP     14
+#endif
+
+#if (defined (__x86_64__))
+#ifndef REG_RIP
+#define REG_RIP REG_INDEX(rip) /* seems to be 16 */
+#endif
+#endif
 
 
 struct signal_def { char name[10]; int id; char description[40]; } ;
@@ -217,8 +226,6 @@ static signal_def signal_data[] =
 static int handlerSignalList[] = {
 SIGSEGV, SIGTRAP, SIGABRT, SIGHUP, SIGBUS, SIGILL, SIGFPE, SIGSYS, SIGUSR1, SIGUSR2
 };
-
-void* GetPCFromUContext(void* ucontext);
 
 typedef const char * cchar;
 
@@ -268,8 +275,77 @@ public:
 		else
 			printf("Got signal 0x%02X\n", signr);
 		
-		void* pnt = GetPCFromUContext(secret);
-
+		/* 
+		 see this article for further details: (thanks also for some code snippets)
+		 http://www.linuxjournal.com/article/6391 */
+		
+		void *pnt = NULL;
+#if defined(__APPLE__)
+#	if defined(__x86_64__)
+		ucontext_t* uc = (ucontext_t*) secret;
+		pnt = (void*) uc->uc_mcontext->__ss.__rip ;
+#	elif defined(__hppa__)
+		ucontext_t* uc = (ucontext_t*) secret;
+		pnt = (void*) uc->uc_mcontext.sc_iaoq[0] & ~0x3UL ;
+#	elif (defined (__ppc__)) || (defined (__powerpc__))
+		ucontext_t* uc = (ucontext_t*) secret;
+#		if __DARWIN_UNIX03
+		pnt = (void*) uc->uc_mcontext->__ss.__srr0 ;
+#		else
+		pnt = (void*) uc->uc_mcontext->ss.srr0 ;
+#		endif
+#	elif defined(__sparc__)
+		struct sigcontext* sc = (struct sigcontext*) secret;
+#		if __WORDSIZE == 64
+		pnt = (void*) scp->sigc_regs.tpc ;
+#		else
+		pnt = (void*) scp->si_regs.pc ;
+#		endif
+#	elif defined(__i386__)
+		ucontext_t* uc = (ucontext_t*) secret;
+#		if __DARWIN_UNIX03
+		pnt = (void*) uc->uc_mcontext->__ss.__eip ;
+#		else
+		pnt = (void*) uc->uc_mcontext->ss.eip ;
+#		endif
+#	else
+#		warning mcontext is not defined for this arch, thus a dumped backtrace could be crippled
+#	endif
+#elif defined(__linux__)
+#	if defined(__x86_64__)
+		ucontext_t* uc = (ucontext_t*) secret;
+		pnt = (void*) uc->uc_mcontext.gregs[REG_RIP] ;
+#	elif defined(__hppa__)
+		ucontext_t* uc = (ucontext_t*) secret;
+		pnt = (void*) uc->uc_mcontext.sc_iaoq[0] & ~0x3UL ;
+#	elif (defined (__ppc__)) || (defined (__powerpc__))
+		ucontext_t* uc = (ucontext_t*) secret;
+		pnt = (void*) uc->uc_mcontext.regs->nip ;
+#	elif defined(__sparc__)
+		struct sigcontext* sc = (struct sigcontext*) secret;
+#		if __WORDSIZE == 64
+		pnt = (void*) scp->sigc_regs.tpc ;
+#		else
+		pnt = (void*) scp->si_regs.pc ;
+#		endif
+#	elif defined(__i386__)
+		ucontext_t* uc = (ucontext_t*) secret;
+		pnt = (void*) uc->uc_mcontext.gregs[REG_EIP] ;
+#	else
+#		warning mcontext is not defined for this arch, thus a dumped backtrace could be crippled
+#	endif
+#else
+#	warning mcontest is not defined for this system, thus a dumped backtraced could be crippled
+#endif
+		
+		/* potentially correct for other archs:
+		 * alpha: ucp->m_context.sc_pc
+		 * arm: ucp->m_context.ctx.arm_pc
+		 * ia64: ucp->m_context.sc_ip & ~0x3UL
+		 * mips: ucp->m_context.sc_pc
+		 * s390: ucp->m_context.sregs->regs.psw.addr
+		 */
+		
 		if (signr == SIGSEGV || signr == SIGBUS)
 			printf("Faulty address is %p, called from %p\n", info->si_addr, pnt);
 
@@ -298,13 +374,13 @@ public:
 		
         if(!recoverAfterCrash)
         {
-			printf("no recovering, aborting now\n");
-			// In case the StdinCLI support was setup, we must quit it before exit,
-			// otherwise its possible that we would never see the stdout data.
-			quitStdinCLISupport();
 			fflush(stdout);
-			// Now force quit us.
-			_exit(255);
+			abort();
+#ifdef DEBUG
+//        	raise(SIGQUIT);
+#else
+//			exit(-1);
+#endif
 			return;
         }
 		setSignalHandlers(); // reset handler
@@ -427,8 +503,12 @@ public:
 
 
 #else
-
-typedef DummyCrashHandler CrashHandlerImpl;
+class CrashHandlerImpl : public CrashHandler {
+public:
+	CrashHandlerImpl() {
+		notes << "Dummy CrashHandler implementation" << endl;
+	}
+};
 
 #endif
 
@@ -453,7 +533,7 @@ struct CrashHandlerImpl : CrashHandler {
 #endif
 
 
-CrashHandler* crashHandlerInstance = NULL;
+CrashHandlerImpl* crashHandlerInstance = NULL;
 
 void CrashHandler::init() {
 	if(crashHandlerInstance) {
@@ -461,18 +541,8 @@ void CrashHandler::init() {
 		return;
 	}
 
-	if(!enableCrashHandler) {
-		notes << "CrashHandler disabled .. ";
-		crashHandlerInstance = new DummyCrashHandler();
-	}
-	else if(AmIBeingDebugged()) {
-		notes << "Debugging .. ";
-		crashHandlerInstance = new DummyCrashHandler();
-	}
-	else {
-		notes << "Installing CrashHandler .. ";	
-		crashHandlerInstance = new CrashHandlerImpl();		
-	}
+	notes << "Installing CrashHandler .. ";	
+	crashHandlerInstance = new CrashHandlerImpl();
 }
 
 void CrashHandler::uninit() {
@@ -486,6 +556,5 @@ CrashHandler* CrashHandler::get() {
 	return crashHandlerInstance;
 }
 
-bool CrashHandler::enableCrashHandler = true;
 bool CrashHandler::recoverAfterCrash = false;
 bool CrashHandler::restartAfterCrash = false;

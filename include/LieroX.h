@@ -28,36 +28,43 @@
 #include "CVec.h"
 #include "Consts.h"
 #include "CInput.h"
-#include "olx-types.h"
-#include "CodeAttributes.h"
+#include "types.h"
 
-struct profile_t;
+class profile_t;
 class IpToCountryDB;
 
+
+
+// Game types
+enum GameType_t {
+	GME_LOCAL=0,
+	GME_HOST,
+	GME_JOIN
+};
 
 // LieroX structure
 struct lierox_t {
 	lierox_t() :
-			bVideoModeChanged(false), bQuitCtrlC(false), bHosted(false) {}
-
+			bVideoModeChanged(false), bQuitGame(false), bQuitEngine(false), bQuitCtrlC(false)
+			, iGameType(GME_LOCAL), bHosted(false) {}
 	AbsTime	currentTime;
 	TimeDiff	fDeltaTime;
 	TimeDiff	fRealDeltaTime; // Delta time used for network synchronization,
 							// it is not clamped unlike the above one
 	CFont	cFont;
 	CFont	cOutlineFont;
-	// Separate font copy for the main-thread screen overlay,
-	// so it never shares blit state with cFont (CFont is not thread-safe).
-	CFont	cOverlayFont;
 
 	bool	bVideoModeChanged;
 
+	bool	bQuitGame;
+	bool	bQuitEngine;
 	bool	bQuitCtrlC;
 
 	int		debug_int;
 	float	debug_float;
 	CVec	debug_pos;
 	
+	GameType_t iGameType;
 	bool	bHosted;  // True if the user has run the server at least once this session
 
 	// Default Colours
@@ -124,7 +131,7 @@ struct lierox_t {
 	Color			clConsoleDev;
 	Color			clConsoleChat;
 	Color			clReturningToLobby;
-	Color			clTeamColors[MAX_TEAMS];
+	Color			clTeamColors[4];
 	Color			clTagHighlight;
 	Color			clHealthLabel;
 	Color			clWeaponLabel;
@@ -207,12 +214,17 @@ extern FileListCacheIntf* settingsPresetList;
 void updateFileListCaches();
 
 // Main Routines
-bool	InitializeLieroX();
+void    ParseArguments(int argc, char *argv[]);
+int		InitializeLieroX();
 void	ShutdownLieroX();
-void	ShutdownEverything();
 void	GameLoopFrame();
+void	QuittoMenu();
 void	GotoLocalMenu();
 void	GotoNetMenu();
+
+void	SetQuitEngineFlag(const std::string& reason);
+void	ResetQuitEngineFlag();
+bool	Warning_QuitEngineFlagSet(const std::string& preText = "");
 
 // Miscellanous routines
 float	GetFixedRandomNum(uchar index);
@@ -221,5 +233,33 @@ bool    MouseInRect(int x, int y, int w, int h);
 
 void	printf(const std::string& txt);
 
+
+
+enum GameState {
+	S_INACTIVE, // server was not started
+	S_SVRLOBBY, // in lobby
+	S_SVRWEAPONS, // in game: in weapon selection
+	S_SVRPLAYING, // in game: playing
+	S_CLICONNECTING, // client game: connecting right now
+	S_CLILOBBY,
+	S_CLIWEAPONS,
+	S_CLIPLAYING
+};
+
+inline std::string GameStateAsString(GameState s) {
+	switch(s) {
+		case S_INACTIVE: return "S_INACTIVE";
+		case S_SVRLOBBY: return "S_SVRLOBBY";
+		case S_SVRWEAPONS: return "S_SVRWEAPONS";
+		case S_SVRPLAYING: return "S_SVRPLAYING";
+		case S_CLICONNECTING: return "S_CLICONNECTING";
+		case S_CLILOBBY: return "S_CLILOBBY";
+		case S_CLIWEAPONS: return "S_CLIWEAPONS";
+		case S_CLIPLAYING: return "S_CLIPLAYING";
+	}
+	return "INVALID GAMESTATE";
+}
+
+GameState currentGameState();
 
 #endif  //  __LIEROX_H__

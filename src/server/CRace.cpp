@@ -10,11 +10,10 @@
 #include <algorithm>
 #include "CGameMode.h"
 #include "CServer.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "FlagInfo.h"
 #include "CServerConnection.h"
 #include "CServerNetEngine.h"
-#include "game/Game.h"
 
 struct Race : public CGameMode {
 	
@@ -58,18 +57,18 @@ struct Race : public CGameMode {
 			for(int y = 0; y <= 1; y++) {
 				std::list<CVec> goodPos;
 				goodPos.push_back(CVec(
-								  (game.gameMap()->GetWidth() * 0.8f * x + game.gameMap()->GetWidth() * 0.2f),
-								  (game.gameMap()->GetHeight() * 0.8f * y + game.gameMap()->GetHeight() * 0.2f)));
+								  (cServer->getMap()->GetWidth() * 0.8f * x + cServer->getMap()->GetWidth() * 0.2f),
+								  (cServer->getMap()->GetHeight() * 0.8f * y + cServer->getMap()->GetHeight() * 0.2f)));
 				std::list<CVec> badPos;
 				badPos.push_back(CVec(
-								  (game.gameMap()->GetWidth() * 0.2f * x + game.gameMap()->GetWidth() * 0.8f),
-								  (game.gameMap()->GetHeight() * 0.2f * y + game.gameMap()->GetHeight() * 0.8f)));
+								  (cServer->getMap()->GetWidth() * 0.2f * x + cServer->getMap()->GetWidth() * 0.8f),
+								  (cServer->getMap()->GetHeight() * 0.2f * y + cServer->getMap()->GetHeight() * 0.8f)));
 				int t = (y == 0) ? x : (3 - x);
-				wayPoints[t] = game.gameMap()->FindSpotCloseToPos(goodPos, badPos, false);
+				wayPoints[t] = cServer->FindSpotCloseToPos(goodPos, badPos, false);
 				
-				if(!gameSettings[FT_InstantAirJump])
+				if(!tLXOptions->tGameInfo.features[FT_InstantAirJump])
 					// set the place to the ground
-					wayPoints[t] = game.gameMap()->groundPos(wayPoints[t]) - CVec(0, (float)(cServer->flagInfo()->getHeight()/4));
+					wayPoints[t] = cServer->getMap()->groundPos(wayPoints[t]) - CVec(0, (float)(cServer->flagInfo()->getHeight()/4));
 			}
 	}
 	
@@ -89,7 +88,7 @@ struct Race : public CGameMode {
 		else return f->second;
 	}
 	
-	virtual bool Spawn(CWorm* worm, CVec& pos) {
+	virtual bool Spawn(CWorm* worm, CVec pos) {
 		if(wayPoints.size() == 0) {
 			errors << "Race::Spawn: not prepared yet" << endl;
 			return true;
@@ -106,14 +105,15 @@ struct Race : public CGameMode {
 			cServer->flagInfo()->applyInitFlag(getWormFlag(worm), wayPoints[1]);
 			nextGoals[getWormFlag(worm)] = 1;
 		}
-				
+		
+		worm->Spawn(pos);
+		
 		return true;
 	}
 	
 	virtual void Kill(CWorm* victim, CWorm* killer) {
 		// Victim is out of the game
-		victim->Kill(true);
-		if(victim->getLives() == WRM_OUT && networkTexts->sPlayerOut != "<none>")
+		if(victim->Kill() && networkTexts->sPlayerOut != "<none>")
 			cServer->SendGlobalText(replacemax(networkTexts->sPlayerOut, "<player>",
 											   victim->getName(), 1), TXT_NORMAL);
 		
@@ -152,37 +152,41 @@ struct Race : public CGameMode {
 		}
 	}
 	
-	virtual float FlagPointRadius() { return gameSettings[FT_Race_CheckPointRadius]; }
-	virtual float FlagRadius() { return gameSettings[FT_Race_CheckPointRadius]; }
+	virtual float FlagPointRadius() { return tLXOptions->tGameInfo.features[FT_Race_CheckPointRadius]; }
+	virtual float FlagRadius() { return tLXOptions->tGameInfo.features[FT_Race_CheckPointRadius]; }
 	
 	virtual bool Shoot(CWorm* worm) {
 		// get that information from client because both client&server can check this
-		return cClient->getGameLobby()[FT_Race_AllowWeapons];
+		return cClient->getGameLobby()->features[FT_Race_AllowWeapons];
 	}
 	
 	virtual bool CheckGameOver() {
-		if(int(gameSettings[FT_Race_Rounds]) > 0) {
-			for_each_iterator(CWorm*, w, game.worms()) {
-				if(w->get()->getKills() >= int(gameSettings[FT_Race_Rounds])) {
+		if(int(tLXOptions->tGameInfo.features[FT_Race_Rounds]) > 0) {
+			for(int i = 0; i < MAX_WORMS; ++i) {
+				CWorm* w = &cServer->getWorms()[i];
+				if(!w->isUsed()) continue;
+				if(w->getKills() >= int(tLXOptions->tGameInfo.features[FT_Race_Rounds])) {
 					return true;
 				}
 			}
 		}
 
 		bool allOut = true;
-		for_each_iterator(CWorm*, w, game.worms())
-			if(w->get()->getLives() != WRM_OUT || w->get()->getAlive()) {
-				allOut = false;
-				break;
+		for(int i = 0; i < MAX_WORMS; i++)
+			if(cServer->getWorms()[i].isUsed()) {
+				if(cServer->getWorms()[i].getLives() != WRM_OUT || cServer->getWorms()[i].getAlive()) {
+					allOut = false;
+					break;
+				}
 			}
 		if(allOut) return true;
 		
 		// Check if the timelimit has been reached
 		if(TimeLimit() > 0) {
-			if (game.serverTime() > TimeLimit()) {
+			if (cServer->getServerTime() > TimeLimit()) {
 				if(networkTexts->sTimeLimit != "<none>")
 					cServer->SendGlobalText(networkTexts->sTimeLimit, TXT_NORMAL);
-				notes << "time limit (" << ((float)gameSettings[FT_TimeLimit]*60.0f) << ") reached with current time " << game.serverTime().seconds();
+				notes << "time limit (" << (tLXOptions->tGameInfo.fTimeLimit*60.0f) << ") reached with current time " << cServer->getServerTime().seconds();
 				notes << " -> game over" << endl;
 				return true;
 			}
@@ -238,15 +242,6 @@ struct Race : public CGameMode {
 		// fallback (very unprobable that this will be used in game)
 		return CGameMode::CompareWormsScore(w1, w2);
 	}
-
-	virtual bool HaveTargetPos(CWorm* w) { return true; }
-	virtual CVec TargetPos(CWorm* w) {
-		int flagId = getWormFlag(w);
-		Flag* flag = cClient->flagInfo()->getFlag(flagId);
-		if(flag) return flag->spawnPoint.pos;
-		return CVec();
-	}
-
 };
 
 struct TeamRace : public Race {
@@ -257,15 +252,16 @@ struct TeamRace : public Race {
 	
 	virtual GameInfoGroup getGameInfoGroupInOptions() { return GIG_Race; }
 	
-	int teamScore[MAX_TEAMS];
+	static const int MAXTEAMS = 4;
+	int teamScore[MAXTEAMS];
 	
 	virtual int GameTeams() {
-		return MAX_TEAMS;
+		return MAXTEAMS;
 	}
 
 	void reset() {
 		Race::reset();
-		for(int i = 0; i < MAX_TEAMS; ++i)
+		for(int i = 0; i < MAXTEAMS; ++i)
 			teamScore[i] = 0;		
 	}
 
@@ -276,7 +272,7 @@ struct TeamRace : public Race {
 	}
 
 	virtual void addScore(CWorm* w) {
-		teamScore[CLAMP(w->getTeam(),0,MAX_TEAMS-1)]++;
+		teamScore[CLAMP(w->getTeam(),0,MAXTEAMS-1)]++;
 		cServer->SendTeamScoreUpdate();
 		// also add score for this specifc worm
 		Race::addScore(w);
@@ -299,15 +295,17 @@ struct TeamRace : public Race {
 	}
 	
 	virtual int TeamScores(int t) {
-		if(t >= 0 && t < MAX_TEAMS) return teamScore[t];
+		if(t >= 0 && t < MAXTEAMS) return teamScore[t];
 		return -1;
 	}
 	
 	std::vector<CWorm*> getTeamWorms(int t) {
 		std::vector<CWorm*> worms;
-		for_each_iterator(CWorm*, w, game.worms())
-			if(w->get()->getTeam() != t)
-				worms.push_back(w->get());
+		if(cServer->getWorms() == NULL) return worms;
+		for(int i = 0; i < MAX_WORMS; i++)
+			if(cServer->getWorms()[i].isUsed())
+				if(cServer->getWorms()[i].getTeam() != t)
+					worms.push_back(&cServer->getWorms()[i]);
 		return worms;
 	}
 	
@@ -339,28 +337,30 @@ struct TeamRace : public Race {
 	}
 	
 	virtual bool CheckGameOver() {
-		if(int(gameSettings[FT_Race_Rounds]) > 0) {
-			for(int i = 0; i < MAX_TEAMS; ++i) {
-				if(teamScore[i] >= int(gameSettings[FT_Race_Rounds])) {
+		if(int(tLXOptions->tGameInfo.features[FT_Race_Rounds]) > 0) {
+			for(int i = 0; i < MAXTEAMS; ++i) {
+				if(teamScore[i] >= int(tLXOptions->tGameInfo.features[FT_Race_Rounds])) {
 					return true;
 				}
 			}
 		}
 		
 		bool allOut = true;
-		for_each_iterator(CWorm*, w, game.worms())
-			if(w->get()->getLives() != WRM_OUT || w->get()->getAlive()) {
-				allOut = false;
-				break;
+		for(int i = 0; i < MAX_WORMS; i++)
+			if(cServer->getWorms()[i].isUsed()) {
+				if(cServer->getWorms()[i].getLives() != WRM_OUT || cServer->getWorms()[i].getAlive()) {
+					allOut = false;
+					break;
+				}
 			}
 		if(allOut) return true;
 		
 		// Check if the timelimit has been reached
 		if(TimeLimit() > 0) {
-			if (game.serverTime() > TimeLimit()) {
+			if (cServer->getServerTime() > TimeLimit()) {
 				if(networkTexts->sTimeLimit != "<none>")
 					cServer->SendGlobalText(networkTexts->sTimeLimit, TXT_NORMAL);
-				notes << "time limit (" << ((float)gameSettings[FT_TimeLimit]*60.0f) << ") reached with current time " << game.serverTime().seconds();
+				notes << "time limit (" << (tLXOptions->tGameInfo.fTimeLimit*60.0f) << ") reached with current time " << cServer->getServerTime().seconds();
 				notes << " -> game over" << endl;
 				return true;
 			}

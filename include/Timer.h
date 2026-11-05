@@ -24,8 +24,7 @@
 #include <SDL.h>
 #include <cassert>
 #include "Event.h"
-#include "olx-types.h"
-#include "CodeAttributes.h"
+#include "types.h"
 
 
 
@@ -55,7 +54,7 @@ struct TimeCounter {
 };
 extern TimeCounter timeCounter;
 
-INLINE AbsTime GetTime() { return timeCounter.update(); }
+inline AbsTime GetTime() { return timeCounter.update(); }
 
 
 int				GetFPS();
@@ -85,7 +84,7 @@ std::string		GetDateTime();
 	from the main-thread, there will be no more timer-event for sure.
 	
 	The events itself will be handled in the main thread
-	(in the thread that calls ProcessEvents()).
+	(in the thread that calls ProcessEvents() or WaitForNextEvent()).
 
 	If the callback-functions returns false, the thread will also stop.
 
@@ -132,14 +131,10 @@ public:
 	bool start();
 	bool startHeadless(); // start independent timer
 	void stop();
-
-	// Internal: the event handler calls this when a TimerData is freed,
-	// so a finished/stopped timer never dereferences it.
-	void detachData(TimerData* d);
-
+	
 private:
-	bool m_running;
 	TimerData* m_lastData;	// it's TimerData* intern
+	friend struct TimerData;
 };
 
 void InitializeTimers();

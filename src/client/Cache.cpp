@@ -19,12 +19,12 @@
 
 #include "LieroX.h"
 #include "Debug.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "Cache.h"
 #include "GfxPrimitives.h"
 #include "FindFile.h"
 #include "CGameScript.h"
-#include "game/CMap.h"
+#include "CMap.h"
 #include "StringUtils.h"
 #include "Timer.h"
 #include "Options.h"
@@ -65,11 +65,8 @@ void InitCacheDebug()
 
 void ShutdownCacheDebug()
 {
-	if(timer) {
-		timer->stop();
-		delete timer;
-		timer = NULL;
-	}
+	timer->stop();
+	delete timer;
 }
 #endif
 
@@ -135,8 +132,8 @@ void CCache::SaveMap(const std::string& file1, CMap *map)
 		}
 
 		// Copy the map to the cache (not just the pointer because map changes during the game)
-		SmartPointer<CMap> cached_map = new CMap;
-		if (cached_map.get() == NULL)
+		CMap *cached_map = new CMap;
+		if (cached_map == NULL)
 			return;
 
 		if (!cached_map->NewFrom(map))
@@ -144,7 +141,7 @@ void CCache::SaveMap(const std::string& file1, CMap *map)
 
 		struct stat st;
 		StatFile(file1, &st);
-		MapCache[file] = MapItem_t( cached_map, getCurrentTime(), st.st_mtime );
+		MapCache[file] = MapItem_t( SmartPointer<CMap>(cached_map), getCurrentTime(), st.st_mtime );
 	}
 	ClearExtraEntries(); // Cache can get very big when browsing through levels - clear it here
 }
@@ -162,9 +159,6 @@ void CCache::SaveMod(const std::string& file1, const SmartPointer<CGameScript> &
 		errors << "SaveMod: tried to safe non-loaded gamescript" << endl;
 		return;
 	}
-	
-	// dont save gus mods
-	if(mod->gusEngineUsed()) return;
 	
 	std::string file = file1;
 	stringlwr(file);
@@ -273,12 +267,6 @@ void CCache::Clear()
 	SoundCache.clear();
 }
 
-void CCache::ClearSounds() {
-	ScopedLock lock(mutex);
-	SoundCache.clear();
-}
-
-
 ///////////////////////
 // Get the number of memory occupied (in bytes)
 size_t CCache::GetCacheSize()
@@ -295,10 +283,9 @@ size_t CCache::GetCacheSize()
 	for (MapCache_t::iterator it = MapCache.begin(); it != MapCache.end(); it++)
 		res += it->second.tMap.get()->GetMemorySize() + it->first.size();
 
-#ifndef DEDICATED_ONLY
+	// TODO: not correct
 	for (SoundCache_t::iterator it = SoundCache.begin(); it != SoundCache.end(); it++)
-		res += it->first.size() + sizeof(SoundSample) + it->second.sndSample->GetMemorySize();
-#endif
+		res += it->first.size() + sizeof(SoundSample);
 
 	return res;
 }
@@ -319,7 +306,7 @@ void CCache::ClearExtraEntries()
 {
 	static const int estimatedCacheEntrySize = 1024*300;
 	size_t availableMem = GetFreeSysMemory() + GetCacheSize();
-	int estimatedMaxPossibleEntries = int(availableMem / estimatedCacheEntrySize);
+	int estimatedMaxPossibleEntries = availableMem / estimatedCacheEntrySize;
 	if(estimatedMaxPossibleEntries < tLXOptions->iMaxCachedEntries) {
 		warnings << "The estimated possible max entry count in cache (" << estimatedMaxPossibleEntries << ") ";
 		warnings << "is lower than the current set maximum (" << tLXOptions->iMaxCachedEntries << ")" << endl;
@@ -342,7 +329,7 @@ void CCache::ClearExtraEntries()
 				count ++;
 		}
 		{
-			int clearCount = (int)MIN( (size_t)count, MapCache.size() - tLXOptions->iMaxCachedEntries / 50 );
+			int clearCount = MIN( count, MapCache.size() - tLXOptions->iMaxCachedEntries / 50 );
 			for( TimeSorted_t :: iterator it1 = TimeSorted.begin();
 					it1 != TimeSorted.end() && clearCount > 0; it1++, clearCount-- )
 			{
@@ -368,7 +355,7 @@ void CCache::ClearExtraEntries()
 				count ++;
 		}
 		{
-			int clearCount = (int)MIN( (size_t)count, ModCache.size() - tLXOptions->iMaxCachedEntries / 50 );
+			int clearCount = MIN( count, ModCache.size() - tLXOptions->iMaxCachedEntries / 50 );
 			for( TimeSorted_t :: iterator it1 = TimeSorted.begin();
 					it1 != TimeSorted.end() && clearCount > 0; it1++, clearCount-- )
 			{
@@ -393,7 +380,7 @@ void CCache::ClearExtraEntries()
 				count ++;
 		}
 		{
-			int clearCount = (int)MIN( (size_t)count, ImageCache.size() - tLXOptions->iMaxCachedEntries );
+			int clearCount = MIN( count, ImageCache.size() - tLXOptions->iMaxCachedEntries );
 			for( TimeSorted_t :: iterator it1 = TimeSorted.begin();
 					it1 != TimeSorted.end() && clearCount > 0; it1++ )
 			{
@@ -418,7 +405,7 @@ void CCache::ClearExtraEntries()
 				count ++;
 		}
 		{
-			int clearCount = (int)MIN( (size_t)count, SoundCache.size() - tLXOptions->iMaxCachedEntries );
+			int clearCount = MIN( count, SoundCache.size() - tLXOptions->iMaxCachedEntries );
 			for( TimeSorted_t :: iterator it1 = TimeSorted.begin();
 					it1 != TimeSorted.end() && clearCount > 0; it1++, clearCount-- )
 			{

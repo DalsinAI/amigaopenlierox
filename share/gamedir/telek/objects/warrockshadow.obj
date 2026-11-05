@@ -1,9 +1,0 @@
-sprite = warrockshadow.png
-col_layer = -1 
-render_layer = 0
-damping = 0
-blender = alphach
-alpha = 50
-
-on timer( 1 )
- remove()

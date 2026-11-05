@@ -18,7 +18,7 @@
 
 #include "LieroX.h"
 #include "CShootList.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Protocol.h"
 #include "MathLib.h"
 #include "WeaponDesc.h"
@@ -94,20 +94,15 @@ bool CShootList::addShoot( int weaponID, TimeDiff fTime, float fSpeed, int nAngl
 
 	// Fill in the info
 	psShot->cPos = pcWorm->getPos();
-	psShot->cWormVel = gameSettings[FT_ProjRelativeVel] ? pcWorm->getVelocity() : CVec(0,0);
+	psShot->cWormVel = pcWorm->getVelocity();
 	psShot->fTime = fTime;
 	psShot->nAngle = nAngle;
-	psShot->nRandom = GetRandomInt(255);
-	psShot->nSpeed = gameSettings[FT_ProjRelativeVel] ? (int)( fSpeed*100 ) : 0;
+	psShot->nRandom = pcWorm->getShotCount(); // uint32 to unit8 conversion
+	psShot->nSpeed = (int)( fSpeed*100 );
 	psShot->nWeapon = weaponID;
 	psShot->nWormID = pcWorm->getID();
 	psShot->release = release;
 	
-	// Debuging
-	psShot->devID = 0;
-	if(m_nNumShootings > 1)
-		psShot->devID = m_psShoot[m_nNumShootings-2].devID+1;
-
 	return true;
 }
 
@@ -178,16 +173,17 @@ void CShootList::writeSingle( CBytestream *bs, const Version& receiverVer, int i
 	else
 		bs->writeByte( psShot->nAngle );
 
-	// Speed byte: negate for SMF_NEGSPEED,
-	// then drop the 255 offset for SMF_LARGESPEED.
-	// readSingle() inverts this (add 255, then negate).
-	int speed = psShot->nSpeed;
-	if( flags & SMF_NEGSPEED )
-		speed = -speed;
 	if( flags & SMF_LARGESPEED )
-		speed -= 255;
-	bs->writeByte( speed );
-
+		bs->writeByte( psShot->nSpeed-255 );
+	else if( flags & SMF_NEGSPEED ) {
+		if(flags & SMF_LARGESPEED)
+			bs->writeByte( (-psShot->nSpeed)-255 );
+		else
+			bs->writeByte( -psShot->nSpeed );
+	}
+	else
+		bs->writeByte( psShot->nSpeed );
+	
 	if(receiverVer >= OLXBetaVersion(0,58,1)) {
 		bs->ResetBitPos();
 		bs->writeBit(psShot->release);
@@ -226,9 +222,7 @@ void CShootList::writeMulti( CBytestream *bs, const Version& receiverVer, int in
 			abs(m_psShoot[i].nSpeed - m_psShoot[i-1].nSpeed) > 255 ||
 			abs((int)m_psShoot[i].cWormVel.x - (int)m_psShoot[i-1].cWormVel.x) > 255 ||
 			abs((int)m_psShoot[i].cWormVel.y - (int)m_psShoot[i-1].cWormVel.y) > 255 ||
-			// the count goes out as one byte,
-			// and the receiver caps it at MAX_SHOOTINGS-1
-			num >= 255) {
+			num > 255) {
 
 			break;
 		}
@@ -284,10 +278,15 @@ void CShootList::writeMulti( CBytestream *bs, const Version& receiverVer, int in
 		bs->writeByte( psShot->nAngle );
 
 	int speed = psShot->nSpeed;
-	if( flags & SMF_NEGSPEED )
-		speed = -speed;
+
 	if( flags & SMF_LARGESPEED )
-		speed -= 255;
+		speed = psShot->nSpeed-255;
+	if( flags & SMF_NEGSPEED ) {
+		if(flags & SMF_LARGESPEED)
+			speed = (-psShot->nSpeed)-255;
+		else
+			speed = -psShot->nSpeed;
+	}
 
 	bs->writeByte( speed );
 	
@@ -319,7 +318,7 @@ void CShootList::writeSmallShot( shoot_t *psFirst, CBytestream *bs, const Versio
 
 
 	int xoff = (int)( psShot->cPos.x - psFirst->cPos.x );
-	int yoff = (int)( psShot->cPos.y - psFirst->cPos.y );
+	int yoff = (int)( psShot->cPos.x - psFirst->cPos.x );
 	xoff = abs(xoff);
 	yoff = abs(yoff);
 
@@ -455,15 +454,19 @@ void CShootList::readSingle( CBytestream *bs, const Version& senderVer, int max_
 
 	psShot->nAngle = bs->readByte();
 	int speed = bs->readByte();
+	psShot->nSpeed = speed;
 
 	if( flags & SMF_LARGEANGLE )
 		psShot->nAngle += 255;
 
 	if( flags & SMF_LARGESPEED )
-		speed += 255;
-	if( flags & SMF_NEGSPEED )
-		speed = -speed;
-	psShot->nSpeed = speed;
+		psShot->nSpeed = speed+255;
+	if( flags & SMF_NEGSPEED ) {
+		if( flags & SMF_LARGESPEED )
+			psShot->nSpeed = -(speed+255);
+		else
+			psShot->nSpeed = -speed;
+	}
 
 
 	// Convert the pos
@@ -502,7 +505,7 @@ void CShootList::readMulti( CBytestream *bs, const Version& senderVer, int max_w
 	psShot->nWormID = bs->readByte(); // Used for indexing
 	psShot->fTime = MAX(bs->readFloat(), 0.0f);
 	psShot->nWeapon = CLAMP((int)bs->readByte(), 0, max_weapon_id);
-	num = (int) MIN(bs->readByte(), MAX_SHOOTINGS - 1);
+	num = MIN(bs->readByte(), MAX_SHOOTINGS - 1);
 	bs->read2Int12( x, y );
 	vx = bs->readInt16();
 	vy = bs->readInt16();
@@ -510,15 +513,19 @@ void CShootList::readMulti( CBytestream *bs, const Version& senderVer, int max_w
 
 	psShot->nAngle = bs->readByte();
 	int speed = bs->readByte();
+	psShot->nSpeed = speed;
 
 	if( flags & SMF_LARGEANGLE )
 		psShot->nAngle += 255;
 
 	if( flags & SMF_LARGESPEED )
-		speed += 255;
-	if( flags & SMF_NEGSPEED )
-		speed = -speed;
-	psShot->nSpeed = speed;
+		psShot->nSpeed = speed+255;
+	if( flags & SMF_NEGSPEED ) {
+		if( flags & SMF_LARGESPEED )
+			psShot->nSpeed = -(speed+255);
+		else
+			psShot->nSpeed = -speed;
+	}
 
 	// Convert the pos
 	psShot->cPos = CVec( (float)x, (float)y );
@@ -556,6 +563,7 @@ void CShootList::readSmallShot( shoot_t *psFirst, CBytestream *bs, const Version
 	// Copy the base data, so we only apply the changes to the shot
 	*psShot = *psFirst;
 
+	psShot->nRandom++;
 
 	flags = bs->readByte();
 	if( flags & SHF_EXTRAFLAGS )
@@ -710,22 +718,4 @@ bool CShootList::skipSmallShot(CBytestream *bs, const Version& senderVer)
 	if(senderVer >= OLXBetaVersion(0,58,1)) bs->Skip(1);
 	
 	return bs->isPosAtEnd();
-}
-
-AbsTime shoot_t::spawnTime() {
-	// fServerTime is the time we calculated for the server,
-	// shot->fTime was the fServerTime of the server when it added the shot
-	// HINT: Though we are not using these because these times are not synchronised and sometimes
-	// shot->fTime > fServerTime.
-	// We are estimating the time with iMyPing. We divide it by 2 as iMyPing represents
-	// the time of both ways (ping+pong).
-	AbsTime fSpawnTime = tLX->currentTime - TimeDiff(((float)cClient->getMyPing() / 1000.0f) / 2.0f);
-
-	AbsTime time = fSpawnTime;
-	// HINT: Since Beta8 though, we have a good synchronisation of fServertime and we can actually use the provided sh->fTime
-	if(cClient->getServerVersion() >= OLXBetaVersion(0,57,8))
-		if(this->fTime <= game.serverTime()) // just a security check
-			time = tLX->currentTime - (game.serverTime() - this->fTime);
-	
-	return time;
 }

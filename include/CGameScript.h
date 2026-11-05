@@ -19,13 +19,12 @@
 
 #include <map>
 #include <set>
-#include "game/Sounds.h"
+#include "Sounds.h"
 #include "GfxPrimitives.h"
 #include "CProjectile.h"
 #include "Version.h"
 #include "Color.h"
 #include "StringUtils.h"
-#include "game/Settings.h"
 
 class IniReader;
 
@@ -56,20 +55,40 @@ static_assert(GS_VERSION - GS_FIRST_SUPPORTED_VERSION + 1 == sizeof(GS_MinLxVers
 // WARNING: never change this!
 // it's used in CGameScript.cpp and it represents
 // the original file format
-// Trivially copyable POD read from / written to the mod file as a raw block.
 struct gs_header_t {
+	gs_header_t() { ID[0] = 0; Version = 0; ModName[0] = 0; }
 	char	ID[18];
+#ifdef __amigaos__
+	Uint32	Version __attribute__((aligned(4))); // the file has it at 20, as x86 aligns it; the 68k would put it at 18
+#else
 	Uint32	Version;
+#endif
 	char	ModName[64];
 };
 
+
+
+// Worm structure
+// WARNING: never change this!
+// it's used in CGameScript.cpp and it represents
+// the original file format
+struct gs_worm_t {
+	float	AngleSpeed;
+
+	float	GroundSpeed;
+	float	AirSpeed;
+	float	Gravity;
+	float	JumpForce;
+	float	AirFriction;
+	float	GroundFriction;
+
+};
 
 
 struct weapon_t;
 struct proj_t;
 struct Proj_SpawnInfo;
 struct Proj_Action;
-struct ModInfo;
 
 
 class CGameScript {
@@ -78,13 +97,16 @@ class CGameScript {
 	friend struct Proj_ProjHitEvent;
 public:
 	// Constructor
-	CGameScript() : lx56modSettings("LX56 mod settings") {
+	CGameScript() {
 		loaded = false;
-		m_gusEngineUsed = false;
 		needCollisionInfo = false;
 		NumWeapons = 0;
 		Weapons = NULL;
         pModLog = NULL;
+
+		RopeLength = 150;
+		RestLength = 20;
+		Strength = 0.5f;
 	}
 
 	~CGameScript() {
@@ -96,15 +118,18 @@ private:
 
 	std::string		sDirectory;
 
+
 	// Header
 	bool loaded;
-	gs_header_t	Header = {};
-	std::string modname;
-	bool m_gusEngineUsed;
+	gs_header_t	Header;
+
 
 	// Weapons
 	int			NumWeapons;
 	weapon_t	*Weapons;
+
+	// Worm
+	gs_worm_t	Worm;
 
 	typedef std::map<int, proj_t*> Projectiles;
 	typedef std::map<std::string, int, stringcaseless> ProjFileMap;
@@ -113,6 +138,11 @@ private:
 	
 	Projectiles projectiles;
 	bool		needCollisionInfo;
+	
+	// Ninja Rope
+	int			RopeLength;
+	int			RestLength;
+	float		Strength;
 
     // Mod log file
     FILE        *pModLog;
@@ -124,17 +154,17 @@ private:
 
 	void		Shutdown();
 	void		ShutdownProjectile(proj_t *prj);
-	static void	InitDefaultCompilerKeywords();
+	void		InitDefaultCompilerKeywords();
 
 public:
 	// Methods
 
-	int			Load(const std::string& dir, bool loadImagesAndSounds = true);
+	int			Load(const std::string& dir);
 	int			Save(const std::string& filename);
 	bool		isLoaded() const { return loaded; }
 	
 private:
-	proj_t		*LoadProjectile(FILE *fp, bool loadImagesAndSounds = true, int depth = 0);
+	proj_t		*LoadProjectile(FILE *fp);
 	bool		SaveProjectile(proj_t *proj, FILE *fp);
 
 public:
@@ -142,10 +172,9 @@ public:
 	std::string	getError(int code);
 
 	const weapon_t	*FindWeapon(const std::string& name);
-	int32_t		FindWeaponId(const std::string &name);
     bool        weaponExists(const std::string& szName);
 
-	static bool	CheckFile(const std::string& dir, std::string& name, bool abs_filename = false, ModInfo* info = NULL);
+	static bool	CheckFile(const std::string& dir, std::string& name, bool abs_filename = false);
 
     void        modLog(const std::string& text);
 
@@ -159,7 +188,7 @@ public:
 		return GS_MINLXVERSION(scriptVer) <= ver;		
 	}
 	bool		isCompatibleWith(const Version& ver) const { return isCompatibleWith(Header.Version, ver); }
-	std::string modName() const { return modname; }
+	std::string modName() const { return Header.ModName; }
 	std::string directory() const { return sDirectory; }
 	
 	int			GetNumWeapons()				{ return NumWeapons; }
@@ -170,21 +199,26 @@ private:
 	void	SetNumWeapons(int _w)			{ NumWeapons = _w; }
 	void	SetWeapons(weapon_t *_w)		{ Weapons = _w; }
 
-public:
-	// If you play on a <=0.59beta5 server, this will overwrite cClient->getGameLobby().
-	// Since 0.59beta6, the server just sets everything, so it is only handled serverside.
-	FeatureSettingsLayer lx56modSettings;
 	
+	// Ninja Rope settings
+	void	SetRopeLength(int _l)			{ RopeLength = _l; }
+	void	SetRestLength(int _l)			{ RestLength = _l; }
+	void	SetStrength(float _s)			{ Strength = _s; }
+
+public:
+	
+	
+	int		getRopeLength()				{ return RopeLength; }
+	int		getRestLength()				{ return RestLength; }
+	float	getStrength()				{ return Strength; }
+
 	bool	getNeedCollisionInfo()		{ return needCollisionInfo; }
 	
+	const gs_worm_t	*getWorm()	const	{ return &Worm; }
+
 	size_t	getProjectileCount() const	{ return projectiles.size(); }
 	
-	bool	Compile(const std::string& dir);
-
-	bool	gusEngineUsed() const		{ return m_gusEngineUsed; }
-	
-	static std::vector<std::string> LoadWeaponList(const std::string dir); // Does not load images & GFX, should be way faster than Load()
-	std::vector<std::string> GetWeaponList() const;
+	bool		Compile(const std::string& dir);
 	
 private:
 	bool	CompileWeapon(const std::string& dir, const std::string& weapon, int id);

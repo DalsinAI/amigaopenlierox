@@ -12,7 +12,7 @@
 
 #include <list>
 #include <SDL.h>
-#include "olx-types.h"
+#include "types.h"
 #include "Ref.h"
 #include "SmartPointer.h"
 #include "EventQueue.h"

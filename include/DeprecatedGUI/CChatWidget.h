@@ -15,7 +15,7 @@
 #include "DeprecatedGUI/CBrowser.h"
 #include "DeprecatedGUI/CTextbox.h"
 #include "DeprecatedGUI/CListview.h"
-#include "olx-types.h"
+#include "types.h"
 
 namespace DeprecatedGUI {
 

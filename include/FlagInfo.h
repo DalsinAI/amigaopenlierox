@@ -11,7 +11,7 @@
 #define __OLX__FLAGINFO_H__
 
 #include "CVec.h"
-#include "olx-types.h"
+#include "types.h"
 
 class CBytestream;
 class CWorm;

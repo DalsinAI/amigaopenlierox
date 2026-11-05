@@ -1,0 +1,141 @@
+# OpenLieroX 0.58_rc5 for AmigaOS 3.x, 68040/68060 + FPU, RTG,
+# on OpenGPU's SDL 1.2 (sdl12-compat on SDL2.module).
+#
+#   make -f amiga/Makefile.amigaos -j2 \
+#        STOVE=/path/to/openamigagcc-16.2.0-open4 \
+#        NDK=/path/to/OpenNDK/Include_H SDLKIT=/path/to/opengpu-sdk \
+#        DEPS=/path/to/m68k-amigaos
+#
+# STOVE is GFOpenAmigaGCC 16.2.0-open4 or later. SDLKIT is the OpenGPU
+# developer kit: libSDL.a is SDL 1.2 (sdl12-compat) with SDL 2's link
+# library inside. DEPS holds the Team's static zlib, libpng and libxml2
+# (amiga/deps/build-m68k-libs.sh builds them).
+#
+# Cut: network play, the server list and HawkNL (amiga/Networking_loopback.cpp
+# keeps local games, which go through 127.0.0.1), libcurl, libzip and libgd
+# (stub headers in amiga/include, libgd's PNG part on libpng), the
+# dedicated server's scripts (amiga/Process_stub.cpp), GeoIP's database,
+# breakpad. SDL_image and SDL_mixer 1.2 are small shims (amiga/).
+# The drawer goes to dist/OpenLieroX.
+
+STOVE   ?= $(HOME)/CradleLab/toolchain/openamigagcc-16.2.0-open4-x86_64-linux
+NDK     ?= $(HOME)/CradleLab/gfopensdk/OpenNDK/Include_H
+SDLKIT  ?= /mnt/amigachrome/team2/deps/opengpu-sdk
+DEPS    ?= /mnt/amigachrome/team2/deps/m68k-amigaos
+CC      = $(STOVE)/bin/m68k-amigaos-gcc
+CXX     = $(STOVE)/bin/m68k-amigaos-g++
+STRIP   = $(STOVE)/bin/m68k-amigaos-strip
+CPU     ?= -m68040 -m68881
+# -fno-tree-loop-distribute-patterns: GCC 16's loop miscompile (the kit's
+# sdl-config gives it for GCC 16 too).
+OPT     ?= -O2 -fomit-frame-pointer -fno-tree-loop-distribute-patterns
+
+DEFS    = -D__amigaos__ -DNBREAKPAD -DNDEBUG -DLIBXML_STATIC \
+          '-DSYSTEM_DATA_DIR="PROGDIR:"' -DNO_SDL_GLU
+INC     = -Iamiga/include -Iinclude -I$(SDLKIT)/include/SDL \
+          -I$(DEPS)/include -I$(DEPS)/include/libxml2
+COMMON  = -noixemul $(OPT) $(CPU) $(DEFS) $(INC) -MMD -MP
+CXXFLAGS = $(COMMON) -include amiga/include/amiga_prelude.h -std=gnu++11 -fpermissive -Wno-deprecated-declarations
+CFLAGS   = $(COMMON)
+AMIGAWARN = -Wall -Wextra
+
+# Every path upstream builds goes through amiga_path() (amiga/amiga_paths.c),
+# and opening and closing files is serialised there (libnix's stdio has no lock).
+WRAPS   = fopen freopen fclose fdopen open close closedir stat lstat opendir mkdir rmdir remove unlink \
+          rename chdir access SDL_RWFromFile SDL_Delay
+LDFLAGS = -noixemul $(CPU) $(foreach w,$(WRAPS),-Wl,--wrap=$(w))
+LIBS    = -L$(SDLKIT)/lib -L$(DEPS)/lib -lSDL -lxml2 -lpng -lz -lpthread -lm
+
+BUILD   = build/amigaos
+OBJDIR  = $(BUILD)/obj
+DIST    = dist
+OUT     = $(DIST)/OpenLieroX
+PROG    = OpenLieroX
+
+# As CMakeOlxCommon.cmake builds it (src/client, its DeprecatedGUI,
+# src/common, src/server, ExtractInfo), without the network layer and
+# the process runner (replaced) and GeoIP's reader (no database).
+UPSTREAM_OUT = src/common/Networking.cpp src/common/Process.cpp
+SRC     = src/main.cpp src/breakpad/ExtractInfo.cpp \
+          $(wildcard src/client/*.cpp) $(wildcard src/client/DeprecatedGUI/*.cpp) \
+          $(filter-out $(UPSTREAM_OUT),$(wildcard src/common/*.cpp)) \
+          $(wildcard src/server/*.cpp)
+AMIGA_CXX = amiga/Networking_loopback.cpp amiga/Process_stub.cpp
+AMIGA_C   = amiga/amiga_paths.c amiga/amiga_screens.c amiga/amiga_delay.c amiga/stack.c \
+          amiga/png_rgba.c amiga/gd_png.c amiga/sdl_image_lite.c amiga/sdl_mixer_lite.c
+OBJS    = $(SRC:%.cpp=$(OBJDIR)/%.o) $(AMIGA_CXX:%.cpp=$(OBJDIR)/%.o) \
+          $(AMIGA_C:%.c=$(OBJDIR)/%.o)
+
+all: $(BUILD)/$(PROG) package
+
+# The drawer's data: upstream's own (share/gamedir) as the game needs it,
+# without what the port cuts (server lists, the dedicated server's
+# scripts, GeoIP.dat, the Commander Keen tile tables) and without the
+# levels, skins and mods that are drawn after other people's games and
+# characters. See AMIGA_PORT.md, "Data and licences".
+GAMEDIR = share/gamedir
+MODS    = Classic
+CFG     = players.dat wpnrest.dat taunts.txt presets/Classic
+LEVELS_OUT = Kirby_ice_cream_island.lxl InsaniquariumDeluxe.lxl Tetrisv2.lxl \
+          "Temple of Time.lxl" fallout2.lev
+SKINS   = default.png "Default (hat).png" "Default mp5.png" default-christmas.png \
+          Ant.png Snowman.png christmassnowman.png GhostAlt1.png \
+          BattleShredderA.png BattleShredderB.png AngryWorm.png Cat.png \
+          Bunny.png AssaultSoldier.png ArmoredCarA.png BattleTankA.png
+ICONS   = $(wildcard amiga/icons/*.info)
+
+package: $(BUILD)/$(PROG) $(ICONS) AMIGA_PORT.md amiga/Licences.txt COPYING.LIB
+	rm -rf $(OUT) $(DIST)/OpenLieroX.info
+	mkdir -p $(OUT)/cfg/presets $(OUT)/skins
+	cp $(BUILD)/$(PROG) $(OUT)/$(PROG)
+	cp -R $(GAMEDIR)/data $(OUT)/data
+	rm -rf $(OUT)/data/commanderkeen123
+	cp -R $(GAMEDIR)/levels $(OUT)/levels
+	cd $(OUT)/levels && rm -f $(LEVELS_OUT)
+	# FFS names are 30 characters at most
+	mv "$(OUT)/levels/Fossil Facility 2nd section.lxl" "$(OUT)/levels/Fossil Facility 2nd part.lxl"
+	for m in $(MODS); do cp -R "$(GAMEDIR)/$$m" "$(OUT)/$$m"; done
+	for c in $(CFG); do cp -R "$(GAMEDIR)/cfg/$$c" "$(OUT)/cfg/$$c"; done
+	cd $(GAMEDIR)/skins && cp $(SKINS) $(CURDIR)/$(OUT)/skins/
+	cp $(GAMEDIR)/default.css $(GAMEDIR)/default.png $(OUT)/
+	find $(OUT) -type d | while read d; do python3 amiga/tools/png_rgba.py "$$d"; done
+	cp AMIGA_PORT.md $(OUT)/ReadMe
+	cp COPYING.LIB $(OUT)/COPYING.LIB
+	cp amiga/Licences.txt $(OUT)/Licences
+	cp amiga/icons/OpenLieroX.info amiga/icons/ReadMe.info \
+	   amiga/icons/COPYING.LIB.info amiga/icons/Licences.info $(OUT)/
+	cd $(OUT) && find . -mindepth 1 -type d | while read d; do cp $(CURDIR)/amiga/icons/Data.info "$$d.info"; done
+	cp amiga/icons/OpenLieroX-drawer.info $(DIST)/OpenLieroX.info
+
+$(BUILD)/$(PROG): $(OBJS)
+	$(CXX) $(LDFLAGS) -o $@.debug $(OBJS) $(LIBS)
+	$(STRIP) -o $@ $@.debug
+
+# The port's own C++ sees upstream's headers as system headers, so that
+# -Wall -Wextra speaks only of the port's code.
+$(OBJDIR)/amiga/%.o: amiga/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(AMIGAWARN) -isystem include -c -o $@ $<
+
+$(OBJDIR)/amiga/%.o: amiga/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(AMIGAWARN) -Iamiga -I$(NDK) -c -o $@ $<
+
+$(OBJDIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+# GCC 16 at -m68040 saves FPCR in the register a float-to-int store
+# indexes with, in CClient::ProcessMapDownloads (openrtg's fpcr_check.py).
+# -m68020 converts with fintrz instead (68040.library emulates it there;
+# that code only runs for network map downloads, which the port has not).
+$(OBJDIR)/src/client/CClient.o: CPU = -m68020 -m68881
+
+objs: $(OBJS)
+
+-include $(OBJS:.o=.d)
+
+clean:
+	rm -rf $(BUILD) $(OUT) $(DIST)/OpenLieroX.info
+
+.PHONY: all package objs clean

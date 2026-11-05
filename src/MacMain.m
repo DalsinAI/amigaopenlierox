@@ -18,8 +18,6 @@ SDLMain.m - main entry point for our Cocoa-ized SDL app
 
 #import "breakpad/ExtractInfo.h"
 
-extern int real_main(int argc, char *argv[]);
-
 @interface SDLMain : NSObject
 @end
 
@@ -78,10 +76,10 @@ static NSString *getApplicationName(void)
 @end
 #endif
 
-@interface MyApplication : NSApplication
+@interface SDLApplication : NSApplication
 @end
 
-@implementation MyApplication
+@implementation SDLApplication
 /* Invoked from the Quit menu item */
 - (void)terminate:(id)sender
 {
@@ -103,7 +101,7 @@ static NSString *getApplicationName(void)
         char parentdir[MAXPATHLEN];
 		CFURLRef url = CFBundleCopyBundleURL(CFBundleGetMainBundle());
 		CFURLRef url2 = CFURLCreateCopyDeletingLastPathComponent(0, url);
-		if (CFURLGetFileSystemRepresentation(url2, true, (UInt8 *)parentdir, MAXPATHLEN)) {
+		if (CFURLGetFileSystemRepresentation(url, true, (UInt8 *)parentdir, MAXPATHLEN)) {
 	        assert ( chdir (parentdir) == 0 );   /* chdir to the binary app's parent */
 		}
 		CFRelease(url);
@@ -217,7 +215,7 @@ static void CustomApplicationMain (int argc, char **argv)
     SDLMain				*sdlMain;
 
     /* Ensure the application object is initialised */
-    [MyApplication sharedApplication];
+    [SDLApplication sharedApplication];
     
 #ifdef SDL_USE_CPS
     {
@@ -226,7 +224,7 @@ static void CustomApplicationMain (int argc, char **argv)
         if (!CPSGetCurrentProcess(&PSN))
             if (!CPSEnableForegroundOperation(&PSN,0x03,0x3C,0x2C,0x1103))
                 if (!CPSSetFrontProcess(&PSN))
-                    [MyApplication sharedApplication];
+                    [SDLApplication sharedApplication];
     }
 #endif /* SDL_USE_CPS */
 
@@ -304,7 +302,7 @@ static void CustomApplicationMain (int argc, char **argv)
     int status;
 
     /* Set the working directory to the .app's parent directory */
-    [self setupWorkingDirectory:gFinderLaunch];
+    [self setupWorkingDirectory:TRUE];
 
 #if SDL_USE_NIB_FILE
     /* Set the main menu to contain the real app name instead of "SDL App" */
@@ -313,7 +311,7 @@ static void CustomApplicationMain (int argc, char **argv)
 
     /* Hand off to main application code */
     gCalledAppMainline = TRUE;
-    status = real_main (gArgc, gArgv);
+    status = SDL_main (gArgc, gArgv);
 
     /* We're done, thank you for playing */
     exit(status);
@@ -325,9 +323,9 @@ static void CustomApplicationMain (int argc, char **argv)
 
 - (NSString *)stringByReplacingRange:(NSRange)aRange with:(NSString *)aString
 {
-    unsigned long bufferSize;
-    unsigned long selfLen = [self length];
-    unsigned long aStringLen = [aString length];
+    unsigned int bufferSize;
+    unsigned int selfLen = [self length];
+    unsigned int aStringLen = [aString length];
     unichar *buffer;
     NSRange localRange;
     NSString *result;
@@ -390,30 +388,10 @@ int main (int argc, char **argv)
     }
 
 #if SDL_USE_NIB_FILE
-    [MyApplication poseAsClass:[NSApplication class]];
+    [SDLApplication poseAsClass:[NSApplication class]];
     NSApplicationMain (argc, argv);
 #else
     CustomApplicationMain (argc, argv);
 #endif
     return 0;
 }
-
-
-void mac__copy_to_clipboard(const char* s) {
-	[[NSPasteboard generalPasteboard] declareTypes: [NSArray arrayWithObject: NSStringPboardType] owner: nil];
-	[[NSPasteboard generalPasteboard] setString: [NSString stringWithUTF8String: s] forType: NSStringPboardType];
-}
-
-const char* mac__copy_from_clipboard() {
-	NSString *paste = [[NSPasteboard generalPasteboard] stringForType: NSStringPboardType];
-	return [paste UTF8String];
-}
-
-
-void mac__NotifyUserOnEvent() {
-	[NSApp requestUserAttention:NSCriticalRequest];
-}
-
-void mac__ClearUserNotify() {	
-}
-

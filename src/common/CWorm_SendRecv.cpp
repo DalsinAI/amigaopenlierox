@@ -18,7 +18,7 @@
 #include "LieroX.h"
 #include "Debug.h"
 #include "GfxPrimitives.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Protocol.h"
 #include "CServer.h"
 #include "MathLib.h"
@@ -26,8 +26,6 @@
 #include "CServerConnection.h"
 #include "WeaponDesc.h"
 #include "ProfileSystem.h"
-#include "game/Game.h"
-#include "CGameScript.h"
 
 
 
@@ -38,13 +36,50 @@ void CWorm::writeInfo(CBytestream *bs)
 	bs->writeString(RemoveSpecialChars(sName));
 	bs->writeInt(m_type->toInt(), 1);
 	bs->writeInt(iTeam, 1);
-	bs->writeString(cSkin.get().getFileName());
+	bs->writeString(cSkin.getFileName());
 
 	for(short i = 0; i < 3; i++)
-		bs->writeInt(cSkin.get().getDefaultColor()[i], 1);
+		bs->writeInt(cSkin.getDefaultColor()[i], 1);
 }
 
 
+void WormJoinInfo::loadFromProfile(profile_t* p) {
+	sName = RemoveSpecialChars(p->sName);
+	m_type = WormType::fromInt(p->iType);
+	if(m_type == NULL) {
+		warnings << "WormJoinInfo::loadFromProfile: profile has invalid WormType " << p->iType << endl;
+		m_type = PRF_HUMAN; // fallback
+	}
+	iTeam = CLAMP(p->iTeam, 0, 3);
+	skinFilename = p->cSkin.getFileName();
+	skinColor = Color(p->R, p->G, p->B);
+}
+
+///////////////////
+// Read info from a bytestream
+void WormJoinInfo::readInfo(CBytestream *bs)
+{
+	sName = bs->readString();
+
+	m_type = bs->readInt(1) ? PRF_COMPUTER : PRF_HUMAN;
+	iTeam = CLAMP(bs->readInt(1), 0, 3);
+	skinFilename = bs->readString();
+
+	Uint8 r = bs->readByte();
+	Uint8 g = bs->readByte();
+	Uint8 b = bs->readByte();
+	skinColor = Color(r, g, b);
+}
+
+
+void WormJoinInfo::applyTo(CWorm* worm) const {
+	worm->sName = sName;
+	worm->m_type = m_type;
+	worm->iTeam = iTeam;	
+	worm->cSkin.Change(skinFilename);
+	worm->cSkin.setDefaultColor(skinColor);
+	worm->cSkin.Colorize(skinColor);
+}
 
 // Note: We don't put charge into the update packet because we only send the update packet to
 //       _other_ worms, not to self
@@ -56,8 +91,8 @@ void CWorm::writePacket(CBytestream *bs, bool fromServer, CServerConnection* rec
 {
 	short x, y;
 
-	x = (short)vPos.get().x;
-	y = (short)vPos.get().y;
+	x = (short)vPos.x;
+	y = (short)vPos.y;
 
 	// Note: This method of saving 1 byte in position, limits the map size to just under 4096x4096
 
@@ -69,38 +104,38 @@ void CWorm::writePacket(CBytestream *bs, bool fromServer, CServerConnection* rec
 
 	// Bit flags
 	uchar bits = 0;
-	if(tState.get().bCarve)
+	if(tState.bCarve)
 		bits |= 0x01;
 	if(iFaceDirectionSide == DIR_RIGHT)
 		bits |= 0x02;
-	if(tState.get().bMove)
+	if(tState.bMove)
 		bits |= 0x04;
-	if(tState.get().bJump)
+	if(tState.bJump)
 		bits |= 0x08;
-	if(cNinjaRope.get().isReleased())
+	if(cNinjaRope.isReleased())
 		bits |= 0x10;
-	if(tState.get().bShoot)
+	if(tState.bShoot)
 		bits |= 0x20;
 
 	bs->writeByte( bits );
 	bs->writeByte( iCurrentWeapon );
 
 	// Write out the ninja rope details
-	if(cNinjaRope.get().isReleased())
-		cNinjaRope.write().write(bs);
+	if(cNinjaRope.isReleased())
+		cNinjaRope.write(bs);
 
 
 	// Velocity
 	const Version& versionOfReceiver = fromServer ? receiver->getClientVersion() : cClient->getServerVersion();
-	if(tState.get().bShoot || versionOfReceiver >= OLXBetaVersion(0,57,5)) {
+	if(tState.bShoot || versionOfReceiver >= OLXBetaVersion(5)) {
 		CVec v = vVelocity;
 		bs->writeInt16( (Sint16)v.x );
 		bs->writeInt16( (Sint16)v.y );
 	}
 	
 	// client (>=beta8) sends also current server time
-	if(!fromServer && versionOfReceiver >= OLXBetaVersion(0,57,8)) {
-		bs->writeFloat( (float)game.serverTime().seconds() );
+	if(!fromServer && versionOfReceiver >= OLXBetaVersion(8)) {
+		bs->writeFloat( (float)cClient->serverTime().seconds() );
 	}
 
 	// Update the "last" variables
@@ -111,10 +146,11 @@ void CWorm::writePacket(CBytestream *bs, bool fromServer, CServerConnection* rec
 // Synchronizes the variables used for check below
 void CWorm::updateCheckVariables()
 {
-	tLastState = tState;
+	tLastState = tState; tLastState.iFaceDirectionSide = iFaceDirectionSide;
 	fLastAngle = fAngle;
 	fLastUpdateWritten = tLX->currentTime;
 	iLastCurWeapon = iCurrentWeapon;
+	cNinjaRope.updateCheckVariables();
 	vLastUpdatedPos = vPos;
 }
 
@@ -127,13 +163,18 @@ bool CWorm::checkPacketNeeded()
 		return false;
 
 	// State
-	if (tState.get().bCarve)
+	if (tState.bCarve)
 		return true;
-	if (tState.get().bShoot && !tWeapons[iCurrentWeapon].Reloading)
+	if (tState.bShoot && !tWeapons[iCurrentWeapon].Reloading)
 		return true;
 
-	if (tLastState != tState.get())
-		return true;
+	if (
+		(tLastState.bCarve != tState.bCarve) ||
+		(tLastState.iFaceDirectionSide != iFaceDirectionSide)  ||
+		(tLastState.bMove != tState.bMove) ||
+		(tLastState.bJump != tState.bJump) ||
+		(tLastState.bShoot != tState.bShoot))
+			return true;
 
 	// Changed weapon
 	if(iLastCurWeapon != iCurrentWeapon)
@@ -148,12 +189,11 @@ bool CWorm::checkPacketNeeded()
 	if (vPosDif.GetLength2())
 		return true;
 
-	if (vVelocity.get().GetLength2())
+	if (vVelocity.GetLength2())
 		return true;
 
 	// Rope
-	// NOTE: not implemented anymore... should be done via GameState
-	return true;
+	return cNinjaRope.writeNeeded();
 }
 
 // this is used to update the position on the client-side in CWorm::readPacketState
@@ -165,7 +205,7 @@ void CWorm::net_updatePos(const CVec& newpos) {
 	// atm we only have the debugimage available if _AI_DEBUG is set
 	// this should be changed to DEBUG
 #ifdef _AI_DEBUG
-/*	SmartPointer<SDL_Surface> bmpDest = game.gameMap()->GetDebugImage();
+/*	SmartPointer<SDL_Surface> bmpDest = cClient->getMap()->GetDebugImage();
 	if (bmpDest) {
 		int node_x = (int)newpos.x*2, node_y = (int)newpos.y*2;
 		int onode_x = (int)vPos.x*2, onode_y = (int)vPos.y*2;
@@ -187,7 +227,7 @@ void CWorm::net_updatePos(const CVec& newpos) {
 	vPos = newpos;
 	bOnGround = CheckOnGround(); // update bOnGround; will perhaps be updated later in simulation
 
-	if (!game.gameScript())
+	if (!cGameScript)
 		return;
 
 	CVec dist = newpos - vOldPosOfLastPaket;
@@ -225,8 +265,9 @@ void CWorm::net_updatePos(const CVec& newpos) {
 			// Approximate with velocity and acceleration (including gravity)
 			CVec a(0, 0);
 
+			const gs_worm_t *wd = cGameScript->getWorm();
 			// Air drag (Mainly to dampen the ninja rope)
-			const float Drag = cClient->getGameLobby()[FT_WormAirFriction];
+			float Drag = wd->AirFriction;
 
 
 			if(!bOnGround)	{
@@ -236,12 +277,12 @@ void CWorm::net_updatePos(const CVec& newpos) {
 				a.y -= SQR(preEstimatedVel.y) * SIGN(preEstimatedVel.y) * Drag;
 			}
 
-			if (cNinjaRope.get().isAttached())  {
-				a += cNinjaRope.get().GetForce();
+			if (cNinjaRope.isAttached())  {
+				a += cNinjaRope.GetForce(newpos);
 			}
 
 			// Gravity
-			a.y += (float)cClient->getGameLobby()[FT_WormGravity];
+			a.y += wd->Gravity;
 
 			// this estimates the vel of fLastPosUpdate
 			// it do a better estimation as we had last time, so believe this more
@@ -287,18 +328,17 @@ void CWorm::net_updatePos(const CVec& newpos) {
 
 bool CWorm::hasOwnServerTime() {
 	if(!getClient()) return false;
-	return getClient()->getClientVersion() >= OLXBetaVersion(0,57,8);
+	return getClient()->getClientVersion() >= OLXBetaVersion(8);
 }
 
 ///////////////////
 // Read a packet (server side)
-void CWorm::readPacket(CBytestream *bs)
+void CWorm::readPacket(CBytestream *bs, CWorm *worms)
 {
 	// Position and velocity
 	short x, y;
 	bs->read2Int12( x, y );
 	vPos = CVec((float)x, (float)y);
-	posRecordings.clear(vPos);
 
 	// Angle
 	fAngle = (float)bs->readInt(1) - 90;
@@ -309,39 +349,64 @@ void CWorm::readPacket(CBytestream *bs)
 
 	iMoveDirectionSide = iFaceDirectionSide = DIR_LEFT;
 
-	tState.write().bCarve = (bits & 0x01) != 0;
+	tState.bCarve = (bits & 0x01) != 0;
 	if(bits & 0x02)
 		iMoveDirectionSide = iFaceDirectionSide = DIR_RIGHT;
-	tState.write().bMove = (bits & 0x04) != 0;
-	tState.write().bJump = (bits & 0x08) != 0;
-	tState.write().bShoot = (bits & 0x20) != 0;
+	tState.bMove = (bits & 0x04) != 0;
+	tState.bJump = (bits & 0x08) != 0;
+	tState.bShoot = (bits & 0x20) != 0;
 
 	// Ninja rope
 	bool rope = (bits & 0x10) != 0;
 	if(rope)
-		cNinjaRope.write().read(bs, iID);
+		cNinjaRope.read(bs, worms, iID);
 	else
-		cNinjaRope.write().Clear();
+		cNinjaRope.Release();
 
 	// Velocity
 	const Version& versionOfSender = getClient()->getClientVersion();
-	if(tState.get().bShoot || versionOfSender >= OLXBetaVersion(0,57,5)) {
+	if(tState.bShoot || versionOfSender >= OLXBetaVersion(5)) {
 		Sint16 vx = bs->readInt16();
 		Sint16 vy = bs->readInt16();
 		vVelocity = CVec( (float)vx, (float)vy );
 	}
 
 	// client (>=beta8) sends also what it thinks what the server time is (was)
-	if(versionOfSender >= OLXBetaVersion(0,57,8)) {
+	if(versionOfSender >= OLXBetaVersion(8)) {
 		fServertime = bs->readFloat();
-		if(fServertime < game.serverTime())
-			fServertime = game.serverTime();
+		if(fServertime < cServer->getServerTime())
+			fServertime = cServer->getServerTime();
 	}
 	
 	// If the worm is inside dirt then it is probably carving
-	if ((game.isServer() && !game.isLocalGame()) && game.gameMap())
-		if(game.gameMap()->GetPixelFlag(x, y) & PX_DIRT)
-			tState.write().bCarve = true;
+	if (tLX->iGameType == GME_HOST && cServer->getMap())
+		if(cServer->getMap()->GetPixelFlag(x, y) & PX_DIRT)
+			tState.bCarve = true;
+
+
+	// Prevent a wall hack
+	// HINT: commented out because it could lead to another cheating
+	// When you call Spawn() on a worm, it will get a full health
+	// It means that people with old LX could limit their FPS and whenever they would need to
+	// recover their health they would simply find some thinner wall and try to fly through it
+	/*if (tGameInfo.iGameType == GME_HOST && cServer->getMap() && cOwner)  {
+
+		// Out of map
+		if(x >= (short)cServer->getMap()->GetWidth() || y >= (short)cServer->getMap()->GetHeight())
+		{
+			vPos=vLastPos;
+			cServer->SpawnWorm(this, vPos, cOwner);
+		}
+
+		// In rock
+		if(cServer->getMap()->GetPixelFlag(x, y) & PX_ROCK)
+		{
+			vPos=vLastPos;
+			cServer->SpawnWorm(this, vPos, cOwner);
+		}
+
+		vLastPos = vPos;
+	}*/
 }
 
 ////////////////
@@ -361,7 +426,7 @@ bool CWorm::skipPacketState(CBytestream *bs)
 	bool shooting = (bits & 0x20) != 0; 
 
 	const Version& versionOfSender = cClient->getServerVersion();
-	bool gotVelocity = shooting || versionOfSender >= OLXBetaVersion(0,57,5);
+	bool gotVelocity = shooting || versionOfSender >= OLXBetaVersion(5);
 		
 	// Velocity
 	if(gotVelocity) {
@@ -390,13 +455,13 @@ bool CWorm::skipPacket(CBytestream *bs)
 
 	// Velocity
 	const Version& versionOfSender = getClient()->getClientVersion();
-	if(shooting || versionOfSender >= OLXBetaVersion(0,57,5)) {
+	if(shooting || versionOfSender >= OLXBetaVersion(5)) {
 		bs->readInt16();
 		bs->readInt16();
 	}
 	
 	// client (>=beta8) sends also what it thinks what the server time is (was)
-	if(versionOfSender >= OLXBetaVersion(0,57,8)) {
+	if(versionOfSender >= OLXBetaVersion(8)) {
 		bs->readFloat();
 	}
 	
@@ -407,7 +472,7 @@ bool CWorm::skipPacket(CBytestream *bs)
 
 ///////////////////
 // Read a packet (client side)
-void CWorm::readPacketState(CBytestream *bs)
+void CWorm::readPacketState(CBytestream *bs, CWorm *worms)
 {
 	if(cClient->OwnsWorm(this->getID())) {
 		warnings << "get worminfo packet from server for our own worm" << endl;
@@ -415,8 +480,10 @@ void CWorm::readPacketState(CBytestream *bs)
 		return;
 	}
 
-	if (!getAlive()) {
+	if (!bUsed || !getAlive()) {
 		// Note: This can happen also (even a lot of times) when a worm joins and we didn't received all information yet (because of limited reliable bandwidth).
+		if(!bUsed)
+			notes << "Client: readPacketState called on unused worm " << getID() << ":" << getName() << endl;
 		skipPacketState(bs);
 		return;
 	}
@@ -426,29 +493,31 @@ void CWorm::readPacketState(CBytestream *bs)
 	bs->read2Int12( x, y );
 
 	// Angle
-	int iAngle = (bs->readInt(1) - 90);
-	fAngle = (float)iAngle;
+	tState.iAngle = (bs->readInt(1) - 90);
+	fAngle = (float)tState.iAngle;
 
 	// Flags
 	uchar bits = bs->readByte();
 	iCurrentWeapon = (uchar)CLAMP(bs->readByte(), (uchar)0, (uchar)4);
 
 	iMoveDirectionSide = iFaceDirectionSide = DIR_LEFT;
+	tState.iFaceDirectionSide = DIR_LEFT;
 
-	tState.write().bCarve = (bits & 0x01);
+	tState.bCarve = (bits & 0x01);
 	if(bits & 0x02) {
 		iMoveDirectionSide = iFaceDirectionSide = DIR_RIGHT;
+		tState.iFaceDirectionSide = DIR_RIGHT;
 	}
-	tState.write().bMove = (bits & 0x04) != 0;
-	tState.write().bJump = (bits & 0x08) != 0;
-	tState.write().bShoot = (bits & 0x20) != 0;
+	tState.bMove = (bits & 0x04) != 0;
+	tState.bJump = (bits & 0x08) != 0;
+	tState.bShoot = (bits & 0x20) != 0;
 
 	// Ninja rope
 	bool rope = (bits & 0x10) != 0;
 	if(rope)
-		cNinjaRope.write().read(bs,iID);
+		cNinjaRope.read(bs,worms,iID);
 	else
-		cNinjaRope.write().Clear();
+		cNinjaRope.Release();
 
 	// Safety check
 	if( iCurrentWeapon < 0 || iCurrentWeapon > 4) {
@@ -457,7 +526,7 @@ void CWorm::readPacketState(CBytestream *bs)
 	}
 
 	const Version& versionOfSender = cClient->getServerVersion();
-	bool gotVelocity = tState.get().bShoot || versionOfSender >= OLXBetaVersion(0,57,5);
+	bool gotVelocity = tState.bShoot || versionOfSender >= OLXBetaVersion(5);
 
 	// Update the position
 	CVec oldPos = vPos;
@@ -465,7 +534,6 @@ void CWorm::readPacketState(CBytestream *bs)
 		net_updatePos( CVec(x, y) ); // estimation, sets also velocity
 	else
 		vPos = CVec(x, y);
-	posRecordings.clear(vPos);
 
 	// Velocity
 	if(gotVelocity) {
@@ -478,7 +546,7 @@ void CWorm::readPacketState(CBytestream *bs)
 
 	// do carving also here as the simulation is only done in next frame and with an updated position
 	
-	if(game.isMapReady()) {
+	if(cClient->isMapReady()) {
 		/* Earlier, we had calculated from the whole way from vOldPos to vPos (just the direct linear way).
 		 * That had several issues:
 		 *   - vOldPos could be wrong or very inaccurate for several reasons (big lag or hideandseek or something)
@@ -489,7 +557,7 @@ void CWorm::readPacketState(CBytestream *bs)
 		incrementDirtCount( CarveHole(vPos) );
 	}
 	
-	if(tState.get().bCarve && game.isMapReady()) {
+	if(tState.bCarve && cClient->isMapReady()) {
 		/* If we get the updates too infrequently, it could be that we don't have carved everything.
 		 * Thus, if the len is not too big, we still carve the whole way.
 		 */
@@ -503,12 +571,14 @@ void CWorm::readPacketState(CBytestream *bs)
 	}
 	
 	// carve a bit further were we are heading to (same as in simulation)
-	if(tState.get().bCarve && game.isMapReady()) {
+	if(tState.bCarve && cClient->isMapReady()) {
 
 		// Calculate dir
 		const CVec dir = getFaceDirection();
 		incrementDirtCount( CarveHole(getPos() + dir*4) );
 	}
+
+	this->fLastSimulationTime = tLX->currentTime; // - ((float)cClient->getMyPing()/1000.0f) / 2.0f; // estime the up-to-date time
 }
 
 
@@ -518,15 +588,17 @@ void CWorm::writeWeapons(CBytestream *bs)
 {
 	bs->writeByte(iID);
 
-	// Old LX just supports 5 weapon slots. This is simply fixed there.
-	// As this function (read/write weapons) is anyway only used for old
-	// LX, this is not so problematic.
-	static const uint OldLXNumWpnSlots = 5;
-	for(ushort i=0; i<OldLXNumWpnSlots; i++) {
-		if(tWeapons[i].weapon())
-			bs->writeByte(tWeapons[i].weapon()->ID);
-		else
+	for(ushort i=0; i<5; i++) {
+		if(tWeapons[i].Enabled) {
+			if(tWeapons[i].Weapon)
+				bs->writeByte(tWeapons[i].Weapon->ID);
+			else {
+				bs->writeByte(255);
+				errors << "tWeapons[" << i << "].Weapon not set" << endl;
+			}
+		} else { // not enabled weapon
 			bs->writeByte(255);
+		}
 	}
 }
 
@@ -535,47 +607,63 @@ void CWorm::writeWeapons(CBytestream *bs)
 // Read the weapon list
 void CWorm::readWeapons(CBytestream *bs)
 {
-	//notes << "weapons for " << iID << ":" << sName << ": ";
-	
-	static const uint OldLXNumWpnSlots = 5;
-	weaponSlots.write().resize(OldLXNumWpnSlots);
+	bool weaponsChanged = false;
 
-	for(ushort i=0; i<tWeapons.size(); i++) {
-		//if(i > 0) notes << ", ";
+	for(ushort i=0; i<5; i++) {
 		int id = bs->readByte();
 
-		wpnslot_t& slot = weaponSlots.write()[i];
-		slot.WeaponId = -1;
+		const weapon_t *oldWeapon = tWeapons[i].Weapon;
+		bool oldEnabled = tWeapons[i].Enabled;
 
-		if(game.gameScript()) {
-			if(id >= 0 && id < game.gameScript()->GetNumWeapons()) {
-				slot.WeaponId = id;
-				//notes << tWeapons[i].Weapon->Name;
+		tWeapons[i].Weapon = NULL;
+		tWeapons[i].Enabled = false;
+
+		if(cGameScript) {
+			if(id >= 0 && id < cGameScript->GetNumWeapons()) {
+				tWeapons[i].Weapon = cGameScript->GetWeapons() + id;
+				tWeapons[i].Enabled = true;
 			}
 			else if(id == 255) { // special case to unset weapon
-				slot.WeaponId = -1;
-				//notes << "UNSET";
+				tWeapons[i].Weapon = NULL;
+				tWeapons[i].Enabled = false;
 			}
 			else {
 				warnings << "Error when reading weapons (ID is over num weapons)" << endl;
-				slot.WeaponId = -1;
-				//notes << id << "?";
+				tWeapons[i].Weapon = NULL;
+				tWeapons[i].Enabled = false;
 			}
 		} else {
 			errors << "readWeapons: cGameScript == NULL" << endl;
-			//notes << id;
+			tWeapons[i].Enabled = false;
+		}
+		if (oldWeapon != tWeapons[i].Weapon || oldEnabled != tWeapons[i].Enabled) {
+			weaponsChanged = true;
 		}
 	}
-	//notes << endl;
 
 	// Reset the weapons
-	for(size_t i=0; i<tWeapons.size(); i++) {
-		weaponSlots.write()[i].Charge = 1.f;
-		weaponSlots.write()[i].Reloading = false;
-		weaponSlots.write()[i].LastFire = 0.f;
+	if (cServer->getState() == SVS_PLAYING)  {
+		// Do not recharge weapons when already playing
+		// This prevents cheating by re-selecting the same weapons
+		for(ushort i=0; i<5; i++) {
+			tWeapons[i].SlotNum = i;
+		}
+	} else {
+		for(ushort i=0; i<5; i++) {
+			tWeapons[i].Charge = 1;
+			tWeapons[i].Reloading = false;
+			tWeapons[i].SlotNum = i;
+			tWeapons[i].LastFire = 0;
+		}
 	}
-		
+	
 	bWeaponsReady = true;
+
+	if (weaponsChanged) {
+		// Let the weapon name show up for a short moment
+		bForceWeapon_Name = true;
+		fForceWeapon_Time = tLX->currentTime + 0.75f;
+	}
 }
 
 
@@ -616,48 +704,50 @@ void CWorm::writeStatUpdate(CBytestream *bs)
 
 
 ///////////////////
-// Read a worm weapon stat update
+// Read a worm stat update
 void CWorm::readStatUpdate(CBytestream *bs)
 {
 	uchar cur = bs->readByte();
 	uchar charge = bs->readByte();
 
-	if(!bWeaponsReady) {
+	if(!bGameReady) {
 		// Can happen at connect-during-game.
 		return;
 	}
 	
     // Check
-	if (cur >= weaponSlots.get().size())  {
+	if (cur > 4)  {
 		warnings << "CWorm::readStatUpdate: current weapon not in range, ignored." << endl;
 		return;
 	}
+
+	if(!tWeapons[cur].Enabled)
+		return;
 	
-	if(tWeapons[cur].weapon() == NULL) {
+	if(tWeapons[cur].Weapon == NULL) {
 		warnings << "readStatUpdate: Weapon " << int(cur) << " not set" << endl;
 		return;
 	}
 
-	iCurrentWeapon = cur;
-
 	// If this is a special weapon, and the charge is processed client side, don't set the charge
-	if( tWeapons[cur].weapon()->Type == WPN_SPECIAL )
+	if( tWeapons[cur].Weapon->Type == WPN_SPECIAL )
 		return;
 
 
-	weaponSlots.write()[cur].Reloading = (charge & 0x80) != 0;
+
+	tWeapons[cur].Reloading = (charge & 0x80) != 0;
 
 	charge &= ~(0x80);
 
 	float c = (float)charge/100.0f;
 
 	if( tWeapons[cur].Reloading && (c > tWeapons[cur].Charge || fabs(c - tWeapons[cur].Charge) > 0.1f) )
-		weaponSlots.write()[cur].Charge = c;
+		tWeapons[cur].Charge = c;
 
 	if( !tWeapons[cur].Reloading && c < tWeapons[cur].Charge )
-		weaponSlots.write()[cur].Charge = c;
+		tWeapons[cur].Charge = c;
 
 	// If the server is on the same comp as me, just set the charge normally
-	if( game.isServer() )
-		weaponSlots.write()[cur].Charge = c;
+	if( tLX->iGameType != GME_JOIN )
+		tWeapons[cur].Charge = c;
 }

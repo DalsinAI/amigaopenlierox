@@ -29,11 +29,7 @@
 #include "DeprecatedGUI/CCheckbox.h"
 #include "DeprecatedGUI/CBrowser.h"
 #include "DeprecatedGUI/CTextButton.h"
-#include "sound/SoundsBase.h"
-#include "game/ServerList.h"
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
+#include "Sounds.h"
 
 
 namespace DeprecatedGUI {
@@ -61,6 +57,7 @@ void Menu_MainInitialize()
 {
 	int i;
 	assert(tMenu);
+	tMenu->bMenuRunning = true;
 	tMenu->iMenuType = MNU_MAIN;
 
 	if(bDedicated) return;
@@ -88,12 +85,12 @@ void Menu_MainInitialize()
 	// selection of different themes (like default, LX56, ...)
 	Menu_Main_GuiThemeComboboxCreate();
 
-	const char * LXALinkText = "Visit our website https://openlierox.net";
+	const char * LXALinkText = "Visit our forums at http://openlierox.net/";
 	int orig_spacing = tLX->cFont.GetVSpacing();
 	tLX->cFont.SetVSpacing(tMenu->tFrontendInfo.iCreditsSpacing);
 	cMainMenu.Add( new CTextButton(LXALinkText, tLX->clCredits2, tLX->clCredits1 ), 
-						mm_LXALink, tMenu->tFrontendInfo.iCreditsLeft - tLX->cFont.GetWidth(LXALinkText) - 30, 
-						tMenu->tFrontendInfo.iCreditsTop + tLX->cFont.GetHeight() * 6, 250, 15 );
+						mm_LXALink, tMenu->tFrontendInfo.iCreditsLeft - tLX->cFont.GetWidth(LXALinkText) - 20,
+						tMenu->tFrontendInfo.iCreditsTop + tLX->cFont.GetHeight() * 5, 250, 15 );
 	tLX->cFont.SetVSpacing(orig_spacing);
 }
 
@@ -110,7 +107,7 @@ void Menu_MainFrame()
 	// Process the buttons
 	ev = cMainMenu.Process();
 		
-	cMainMenu.Draw(VideoPostProcessor::videoSurface().get());
+	cMainMenu.Draw(VideoPostProcessor::videoSurface());
 	
 	int mouseover = false;
 	int img = lastimg;
@@ -138,9 +135,6 @@ void Menu_MainFrame()
                 if( ev->iEventMsg == TBT_CLICKED ) {
 					PlaySoundSample(sfxGeneral.smpClick);
 				    Menu_MainShutdown();
-				    // Refresh the master server lists in the background so the
-				    // server list shown in the Internet menu is up to date.
-				    DownloadMasterServerListFiles();
 				    Menu_NetInitialize();
 				    return;
                 }
@@ -183,23 +177,9 @@ void Menu_MainFrame()
 
                     cMainMenu.Draw(tMenu->bmpBuffer.get());
 
-					MessageBoxReturnType answer = Menu_MessageBox(GetGameName(), "Quit OpenLieroX?", LMB_YESNO);
+					MessageBoxReturnType answer = Menu_MessageBox(GetGameName(),"Quit OpenLieroX?", LMB_YESNO);
 					if( answer == MBR_YES || answer == MBR_INVALID ) {
-#ifdef __EMSCRIPTEN__
-						// Tell the JS shell to drop browser fullscreen the
-						// instant the user confirms Quit, before any teardown
-						// runs. Game::onStateUpdate's parallel hook does not
-						// reliably fire on the Inactive→Quit transition for
-						// reasons we haven't pinned down, so this is the
-						// authoritative quit signal for the wasm port.
-						MAIN_THREAD_ASYNC_EM_ASM({
-							if (typeof window !== 'undefined' &&
-							    typeof window.olxOnEngineExit === 'function') {
-								window.olxOnEngineExit(0);
-							}
-						});
-#endif
-						game.state = Game::S_Quit;
+					    tMenu->bMenuRunning = false;
 					    Menu_MainShutdown();
 				    } else {
 
@@ -216,15 +196,15 @@ void Menu_MainFrame()
             
 			case mm_LXALink:
 				if( ev->iEventMsg == TXB_MOUSEUP ) {
-					OpenLinkInExternBrowser("https://openlierox.net");
+					OpenLinkInExternBrowser("http://www.openlierox.net/");
 				}
 				break;
 
 			case mm_Theme:
 				if( ev->iEventMsg == CMB_CHANGED ) {
 					CCombobox * cbox = (CCombobox *) cMainMenu.getWidget(mm_Theme);
-					if (cbox && cbox->getSelectedItem().get() && cbox->getSelectedItem()->index() != tLXOptions->sTheme) {
-						tLXOptions->sTheme = cbox->getSelectedItem()->index();
+					if (cbox && cbox->getSelectedItem() && cbox->getSelectedItem()->sIndex != tLXOptions->sTheme) {
+						tLXOptions->sTheme = cbox->getSelectedItem()->sIndex;
 						notes("Changed theme to: " + tLXOptions->sTheme + "\n");
 
 						// Atm it's the easiest way and we ensure that every gfx is newly loaded.
@@ -232,7 +212,7 @@ void Menu_MainFrame()
 						// the order of the searchpaths changed etc.
 
 						// restart game
-						game.state = Game::S_Quit;
+						tMenu->bMenuRunning = false; // quit
 						Menu_MainShutdown(); // cleanup for this menu
 						bRestartGameAfterQuit = true; // set restart-flag
 					}
@@ -240,7 +220,7 @@ void Menu_MainFrame()
 				break;
 
 			default:
-				break;
+                break;
 		}
 	}
 
@@ -254,7 +234,7 @@ void Menu_MainFrame()
 
 	if(alpha) {
 
-		DrawImageAdv(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 410,260, 410,260, 200,64);
+		DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 410,260, 410,260, 200,64);
 
 		switch(img) {
 			case 0:
@@ -270,10 +250,7 @@ void Menu_MainFrame()
 
 	// Credits
 
-	// Show the full get_version_full.sh string (e.g. "20260616.4+git.b547037"),
-	// so the git hash of a dev build is visible.
-	// This is the exact build string, shown verbatim rather than reconstructed via Version.
-	static const std::string credits1 = "  " + std::string(GetGameName()) + " " + GetGameVersionStringFull();
+	static const std::string credits1 = "  " + GetGameVersion().asHumanString(); // TODO: should we print revision here?
 
 	static const std::string credits2 = std::string(
 		"- Original code by Jason Boettcher\n"
@@ -304,8 +281,8 @@ void Menu_MainFrame()
 		h = tLX->cFont.GetHeight() + tLX->cFont.GetHeight(credits2) + 4;
 
 	Menu_redrawBufferRect(x, y, w, h);
-	tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), x, y, tLX->clCredits1, credits1);
-	tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), x, y + tLX->cFont.GetHeight(), tLX->clCredits2, credits2);
+	tLX->cFont.Draw(VideoPostProcessor::videoSurface(), x, y, tLX->clCredits1, credits1);
+	tLX->cFont.Draw(VideoPostProcessor::videoSurface(), x, y + tLX->cFont.GetHeight(), tLX->clCredits2, credits2);
 
 
 	// Restore the original spacing
@@ -313,7 +290,7 @@ void Menu_MainFrame()
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 
@@ -324,11 +301,10 @@ void Menu_MainShutdown()
 	cMainMenu.Shutdown();
 }
 
-static ScriptVarPtr_t themeVar;
 
 struct Menu_Main_GuiThemeComboboxCreate__Executer {
 	CCombobox* combobox;
-	
+
 	void execute() {
 		// GUI theme combobox
 

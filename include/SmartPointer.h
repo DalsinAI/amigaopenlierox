@@ -17,6 +17,7 @@
 #endif
 
 #include "Functors.h"
+#include "ThreadPool.h"
 
 template < typename _Type, typename _SpecificInitFunctor >
 class SmartPointer;
@@ -30,18 +31,12 @@ void SmartPointer_ObjectDeinit( _Type * obj )
 
 // these forward-declaration are needed here
 struct SDL_Surface;
-struct SDL_Texture;
-struct SDL_Renderer;
-struct SDL_Window;
-class SoundSample;
+struct SoundSample;
 class CMap;
 class CGameScript;
 
 // Specialized de-init functions, for each simple struct-like type that has no destructor
 template <> void SmartPointer_ObjectDeinit<SDL_Surface> ( SDL_Surface * obj ); // Calls gfxFreeSurface(obj);
-template <> void SmartPointer_ObjectDeinit<SDL_Texture> ( SDL_Texture * obj );
-template <> void SmartPointer_ObjectDeinit<SDL_Renderer> ( SDL_Renderer * obj );
-template <> void SmartPointer_ObjectDeinit<SDL_Window> ( SDL_Window * obj );
 template <> void SmartPointer_ObjectDeinit<SoundSample> ( SoundSample * obj ); // Calls FreeSoundSample(obj);
 template <> void SmartPointer_ObjectDeinit<CMap> ( CMap * obj ); // Requires to be defined elsewhere
 template <> void SmartPointer_ObjectDeinit<CGameScript> ( CGameScript * obj ); // Requires to be defined elsewhere
@@ -67,8 +62,6 @@ class SmartObject;*/
 
 template < typename _Type, typename _SpecificInitFunctor = NopFunctor<void*> >
 class SmartPointer { //friend class SmartObject<_Type>;
-public:
-	typedef _Type value_type;
 private:
 	_Type* obj;
 	int* refCount;
@@ -92,7 +85,7 @@ private:
 			SDL_LockMutex(SmartPointer_CollMutex);
 			if( SmartPointer_CollisionDetector == NULL )
 			{
-				//hints << "SmartPointer collision detector initialized" << endl; // Causes a crash during static init
+				hints << "SmartPointer collision detector initialized" << endl;
 				SmartPointer_CollisionDetector = new std::map< void *, SDL_mutex * > ();
 			}
 			if( SmartPointer_CollisionDetector->count(obj) != 0 ) // Should be faster than find() I think
@@ -222,7 +215,7 @@ public:
 	// (which would lead to collisions!)
 	// This operator is safe though.
 	_Type * operator -> () const { return obj; };
-	
+
 	// refcount may be changed from another thread, though if refcount==1 or 0 it won't change
 	int getRefCount() {
 		int ret = 0;

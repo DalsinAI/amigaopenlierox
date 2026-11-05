@@ -22,8 +22,7 @@
 #include "CViewport.h"
 #include "CGameScript.h"
 #include "CClient.h"
-#include "game/CMap.h"
-#include "game/Game.h"
+#include "CMap.h"
 
 
 ///////////////////
@@ -31,6 +30,7 @@
 void CBonus::Spawn(CVec ppos, int type, int weapon, CGameScript *gs)
 {
 	bUsed = true;
+	fLastSimulationTime = tLX->currentTime;
 	vPos = ppos;
 	vVelocity = CVec(0,0);
 	iType = type;
@@ -46,10 +46,10 @@ void CBonus::Spawn(CVec ppos, int type, int weapon, CGameScript *gs)
 
 ///////////////////
 // Draw the bonus
-void CBonus::Draw(SDL_Surface * bmpDest, CViewport *v, bool showname)
+void CBonus::Draw(SDL_Surface * bmpDest, CViewport *v, int showname)
 {
-	CMap* map = game.gameMap();
-	VectorD2<int> p = v->physicToReal(vPos, cClient->getGameLobby()[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
+	CMap* map = cClient->getMap();
+	VectorD2<int> p = v->physicToReal(vPos, cClient->getGameLobby()->features[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
 
 	// If we are in a flashing mode, don't show it on an 'off' flash mode
 	if(fLife > BONUS_LIFETIME-3) {
@@ -76,6 +76,6 @@ void CBonus::Draw(SDL_Surface * bmpDest, CViewport *v, bool showname)
 }
 
 void CBonus::setUsed(bool _u) {
-	bUsed = _u;
+	bUsed = _u; if(_u) fLastSimulationTime = tLX->currentTime;
 }
 

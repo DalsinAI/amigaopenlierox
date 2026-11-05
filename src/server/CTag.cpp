@@ -8,7 +8,7 @@
  */
 
 #include <iostream>
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Options.h"
 #include "Consts.h"
 #include "CServer.h"
@@ -24,6 +24,7 @@ public:
 	
 	virtual void PrepareGame();
 	virtual void PrepareWorm(CWorm* worm);
+	virtual bool Spawn(CWorm* worm, CVec pos);
 	virtual void Kill(CWorm* victim, CWorm* killer);
 	virtual void Drop(CWorm* worm);
 	virtual void Simulate();
@@ -54,6 +55,12 @@ void CTag::PrepareWorm(CWorm* worm)
 {
 	worm->setTagIT(false);
 	worm->setTagTime(TimeDiff(0));
+}
+
+bool CTag::Spawn(CWorm* worm, CVec pos)
+{
+	worm->Spawn(pos);
+	return true;
 }
 
 void CTag::Kill(CWorm* victim, CWorm* killer)
@@ -95,10 +102,10 @@ void CTag::Simulate()
 {
 	// Increase the tag time
 	bool have_it = false;
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if (w->get()->getTagIT() && w->get()->getLives() != WRM_OUT)  {
-			if (w->get()->getAlive())
-				w->get()->incrementTagTime(tLX->fRealDeltaTime);
+	for (int i = 0; i < MAX_WORMS; i++)  {
+		if (cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getTagIT() && cServer->getWorms()[i].getLives() != WRM_OUT)  {
+			if (cServer->getWorms()[i].getAlive())
+				cServer->getWorms()[i].incrementTagTime(tLX->fRealDeltaTime);
 			have_it = true;
 			break;
 		}
@@ -109,9 +116,9 @@ void CTag::Simulate()
 		TagRandomWorm();
 
 	// Check if any of the worms reached the maximum tag time
-	if ((float)gameSettings[FT_TagLimit] > 0)
-		for_each_iterator(CWorm*, w, game.worms())
-			if(w->get()->getTagTime() >= (float)gameSettings[FT_TagLimit] * 60.0f)
+	if (tLXOptions->tGameInfo.iTagLimit > 0)
+		for (int i = 0; i < MAX_WORMS; i++)
+			if(cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getTagTime() >= tLXOptions->tGameInfo.iTagLimit * 60.0f)
 				cServer->RecheckGame();
 }
 
@@ -120,15 +127,14 @@ bool CTag::CheckGameOver()
 	if(CGameMode::CheckGameOver()) return true;
 	
 
-	if ((float)gameSettings[FT_TagLimit] > 0)  {
+	if (tLXOptions->tGameInfo.iTagLimit > 0)  {
 		int wormid = HighestScoredWorm();
-		CWorm* w = game.wormById(wormid, false);
 
 		// Check if any of the worms reached the maximum tag time
-		if(w && w->getTagTime() >= (float)gameSettings[FT_TagLimit] * 60.0f) {
+		if(wormid >= 0 && cServer->getWorms()[wormid].getTagTime() >= tLXOptions->tGameInfo.iTagLimit * 60.0f) {
 			// TODO: make configureable
-			cServer->SendGlobalText(w->getName() + " has reached the maximum tag time", TXT_NORMAL);
-			notes << w->getName() << " has reached the maximum tag time" << endl;
+			cServer->SendGlobalText(cServer->getWorms()[wormid].getName() + " has reached the maximum tag time", TXT_NORMAL);
+			notes << cServer->getWorms()[wormid].getName() << " has reached the maximum tag time" << endl;
 			return true;
 		}
 	}
@@ -149,12 +155,19 @@ int CTag::Winner()
 void CTag::TagWorm(CWorm *worm)
 {
 	// Safety check
-	if(!worm || game.state != Game::S_Playing)
+	if(!worm || cServer->getState() != SVS_PLAYING)
 		return;
 
 	// Go through all the worms, setting their tag to false
-	for_each_iterator(CWorm*, w, game.worms())
-		w->get()->setTagIT(false);
+	for(short i = 0; i < MAX_WORMS; i++)
+		if(cServer->getWorms()[i].isUsed())
+			cServer->getWorms()[i].setTagIT(false);
+
+	// Some safety warnings
+	if (!worm->isUsed())  {
+		errors << "Tagging an unused worm (ID " << worm->getID() << ")" << endl;
+	}
+
 
 	worm->setTagIT(true);
 
@@ -177,33 +190,30 @@ void CTag::TagRandomWorm()
 
 	// Go through finding the worm with the lowest tag time
 	// A bit more fairer then random picking
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if(w->get()->getLives() != WRM_OUT) {
-			if(w->get()->getTagTime() < time) {
-				time = w->get()->getTagTime();
+	unsigned short i;
+	for(i=0;i<MAX_WORMS;i++) {
+		if(cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getLives() != WRM_OUT) {
+			if(cServer->getWorms()[i].getTagTime() < time) {
+				time = cServer->getWorms()[i].getTagTime();
 			}
 		}
 	}
 
 	// Find all the worms that have the lowest time
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if (w->get()->getLives() != WRM_OUT)  {
-			if (w->get()->getTagTime() == time)  {
-				all_lowest.push_back(w->get()->getID());
+	for (i=0;i<MAX_WORMS;i++)  {
+		if (cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getLives() != WRM_OUT)  {
+			if (cServer->getWorms()[i].getTagTime() == time)  {
+				all_lowest.push_back(i);
 			}
 		}
 	}
 
-	if(all_lowest.size() == 0) {
-		errors << "CTag::TagRandomWorm: no worms" << endl;
-		return;
-	}
-	
 	// Choose a random worm from all those having the lowest time
 	int random_lowest = GetRandomInt((int)all_lowest.size()-1);
 
+
 	// Tag the lowest tagged worm
-	TagWorm(game.wormById(all_lowest[random_lowest]));
+	TagWorm(&cServer->getWorms()[all_lowest[random_lowest]]);
 }
 
 static CTag gameMode;

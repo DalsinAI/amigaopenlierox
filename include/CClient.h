@@ -28,14 +28,13 @@
 #include "CShootList.h"
 #include "Version.h"
 #include "FileDownload.h"
-#include "DeprecatedGUI/CGuiLayout.h"
+#include "Frame.h"
 #include "CProjectile.h"
 #include "CWpnRest.h"
 #include "Consts.h"
+#include "LieroX.h"
 #include "CViewport.h"
 #include "SafeVector.h"
-#include "game/GameMode.h"
-#include "game/EngineSettings.h"
 
 
 namespace DeprecatedGUI {
@@ -49,17 +48,15 @@ class CChannel;
 class CClientNetEngine;
 class CBonus;
 class CMap;
-struct profile_t;
+class profile_t;
 class FlagInfo;
-struct ClientConnectionRequestInfo;
-struct GameState;
 
 // TODO: this is just a small helper for now; some of these parts should just move into CClient::Connect
 bool JoinServer(const std::string& addr, const std::string& name, const std::string& player);
 
 
 // Chatbox line
-struct chat_line_t {
+class chat_line_t { public:
 	std::string	sText;
 	float	fTime;
 	float	fScroll;
@@ -67,7 +64,7 @@ struct chat_line_t {
 };
 
 // Structure for logging worms
-struct log_worm_t {
+class log_worm_t { public:
 	std::string	sName;
 	std::string	sSkin;
 	int			iLives;
@@ -85,8 +82,9 @@ struct log_worm_t {
 };
 
 // Game log structure
-struct game_log_t {
-	std::map<int,log_worm_t> tWorms;
+class game_log_t { public:
+	log_worm_t	*tWorms;
+	int			iNumWorms;
 	int			iWinner;
 	AbsTime		fGameStart;
 	std::string	sGameStart;
@@ -95,7 +93,7 @@ struct game_log_t {
 };
 
 
-struct interface_sett {
+class interface_sett { public:
 	int		ChatterX;
 	int		ChatterY;
 	int		ChatBoxX;
@@ -181,8 +179,6 @@ enum  {
 };
 
 
-class Game;
-
 class CClient {
 public:
 	CClient();
@@ -191,16 +187,22 @@ public:
 	friend class CClientNetEngine;
 	friend class CClientNetEngineBeta7;
 	friend class CClientNetEngineBeta9;
-	friend class Game;
-	
-	typedef void (*DownloadFinishedCB) ();
 
-	SmartPointer<ClientConnectionRequestInfo> connectInfo;
+	typedef void (*DownloadFinishedCB) ();
 
 private:
 	// Attributes
 
+	// Local Worms (pointers to the remote worms)
+	uint		iNumWorms;
+	CWorm		*cLocalWorms[MAX_PLAYERS];
+	//int			iDrawingViews[2];
     CViewport   cViewports[NUM_VIEWPORTS];
+
+	profile_t	*tProfiles[MAX_PLAYERS];
+
+	// Remote worms
+	CWorm		*cRemoteWorms;
 
 	// Logging
 	game_log_t	*tGameLog;
@@ -209,6 +211,7 @@ private:
 
 
 	// Map
+	CMap		*cMap;
 	bool		bMapGrabbed;
 
 	// Projectiles
@@ -233,19 +236,28 @@ public:
 	ProjectilePosMap projPosMap;
 	
 private:	
+	// Frames
+	frame_t		tFrames[NUM_FRAMES];
+
 	// Game
-	GameState* serverGameState;
-
-	EngineSettings tGameInfo;	// Also game lobby
+	SmartPointer<CGameScript> cGameScript;
+    CWpnRest    cWeaponRestrictions;
+	GameOptions::GameInfo tGameInfo;	// Also game lobby
 	FeatureCompatibleSettingList otherGameInfo;	
-
+	bool	bServerChoosesWeapons; // the clients will not get the weapon selection screen and the server sets it; if true, only >=Beta7 is supported
 	FlagInfo*	m_flagInfo;
 
 	// Ping below FPS
 	AbsTime		fMyPingSent;
 	AbsTime		fMyPingRefreshed;
 	int			iMyPing;
+	TimeDiff	fServertime; // only in >=Beta8 correctly synchronised
 	
+	int			iScoreboard[MAX_WORMS];
+	int			iScorePlayers;
+	int			iTeamScores[4];
+	int			iTeamList[4];
+
 	// Interface
 	interface_sett tInterfaceSettings;
 	DeprecatedGUI::CBar		*cHealthBar1;
@@ -256,14 +268,16 @@ private:
 	SmartPointer<SDL_Surface> bmpBoxBuffer;
 	SmartPointer<SDL_Surface> bmpBoxLeft;
 	SmartPointer<SDL_Surface> bmpBoxRight;
-	DeprecatedGUI::CGuiLayout  cGameMenuLayout;
 	bool		bShouldRepaintInfo;
 	bool		bCurrentSettings;
 
 
+	// Game menu && score
+	bool		bUpdateScore;
+	AbsTime		fLastScoreUpdate;
+
 	// Ingame scoreboard
 	SmartPointer<SDL_Surface> bmpIngameScoreBg;
-	DeprecatedGUI::CGuiLayout	cScoreLayout;
 
 	// Bonus's
 	CBonus		*cBonuses;
@@ -274,6 +288,7 @@ private:
 
 	CChatBox	cChatbox;		// Our chatbox
 	DeprecatedGUI::CBrowser	*cChatList;		// Ingame chatlist
+	bool		bRepaintChatbox;
 
 	// Send chat
 	bool		bChat_Typing;
@@ -301,7 +316,6 @@ private:
 
 	// Network
 	CClientNetEngine * cNetEngine;	// Should never be NULL, to skip some checks
-	std::list<CBytestream> outstandingPackets;
 	int			iNetSpeed;
 	int			iNetStatus;
 	int			reconnectingAmount;
@@ -317,6 +331,7 @@ private:
 	CBytestream	bsUnreliable;
 	CShootList	cShootList;
     AbsTime      fZombieTime;
+	TimeDiff	fSendWait;
 	AbsTime		fLastUpdateSent;
 	std::string	szServerName;
 	bool		bHostAllowsStrafing;
@@ -348,9 +363,15 @@ private:
 
 	bool		bReadySent;
 
+	bool		bGameOver;
 	bool		bGameMenu;
+	int			iMatchWinner;
+	int			iMatchWinnerTeam;
+	AbsTime		fGameOverTime;
 
 	bool		bLobbyReady;
+	bool		bGameReady; // bGameReady says if the game (including cMap) has been initialized
+	bool		bGameRunning; // game was started and is running (implies bGameReady, but our own worm could be in weapon selection)
 	bool		bHaveMap;
 	bool		bHaveMod;
 
@@ -359,6 +380,8 @@ private:
 
 	bool		bServerError;
 	std::string	strServerErrorMsg;
+
+    bool		bClientError;
 
 	std::string	strDebug;	// This is only a debug string which is reset after each frame and which is printed on the screen.
 	
@@ -376,12 +399,12 @@ private:
 
 public:
 	// HINT: saves the current time of the simulation
+	// TODO: should be moved later to PhysicsEngine
+	// but it's not possible in a clean way until we have no simulateWorld()
+	// there which simulates everything together
 	// HINT: this is currently used for simulating the projectiles
 	// if you are going to use this also for something else,
 	// then be sure that is is run together with simulateProjectiles() !
-	// Note: This is only kept here to be able to simulate the
-	// LX physics with a different FPS rate (usually 84) than
-	// the main loop (fixed 100 FPS).
 	AbsTime	fLastSimulationTime;
 
 // IRC callbacks
@@ -406,15 +429,13 @@ public:
 	void		GetLogData(std::string& data);
 
 	std::list<int> AddRandomBots(int amount = 1, bool outOfGame = false); // returns list of added worms
-	int			AddWorm(const SmartPointer<profile_t>& p, bool outOfGame = false); // returns -1 if failed, worm id otherwise
+	int			AddWorm(profile_t* p, bool outOfGame = false); // returns -1 if failed, worm id otherwise
+	void		RemoveWorm(int id);
 
 	// Game
 	void		Simulation();
 	void		SetupViewports();
 	void		SetupViewports(CWorm *w1, CWorm *w2, int type1, int type2);
-	// Split-screen layout for 1..MAX_LOCAL_PLAYERS local players, one viewport
-	// each (full screen, left/right halves, or a 2x2-style grid).
-	void		SetupViewports(const std::vector<CWorm*>& worms, int type);
 	void		SendCarve(CVec pos);
 	void		PlayerShoot(CWorm *w);
 	void		ShootSpecial(CWorm *w);
@@ -424,16 +445,21 @@ public:
 	void		ProcessShot(shoot_t *shot, AbsTime fSpawnTime);
 	void		ProcessShot_Beam(shoot_t *shot);
 
+	void		BotSelectWeapons();
+
 	void		SpawnProjectile(CVec pos, CVec vel, int rot, int owner, proj_t *_proj, int _random, AbsTime time, AbsTime ignoreWormCollBeforeTime);
     void        disableProjectile(CProjectile *prj);
-	void		Explosion(AbsTime time, CVec pos, float damage, int shake, int owner, const std::string& weapon = "");
-	void		InjureWorm(CWorm *w, float damage, int owner, const std::string& weapon = "");
+	void		Explosion(CVec pos, float damage, int shake, int owner);
+	void		InjureWorm(CWorm *w, float damage, int owner);
+	void		UpdateScoreboard();
 	void		LaserSight(CWorm *w, float Angle, bool highlightCrosshair = true);
 
 	void		processChatter();
     void        processChatCharacter(const KeyboardEvent& input);
 
 	void		DestroyBonus(int id, bool local, int wormid);
+
+	CVec		FindNearestSpot(CWorm *w);
 
 	// Main
 	void		Frame();
@@ -444,9 +470,9 @@ public:
 	void		DrawPlayerWaitingColumn(SDL_Surface * bmpDest, int x, int y, std::list<CWorm *>::iterator& it, const std::list<CWorm *>::iterator& last, int num);
 	void		DrawPlayerWaiting(SDL_Surface * bmpDest);
 	void		DrawBox(SDL_Surface * dst, int x, int y, int w);
-	void		Draw(const SmartPointer<SDL_Surface>& bmpDest);
-	void		DrawViewport(const SmartPointer<SDL_Surface>& bmpDest, int viewport_index);
-	void		DrawViewport_Game(const SmartPointer<SDL_Surface>& bmpDest, CViewport* v);
+	void		Draw(SDL_Surface * bmpDest);
+	void		DrawViewport(SDL_Surface * bmpDest, int viewport_index);
+	void		DrawViewport_Game(SDL_Surface* bmpDest, CViewport* v);
 	void		DrawProjectiles(SDL_Surface * bmpDest, CViewport *v);
     void        DrawProjectileShadows(SDL_Surface * bmpDest, CViewport *v);
 	void		InitializeGameMenu();
@@ -454,7 +480,7 @@ public:
 	void		DrawBonuses(SDL_Surface * bmpDest, CViewport *v);
 	void		UpdateScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListview *Right);
 	void		UpdateIngameScore(DeprecatedGUI::CListview *Left, DeprecatedGUI::CListview *Right, bool WaitForPlayers);
-	void		InitializeIngameScore();
+	void		InitializeIngameScore(bool WaitForPlayers);
 	void		DrawTime(SDL_Surface * bmpDest, int x, int y, float t);
 	void		DrawReadyOverlay(SDL_Surface * bmpDest);
 	void		DrawText(SDL_Surface * bmpDest, bool centre, int x, int y, Color fgcol, const std::string& buf);
@@ -473,7 +499,7 @@ public:
 	void		DrawChatter(SDL_Surface * bmpDest);
 	void		SetupGameInputs(); // Re-setup inputs for worms, viewports and all game actions
 	
-	CClientNetEngine * getNetEngine() { return cNetEngine; }
+	CClientNetEngine * getNetEngine() { return cNetEngine; };
 	void		setNetEngineFromServerVersion();
 
 	void		Connect(const std::string& address);
@@ -485,7 +511,6 @@ public:
 
 	bool		ReadPackets();
 	void		SendPackets(bool sendPendingOnly = false);
-	void		SendGameStateUpdates();
 
 	void		InitializeDownloads();
 	void		DownloadMap(const std::string& mapname);
@@ -506,25 +531,42 @@ public:
 	CBytestream	*getUnreliable()		{ return &bsUnreliable; }
 	bool		RebindSocket();	// If client has taken the port on which server should start - free it
 
-	bool		canSimulate() const;
+	CMap*		getMap() const				{ return cMap; }
+	bool		isMapReady() const;
+	void		resetMap()					{ cMap = NULL; }
+
+	bool		canSimulate() const			{ return bGameReady && !bGameOver && isMapReady(); }
 	
 	int			OwnsWorm(int id);
+	int			getNumWorms()			{ return iNumWorms; }
+	void		setNumWorms(int _w)			{ iNumWorms = _w; }
 	bool		canAddWorm(std::string* noReason = NULL);
-		
+	
+	CWorm		*getWorm(int w)				{ return cLocalWorms[w]; }
+	void		setWorm(int i, CWorm *w)	{ cLocalWorms[i] = w; }
+
+	bool		serverChoosesWeapons()		{ return bServerChoosesWeapons; }
+	
 	void		clearHumanWormInputs();
 	void		clearLocalWormInputs();
 
+	CWorm		*getRemoteWorms()		{ return cRemoteWorms; }
 	int			getTeamWormCount(int t) const;
+	bool		getGameReady()			{ return bGameReady; }
+	void		setGameReady(bool _g)		{ bGameReady = _g; }
 
     CChatBox    *getChatbox()           { return &cChatbox; }
+	void		setRepaintChatbox(bool _r)  { bRepaintChatbox = true; }
 
-	EngineSettings& getGameLobby()		{ return tGameInfo; }
+	GameOptions::GameInfo *getGameLobby()		{ return &tGameInfo; }
 
 	bool		getBadConnection()		{ return bBadConnection; }
 	std::string	getBadConnectionMsg()	{ return strBadConnectMsg; }
 
 	bool		getServerError()		{ return bServerError; }
 	std::string	getServerErrorMsg()		{ return strServerErrorMsg; }
+
+    bool		getClientError()        { return bClientError; }
 
 	AbsTime		getLastReceived()		{ return fLastReceived; }
 	void		setLastReceived(const AbsTime& _l)	{ fLastReceived = _l; }
@@ -534,11 +576,15 @@ public:
 
 	CShootList	*getShootList()			{ return &cShootList; }
     CBonus      *getBonusList()         { return cBonuses; }
+	CWpnRest*	getWeaponRestrictions()		{ return &cWeaponRestrictions; }
+	SmartPointer<CGameScript>& getGameScript() { return cGameScript; }
 	
     void        setZombieTime(const AbsTime& z)      { fZombieTime = z; }
     AbsTime       getZombieTime()         { return fZombieTime; }
 
-	int			getTeamScore(int team);
+	frame_t		*getFrame(int FrameID)		{ return &tFrames[ FrameID ]; }
+
+	int			getTeamScore(int team)		{ if(team >= 0 && team < 4) return iTeamScores[team]; else return 0; }
 
 	bool		isTyping()				{ return bChat_Typing; }
 	void		setChatPos(size_t v)		{ iChat_Pos = v; }
@@ -552,6 +598,8 @@ public:
 	void setPing(int _p);
 
 	int getMyPing()							{ return iMyPing; } // Use only when iGameType == GME_JOIN
+
+	TimeDiff serverTime()						{ return fServertime; }
 	
 	const std::string& getServerAddress()		{ return strServerAddr; }
 	std::string getServerAddr_HumanReadable()		{ return strServerAddr_HumanReadable; }
@@ -559,9 +607,8 @@ public:
 	void setServerName(const std::string& _n)		{ szServerName = _n; }
 	const std::string& getServerName()			{ return szServerName; }
 
-	int getGeneralGameType() const				{ return tGameInfo[FT_GameMode].as<GameModeInfo>()->generalGameType; }
-	bool isTeamGame() const						{ return getGeneralGameType() == GMT_TEAMS; }
-	bool isTagGame() const						{ return getGeneralGameType() == GMT_TIME; }
+	int getGeneralGameType() const				{ return tGameInfo.iGeneralGameType; }
+	bool isTeamGame() const						{ return tGameInfo.iGeneralGameType == GMT_TEAMS; }
 
 	const Version& getClientVersion()				{ return cClientVersion; }
 	void setClientVersion(const Version& v);
@@ -572,7 +619,7 @@ public:
 	
 	bool isHostAllowingStrafing()				{ return bHostAllowsStrafing; }
 
-	bool		getGamePaused();
+	bool		getGamePaused()					{ return (bViewportMgr || bGameMenu) && tLX->iGameType == GME_LOCAL; }
 	
 	int			getDlProgress()					{ return iDlProgress; }
 	bool		getDownloadingMap()				{ return bDownloadingMap; }
@@ -581,20 +628,19 @@ public:
 	bool		getDownloadingError()			{ return bDlError; }
 	void		clearDownloadingError()			{ bDlError = false; }
 	std::string	getDownloadingErrorMessage()	{ return sDlError; }
-	CHttpDownloadManager* getHttpDownloader()	{ return cHttpDownloader; }
 
 	CViewport * getViewports()					{ return cViewports; }
 	bool		isWormVisibleOnAnyViewport(int worm) const; 
-	bool		isWormTargetOnAnyViewport(int worm) const;
 
-	CUdpFileDownloader * getUdpFileDownloader()	{ return &cUdpFileDownloader; }
-	AbsTime		getLastFileRequest()					{ return fLastFileRequest; }
-	void		setLastFileRequest( const AbsTime& _f ) 			{ fLastFileRequest = _f; }
-	AbsTime		getLastFileRequestPacketReceived()		{ return fLastFileRequestPacketReceived; }
-	void		setLastFileRequestPacketReceived( const AbsTime& _f ) { fLastFileRequestPacketReceived = _f; }
+	CUdpFileDownloader * getUdpFileDownloader()	{ return &cUdpFileDownloader; };
+	AbsTime		getLastFileRequest()					{ return fLastFileRequest; };
+	void		setLastFileRequest( const AbsTime& _f ) 			{ fLastFileRequest = _f; };
+	AbsTime		getLastFileRequestPacketReceived()		{ return fLastFileRequestPacketReceived; };
+	void		setLastFileRequestPacketReceived( const AbsTime& _f ) { fLastFileRequestPacketReceived = _f; };
 
 	bool		isGameMenu()			{ return bGameMenu; }
 	bool		isChatTyping()			{ return bChat_Typing; }
+	bool		isGameOver()			{ return bGameOver; }
 	bool&		shouldRepaintInfo()		{ return bShouldRepaintInfo; }
 
 	void		setReadySent(bool b)	{ bReadySent = b; }
@@ -609,7 +655,12 @@ public:
 	bool		getHaveMod()			{ return bHaveMod; }
 	void		setHaveMap( bool _b )	{ bHaveMap = _b; }
 	void		setHaveMod( bool _b )	{ bHaveMod = _b; }
+	int			getNumRemoteWorms();
+	profile_t	**getLocalWormProfiles()	{ return tProfiles; }
 	FlagInfo*	flagInfo()			{ return m_flagInfo; }
+
+	bool		isTeamGame() { return getGameLobby()->iGeneralGameType == GMT_TEAMS; }
+	bool		isTagGame() { return getGameLobby()->iGeneralGameType == GMT_TIME; }
 	
 	void		setOnMapDlFinished(DownloadFinishedCB f)  { tMapDlCallback = f; }
 	void		setOnModDlFinished(DownloadFinishedCB f)  { tModDlCallback = f; }
@@ -620,8 +671,6 @@ public:
 	
 	void		addDebugStr(const std::string& str) { if(strDebug != "") strDebug += "\n" + str; else strDebug = str; }
 	void		resetDebugStr() { strDebug = ""; }
-
-	static void		addHudDebugInfo(const std::string& txt);
 };
 
 extern	CClient			*cClient;

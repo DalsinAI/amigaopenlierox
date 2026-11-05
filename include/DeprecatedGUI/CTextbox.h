@@ -17,7 +17,7 @@
 #ifndef __CTEXTBOX_H__DEPRECATED_GUI__
 #define __CTEXTBOX_H__DEPRECATED_GUI__
 
-#include "DeprecatedGUI/CWidget.h"
+
 #include "InputEvents.h"
 #include "Cursor.h"
 #include "Timer.h"
@@ -136,13 +136,11 @@ public:
 	int		KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate);
 	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate);
 
-	bool	handlesArrowKeys() const override		{ return true; }
-
 	void	Draw(SDL_Surface * bmpDest);
 
-	uintptr_t	SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2);
-	uintptr_t	SendMessage(int iMsg, const std::string& sStr, uintptr_t Param);
-	uintptr_t	SendMessage(int iMsg, std::string *sStr, uintptr_t Param);
+	DWORD	SendMessage(int iMsg, DWORD Param1, DWORD Param2);
+	DWORD	SendMessage(int iMsg, const std::string& sStr, DWORD Param);
+	DWORD	SendMessage(int iMsg, std::string *sStr, DWORD Param);
 
 	void	Backspace();
 	void	Delete();

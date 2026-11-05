@@ -377,7 +377,7 @@ GeoRecord GeoIPDatabase::extractRecordCity(unsigned int seekRecord) const
 	unsigned char *begin_record_buf = NULL;
 	double latitude = 0, longitude = 0;
 	int metroarea_combo = 0;
-	size_t bytes_read = 0;
+	int bytes_read = 0;
 	if (seekRecord == m_dbSegments[0])		
 		return record;
 
@@ -559,7 +559,8 @@ GeoRecord GeoIPDatabase::lookup(const std::string& ip) const
 		return extractRecordCity(record);
 	else if (m_dbType == GEOIP_COUNTRY_EDITION)
 		return extractRecordCtry(record);
-
-	errors << "The Geo IP database has an unsupported format" << endl;
-	return res;
+	else  {
+		errors << "The Geo IP database has an unsupported format" << endl;
+		return res;
+	}
 }

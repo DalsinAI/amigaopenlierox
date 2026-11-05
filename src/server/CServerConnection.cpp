@@ -18,7 +18,7 @@
 #include "ProfileSystem.h"
 #include "CServerConnection.h"
 #include "CBonus.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Error.h"
 #include "Protocol.h"
 #include "StringUtils.h"
@@ -31,7 +31,6 @@
 #include "CServerNetEngine.h"
 #include "CChannel.h"
 #include "Debug.h"
-#include "game/GameState.h"
 
 
 
@@ -40,6 +39,7 @@
 
 CServerConnection::CServerConnection( GameServer * _server ) {
 	server = _server ? _server : cServer;
+	iNumWorms = 0;
 
 	cNetChan = NULL;
 	bsUnreliable.Clear();
@@ -47,12 +47,11 @@ CServerConnection::CServerConnection( GameServer * _server ) {
 	fLastUpdateSent = AbsTime();
 	bLocalClient = false;
 
-	bMuted = false;	
-	bGameReady = false;
-	m_gusLoggedIn = false;
+	fSendWait = 0;
+
+	bMuted = false;
 	
-	cShootList.Initialize();
-	gameState = NULL;
+	bGameReady = false;
 
 	fLastFileRequest = fConnectTime = tLX->currentTime;
 	
@@ -65,30 +64,29 @@ void CServerConnection::resetChannel() {
 }
 
 ///////////////////
-// Clear/reset the client details
+// Clear the client details
 void CServerConnection::Clear()
 {
+	iNumWorms = 0;
+	int i;
+	for(i=0;i<MAX_PLAYERS;i++)
+		cLocalWorms[i] = NULL;
+
 	if( cNetChan )
 		delete cNetChan;
 	cNetChan = NULL;
 	iNetStatus = NET_DISCONNECTED;
 	bsUnreliable.Clear();
 	bLocalClient = false;
-	bGameReady = bMuted = m_gusLoggedIn = false;
-	
+
 	fLastReceived = AbsTime::Max();
+	fSendWait = 0;
 	fLastUpdateSent = AbsTime();
 
 	cShootList.Shutdown();
-	cShootList.Initialize();
 
-	if(gameState)
-		delete gameState;
-	gameState = new GameState;
-	
 	fLastFileRequest = fLastFileRequestPacketReceived = tLX->currentTime;
 	getUdpFileDownloader()->reset();
-	getUdpFileDownloader()->allowFileRequest(true);
 }
 
 
@@ -98,6 +96,8 @@ void CServerConnection::MinorClear()
 {
 	iNetStatus = NET_CONNECTED;
 	fLastReceived = AbsTime::Max();
+
+	fSendWait = 0;
 
 	fLastFileRequest = fLastFileRequestPacketReceived = tLX->currentTime;
 	getUdpFileDownloader()->reset();
@@ -114,52 +114,95 @@ int CServerConnection::getConnectionArrayIndex() {
 		return -1;
 	}
 	
-	return int(this - &server->getClients()[0]);
+	return this - &server->getClients()[0];
 }
 
 
 ///////////////////
-// Return true if we own the worm
-bool CServerConnection::OwnsWorm(int id)
+// Initialize the client
+int CServerConnection::Initialize()
 {
-	CWorm* w = game.wormById(id, false);
-	if(!w) return false;
-	return w->getClient() == this;
-}
+	// TODO: where is this function used? it's totally messed up and does not make much sense at various places
+	assert(false);
+	
+	uint i;
+
+	// Shutdown & clear any old client data
+	Shutdown();
+	Clear();
+
+	iNetSpeed = tLXOptions->iNetworkSpeed;
+
+	// Local/host games use instant speed
+	if(tLX->iGameType != GME_JOIN)
+		iNetSpeed = NST_LOCAL;
 
 
-// Note: We actually don't need the bGameReady variable for new versions.
-// This is just for old clients where we need to inform about the ready state.
-
-bool CServerConnection::getGameReady() {
-	if(isLocalClient() || getClientVersion() >= OLXBetaVersion(0,59,10)) {
-		for_each_iterator(CWorm*, w, game.wormsOfClient(this)) {
-			if(!w->get()->bWeaponsReady) return false;
-		}
-		return true;
+	for(i=0;i<iNumWorms;i++) {
+		cLocalWorms[i] = NULL;
 	}
-	return bGameReady;
+
+	// Initialize the shooting list
+	cShootList.Initialize();
+
+	return true;
 }
 
-void CServerConnection::setGameReady(bool _g) {
-	bGameReady = _g;
-	if(isLocalClient() || getClientVersion() >= OLXBetaVersion(0,59,10)) {
-		if(bGameReady != getGameReady())
-			errors << "CServerConnection::setGameReady missmatch: var = " << bGameReady << ", " << " wpns = " << getGameReady() << endl;
+///////////////////
+// Return true if we own the worm
+int CServerConnection::OwnsWorm(int id)
+{
+	for(uint i=0;i<iNumWorms;i++) {
+		if(id == cLocalWorms[i]->getID())
+			return true;
 	}
+
+	return false;
 }
 
+//////////////////
+// Remove the worm
+void CServerConnection::RemoveWorm(int id)
+{
+	if(iNumWorms == 0) {
+		warnings << "WARNING: cannot remove worm because this client has no worms" << endl;
+		return;
+	}
+	
+	bool found = false;
+	for (uint i=0;i<iNumWorms;i++)  {
+		if (cLocalWorms[i])  {
+			if (cLocalWorms[i]->getID() == id)  {
+				cLocalWorms[i] = NULL;
+				for (uint j=i; j<MAX_PLAYERS-1; j++)  {
+					cLocalWorms[j] = cLocalWorms[j+1];
+				}
+				cLocalWorms[MAX_PLAYERS-1] = NULL;
+
+				found = true;
+				break;
+			}
+		} else
+			warnings << "WARNING: cLocalWorms[" << i << "/" << iNumWorms << "] == NULL" << endl;
+	}
+
+	if(found)
+		--iNumWorms;
+	else
+		warnings << "WARNING: cannot find worm " << id << " for removal" << endl;
+
+}
 
 ///////////////////
 // Shutdown the client
 void CServerConnection::Shutdown()
-{	
+{
+	iNumWorms = 0;
+	for(int i = 0; i < MAX_PLAYERS; ++i)
+		cLocalWorms[i] = NULL;
+	
 	// Shooting list
 	cShootList.Shutdown();
-
-	if(gameState)
-		delete gameState;
-	gameState = NULL;
 
 	// Net engine
 	if (cNetEngine)
@@ -184,13 +227,13 @@ void CServerConnection::setNetEngineFromClientVersion()
 	
 	if( getClientVersion() >= OLXBetaVersion(0,58,1) )
 		cNetEngine = new CServerNetEngineBeta9( server, this );
-	else if( getClientVersion() >= OLXBetaVersion(0,57,8) )
+	else if( getClientVersion() >= OLXBetaVersion(8) )
 		cNetEngine = new CServerNetEngineBeta8( server, this );
-	else if( getClientVersion() >= OLXBetaVersion(0,57,7) )
+	else if( getClientVersion() >= OLXBetaVersion(7) )
 		cNetEngine = new CServerNetEngineBeta7( server, this );
-	else if( getClientVersion() >= OLXBetaVersion(0,57,5) )
+	else if( getClientVersion() >= OLXBetaVersion(5) )
 		cNetEngine = new CServerNetEngineBeta5( server, this );
-	else if( getClientVersion() >= OLXBetaVersion(0,57,3) )
+	else if( getClientVersion() >= OLXBetaVersion(3) )
 		cNetEngine = new CServerNetEngineBeta3( server, this );
 	else
 		cNetEngine = new CServerNetEngine( server, this );
@@ -202,7 +245,7 @@ CChannel * CServerConnection::createChannel(const Version& v)
 		delete cNetChan;
 	if( v >= OLXBetaVersion(0,58,1) )
 		cNetChan = new CChannel3();
-	else if( v >= OLXBetaVersion(0,57,6) )
+	else if( v >= OLXBetaVersion(6) )
 		cNetChan = new CChannel2();
 	else
 		cNetChan = new CChannel_056b();
@@ -228,16 +271,18 @@ std::string CServerConnection::debugName(bool withWorms) {
 	
 	if(withWorms) {
 		std::string worms = "no worms";
-		if(game.wormsOfClient(this)->size() > 0) {
+		if(getNumWorms() > 0) {
 			worms = "";
-			bool first = true;
-			for_each_iterator(CWorm*, w, game.wormsOfClient(this)) {
-				if(!first) worms += ", ";
-				worms += itoa(w->get()->getID());
-				worms += " '";
-				worms += w->get()->getName();
-				worms += "'";
-				first = false;
+			for(int i = 0; i < getNumWorms(); ++i) {
+				if(i > 0) worms += ", ";
+				if(getWorm(i)) {
+					worms += itoa(getWorm(i)->getID());
+					worms += " '";
+					worms += getWorm(i)->getName();
+					worms += "'";
+				} else {
+					worms += "BAD";
+				}
 			}
 		}
 		

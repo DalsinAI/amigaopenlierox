@@ -14,15 +14,14 @@
 // Jason Boettcher
 
 
-#ifndef __OLX_OPTIONS_H__
-#define __OLX_OPTIONS_H__
+#ifndef __OPTIONS_H__
+#define __OPTIONS_H__
 
 #include <map>
 #include <vector>
 #include <string>
 #include <cassert>
-#include "game/Settings.h"
-#include "CodeAttributes.h"
+#include "FeatureList.h"
 
 // Setup input id's
 enum {
@@ -34,14 +33,11 @@ enum {
 
 	SIN_SHOOT,
 	SIN_JUMP,
+	SIN_SELWEAP,
 	SIN_ROPE,
 
 	SIN_STRAFE,
-
-	SIN_SELWEAP,
-
-	SIN_PREVWEAPON,
-	SIN_NEXTWEAPON,
+	SIN_DIG,
 
 	SIN_WEAPON1,
 	SIN_WEAPON2,
@@ -78,7 +74,7 @@ enum NetworkSpeed {
 	NST_LOCAL			// Hidden speed, only for local games
 };
 
-INLINE std::string NetworkSpeedString(NetworkSpeed s) {
+inline std::string NetworkSpeedString(NetworkSpeed s) {
 	switch(s) {
 		case NST_MODEM: return "Modem";
 		case NST_ISDN: return "ISDN";
@@ -190,29 +186,14 @@ public:
 	std::string sKnownAs;
 };
 
-// Taunts - short texts that user can post to chat by pressing Ctrl+key
-class Taunts {
-public:
-	static bool Init();
-	bool LoadFromDisc();
-	enum { MAX_COUNT = 10 };
-	std::string texts[MAX_COUNT];
-	controls_t<MAX_COUNT> keyNames;
-	int keySyms[MAX_COUNT];
-	
-	std::string getTauntForKey(int keySym) const;
-};
-
 
 class CGameMode;
 extern const std::string DefaultCfgFilename;
 
 // Options structure
-class GameOptions {
-private:
+struct GameOptions {
 	GameOptions();
 
-public:
 	static bool Init();
 	bool LoadFromDisc(const std::string& cfgfilename);
 	bool LoadFromDisc() { return LoadFromDisc(cfgFilename); }
@@ -225,6 +206,7 @@ public:
 	bool	bShowFPS;
 	bool	bOpenGL;
 	std::string	sResolution;
+	std::string sVideoPostProcessor;
 	int		iColourDepth;
 
 	// Network
@@ -245,19 +227,10 @@ public:
 	bool	bAllowRemoteBots;
 	bool	bForceCompatibleConnect;
 	std::string	sForceMinVersion;
-	int		iMaxPlayers;
 	//Chat message check options
-	bool bCheckChatMessageLength;
-	int iMaxChatMessageLength;
-	bool bKickOversizedMsgSenders;
+	int		iMaxChatMessageLength;
 	//Server chat logging
-	bool bLogServerChatToMainlog;
-	
-	bool	bAllowConnectDuringGame; // >=Beta8
-	bool	bAllowStrafing;
-	bool	bAllowNickChange;
-	bool	bServerSideHealth;
-	int		iWeaponSelectionMaxTime;	// Auto-kick worms who select their weapons too long
+	bool	bLogServerChatToMainlog;
 	
 	// IRC chat
 	bool	bEnableChat;
@@ -289,10 +262,7 @@ public:
 	bool	bAutoTyping;
 	bool	bAntiAliasing;
 	bool	bMouseAiming;
-	bool	bAlwaysCenterWorm;	// Keep our own worm centered on screen even at the map borders. Centering is always on while touchscreen controls are active (so the on-screen controls can't cover our worm); this option additionally forces it for non-touchscreen players.
 	int		iMouseSensity;
-	std::string sTouchscreenControls;	// Tri-state "auto"/"true"/"false". "auto" enables on Android, disables elsewhere.
-	std::string sTouchscreenLayout;	// Name of layout file under share/gamedir/touchscreen/<name>.yaml.
 	bool	bAntilagMovementPrediction;
 	std::string	sLastSelectedPlayer;
 	std::string	sLastSelectedPlayer2;
@@ -305,8 +275,8 @@ public:
 	float	fAimMaxSpeed;
 	float	fAimFriction;
 	bool	bAimLikeLX56;
-	float	fRopeAdjustSpeed;
-	bool	bSetAFK;
+	bool	bTouchscreenTapCycleWeaponsBackwards;
+	int		iTouchscreenSensitivity;
 	
 	//Killing/dying spree thresholds
 	int iSpreeThreshold1;
@@ -314,16 +284,17 @@ public:
 	int iSpreeThreshold3;
 	int iSpreeThreshold4;
 	int iSpreeThreshold5;
+	
 	int iDyingSpreeThreshold1;
 	int iDyingSpreeThreshold2;
 	int iDyingSpreeThreshold3;
 	int iDyingSpreeThreshold4;
 	int iDyingSpreeThreshold5;
 	
-    // Advanced
-    int     nMaxFPS;
-	int		iJpegQuality;
-	int		iMaxCachedEntries;		// Amount of entries to cache, including maps, mods, images and sounds.
+	// Advanced
+	int	nMaxFPS;
+	int	iJpegQuality;
+	int	iMaxCachedEntries;		// Amount of entries to cache, including maps, mods, images and sounds.
 	bool	bMatchLogging;			// Save screenshot of every game final score
 	bool	bRecoverAfterCrash;		// If we should try to recover after segfault etc, or generate coredump and quit
 	bool	bCheckForUpdates;		// Check for new development version on sourceforge.net
@@ -341,9 +312,8 @@ public:
 	int		iRandomTeamForNewWorm; // server will randomly choose a team between 0-iRandomTeamForNewWorm
 	std::string cfgFilename;
 	bool	doProjectileSimulationInDedicated;
-	bool	bAutoFileCacheRefresh;	// when you refocus, it will automatically reload the map/mod and the list and the caches
-	bool	bUseMainLockDetector;
-	
+	bool	bCheckMaxWpnTimeInInstantStart;   //Enforce max weapon selection time when instant start is enabled
+        
 	// Widget states
 	int		iInternetList[7];
 	int		iLANList[6];
@@ -353,16 +323,45 @@ public:
 	int		iLANSortColumn;
 	int		iFavouritesSortColumn;
 	int		iAdvancedLevelLimit;
-	bool	bShowModifiedGameSettingsOnly;
-	std::string	sLocalPlayGame;
-	std::string sSvrListSettingsFilterCfg;
 	
-	// Last used custom game details
-	// Server-side game settings are now in gameSettings (see game/Settings.h)
-	FeatureSettingsLayer customSettings;
+	// Last used game details - used as game lobby structure in client
+	// Put everything that impacts gameplay here, both server and client-sided
+	class GameInfo {
+	public:
+		GameInfo();
+		
+		int		iLives;
+		int		iKillLimit;
+		float	fTimeLimit; // Time limit in minutes
+		int		iTagLimit;
+		int		iLoadingTime;
+		bool	bBonusesOn;
+		bool	bShowBonusName;
+		int		iMaxPlayers;
+		std::string	sMapFile;
+		std::string	sMapName;	 // Decoded map name from map file
+		CGameMode* gameMode;
+		int		iGeneralGameType;
+        std::string sGameMode;	// Game mode name from server (only for client)
+        std::string sModDir;
+        std::string sModName;	// Decoded mod name from script.lgs
+		float	fBonusFreq;
+		float	fBonusLife;
+		float	fRespawnTime;
+		bool	bRespawnGroupTeams;	// respawn all team in single spot
+		bool	bEmptyWeaponsOnRespawn;	// When worm respawns it should wait until all weapons are reloaded
+		float	fBonusHealthToWeaponChance;	// if 0.0f only health will be generated, if 1.0f - only weapons
+		bool	bForceRandomWeapons; // only for server; implies bServerChoosesWeapons=true
+		bool	bSameWeaponsAsHostWorm; // implies bServerChoosesWeapons=true
+		bool	bAllowConnectDuringGame; // >=Beta8
+		bool	bAllowStrafing;
+		bool	bAllowNickChange;
+		bool	bServerSideHealth;
+		int		iWeaponSelectionMaxTime;	// Auto-kick worms who select their weapons too long
+		
+		FeatureSettings features;
+	} tGameInfo;
 
-	std::map<std::string,int> localplayLevels;
-	
 	// not specified options found in options-file
 	std::map< std::string, std::string > additionalOptions;
 };
@@ -374,7 +373,6 @@ void	ShutdownOptions();
 
 extern	GameOptions		*tLXOptions;
 extern  NetworkTexts  *networkTexts;
-extern  Taunts			*taunts;
 
 
 #endif  //  __OPTIONS_H__

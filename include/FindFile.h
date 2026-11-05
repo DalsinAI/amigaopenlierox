@@ -28,11 +28,10 @@
 #include "Unicode.h"
 #include "Debug.h"
 #include "Mutex.h"
-#include "Iter.h"
+#include "Iterator.h"
 #include "RefCounter.h"
 #include "Event.h"
 #include "StringUtils.h"
-#include "CodeAttributes.h"
 
 #ifndef WIN32
 #	include <dirent.h>
@@ -44,16 +43,17 @@
 #include <sys/stat.h>
 
 #ifdef WIN32
+#	include <windows.h>
 #	include <io.h>
 #	include <direct.h>
 	// wrappers to provide the standards
-	INLINE int mkdir(const char *path, int mode) { return _mkdir(Utf8ToSystemNative(path).c_str()); }
+	inline int mkdir(const char *path, int mode) { return _mkdir(Utf8ToSystemNative(path).c_str()); }
 #	define stat _stat
 #ifndef S_ISREG
 #	define S_IFLNK 0120000
-INLINE bool S_ISREG(unsigned short s)  { return (s & S_IFREG) != 0; }
-INLINE bool S_ISDIR(unsigned short d)  { return (d & S_IFDIR) != 0; }
-INLINE bool S_ISLNK(unsigned short d)  { return (d & S_IFLNK) != 0; }
+inline bool S_ISREG(unsigned short s)  { return (s & S_IFREG) != 0; }
+inline bool S_ISDIR(unsigned short d)  { return (d & S_IFDIR) != 0; }
+inline bool S_ISLNK(unsigned short d)  { return (d & S_IFLNK) != 0; }
 #endif
 #endif
 
@@ -130,7 +130,7 @@ bool GetExactFileName(const std::string& abs_searchname, std::string& filename);
 // but we still need to replace ${var} in the searchname
 // returns true, if file/dir is existing and accessable, false else
 
-INLINE bool GetExactFileName(const std::string& abs_searchname, std::string& filename) {
+inline bool GetExactFileName(const std::string& abs_searchname, std::string& filename) {
 	filename = abs_searchname;
 
 	if(abs_searchname.size() == 0) {
@@ -182,9 +182,6 @@ FILE*	OpenGameFile(const std::string& path, const char *mode);
 
 FILE*	OpenAbsFile(const std::string& path, const char *mode);
 
-bool OpenGameFileR(std::ifstream& f, const std::string& path, std::ios_base::openmode mode = std::ios_base::in);
-bool OpenGameFileW(std::ofstream& f, const std::string& path);
-
 std::ifstream* OpenGameFileR(const std::string& path);
 
 std::string GetFileContents(const std::string& path, bool absolute = false);
@@ -194,9 +191,7 @@ std::string JoinPaths(const std::string& path1, const std::string& path2);
 std::string GetScriptInterpreterCommandForFile(const std::string& filename);
 
 
-bool IsFileAvailable(const std::string& f, bool absolute = false, bool onlyregfiles = true);
-bool IsDirectory(const std::string& f, bool absolute = false);
-
+bool IsFileAvailable(const std::string& f, bool absolute = false);
 
 // the dir will be created recursivly
 // IMPORTANT: filename is absolute; no game-path!
@@ -224,6 +219,7 @@ std::string	GetSystemDataDir();
 // returns the dir of the executable-binary
 std::string	GetBinaryDir();
 const char* GetBinaryFilename();
+const char* GetLogFilename();
 // returns the temp-dir of the system
 std::string	GetTempDir();
 
@@ -279,20 +275,24 @@ void ForEachSearchpath(_handler& handler) {
 	}
 }
 
+
 // functor for ForEachSearchpath, used by FindFiles
 // it will search a subdir of a given searchpath for files
 template<typename _filehandler>
 class FindFilesHandler {
 public:
 	const std::string& dir;
+	const std::string& namefilter;
 	const filemodes_t modefilter;
 	_filehandler& filehandler;
 
 	FindFilesHandler(
 			const std::string& dir_,
+			const std::string& namefilter_,
 			const filemodes_t modefilter_,
 			_filehandler& filehandler_) :
 		dir(dir_),
+		namefilter(namefilter_),
 		modefilter(modefilter_),
 		filehandler(filehandler_) {}
 
@@ -348,62 +348,27 @@ public:
 	}
 };
 
-
-template <typename _handler>
-struct NameFilterHandler {
-	_handler& handler;
-	const std::string& namefilter;
-	NameFilterHandler(_handler& h, const std::string& pattern) : handler(h), namefilter(pattern) {}
-	bool operator()(const std::string& filename) {
-		if(!FilenameSimplePatternMatch(GetBaseFilename(filename), namefilter))
-			return true; // true because we want to continue the filesearch
-		return handler(filename);
-	}
-};
-
-
 // FindFiles searches for files
 // _handler has to be a functor with
 // bool op()( const std::string& abs_filename )
 // if it returns false, it will break
 template<typename _handler>
 void FindFiles(
-			   _handler& handler,
-			   const std::string& dir,
-			   bool absolutePath = false,
-			   const filemodes_t modefilter = -1
+	_handler& handler,
+	const std::string& dir,
+	bool absolutePath = false,
+	const filemodes_t modefilter = -1,
+	const std::string& namefilter = ""
 ) {
+	if(namefilter != "*" && namefilter != "")
+		warnings << "FindFiles: filter " << namefilter <<" isn't handled yet" << endl;
 	if(absolutePath)
-		FindFilesHandler<_handler>(dir, modefilter, handler) ("");
+		FindFilesHandler<_handler>(dir, namefilter, modefilter, handler) ("");
 	else {
-		FindFilesHandler<_handler> searchpathHandler(dir, modefilter, handler);
+		FindFilesHandler<_handler> searchpathHandler(dir, namefilter, modefilter, handler);
 		ForEachSearchpath(searchpathHandler);
 	}
 }
-
-template<typename _handler>
-void FindFiles(
-	_handler& handler,
-	const std::string& dir,
-	bool absolutePath,
-	const filemodes_t modefilter,
-	const std::string& namefilter
-) {
-	if(namefilter == "") {
-		errors << "FindFiles " << dir << " with empty namefilter doesn't make sense" << endl;
-		return;
-	}
-	
-	if(namefilter == "*") {
-		// we don't need a special namefilter handler
-		FindFiles(handler, dir, absolutePath, modefilter);
-	}
-	else {
-		NameFilterHandler<_handler> nameFilterHandler(handler, namefilter);
-		FindFiles(nameFilterHandler, dir, absolutePath, modefilter);
-	}
-}
-
 
 template <typename _List, typename _CheckFct>
 struct GetFileList_FileListAdder {
@@ -430,15 +395,7 @@ void GetFileList(
 }
 
 
-// WARNING: current implementation is slow!
-Iterator<std::string>::Ref FileListIter(
-	const std::string& dir,
-	bool absolutePath = false,
-	const filemodes_t modefilter = -1,
-	const std::string& namefilter = "*");
-
-
-struct Command;
+class Command;
 struct AutocompleteRequest;
 
 class FileListCacheIntf {
@@ -463,7 +420,7 @@ public:
 		FileList::iterator it;
 		FileListCacheIntf& filelist;
 	public:
-		Iterator(FileListCacheIntf& f) : it(f.filelist.begin()), filelist(f) {
+		Iterator(FileList::iterator _it, FileListCacheIntf& f) : it(_it), filelist(f) {
 			filelist.mutex.lock();
 		}
 		~Iterator() { RefCounter::uninit(); }
@@ -473,9 +430,7 @@ public:
 		Iterator(const Iterator& it) : RefCounter(it), it(it.it), filelist(it.filelist) {}
 		virtual ::Iterator<FileList::value_type>* copy() const { return new Iterator(*this); }
 		virtual bool isValid() { return it != filelist.filelist.end(); }
-		virtual void reset() { it = filelist.filelist.begin(); }
 		virtual void next() { ++it; }
-		virtual size_t size() { return filelist.filelist.size(); }
 		virtual bool operator==(const ::Iterator<FileList::value_type>& other) const {
 			const Iterator* o = dynamic_cast<const Iterator*> (&other);
 			return o && it == o->it;
@@ -485,7 +440,7 @@ public:
 		typedef ::Iterator<FileList::value_type>::Ref Ref;
 	};
 	
-	Iterator::Ref begin() { return new Iterator(*this); }
+	Iterator::Ref begin() { return new Iterator(filelist.begin(), *this); }
 	void add(const FileList::value_type& o) { Mutex::ScopedLock lock(mutex); filelist.insert(o); }
 	bool includes(const Filename& fn) { Mutex::ScopedLock lock(mutex); return filelist.find(fn) != filelist.end(); }
 	bool autoComplete(AutocompleteRequest& request);
@@ -506,7 +461,7 @@ public:
 				  const std::string& _dir,
 				  bool _absPath = false,
 				  const filemodes_t _modefilter = FM_REG,
-				  const std::string& _namefilter = "*")
+				  const std::string& _namefilter = "")
 	: FileListCacheIntf(_name), dir(_dir), absolutePath(_absPath), modefilter(_modefilter), namefilter(_namefilter) {}
 
 	virtual void update() {
@@ -528,7 +483,7 @@ public:
 SDL_RWops *RWopsFromFP(FILE *fp, bool autoclose);
 
 // Platform-independent stat() - use S_ISREG( st.st_mode ) and S_ISDIR( st.st_mode ) on stat struct
-INLINE bool StatFile( const std::string & file, struct stat * st )
+inline bool StatFile( const std::string & file, struct stat * st )
 {
 	std::string fname = GetFullFileName( file );
 	std::string exactfname;

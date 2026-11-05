@@ -12,7 +12,6 @@
 #define __INPUTEVENTS_H__
 
 #include <vector>
-#include <SDL.h>
 #include "Unicode.h"
 #include "Event.h"
 #include "EventQueue.h"
@@ -25,30 +24,41 @@ extern	bool			bActivated;
 extern	bool			bDeactivated;
 
 
-#define     MAX_KEYQUEUE        256
+#define     MAX_KEYQUEUE        32
 #define     MAX_MOUSEBUTTONS    8 // SDL_GetMouseState returns UInt8 bitmask
 
 // State of modifier keys (ctrl, alt and shift)
 struct ModifiersState  { 
 	ModifiersState() { clear(); }
-	void clear()  { bShift = bCtrl = bAlt = bGui = false; }
+	void clear()  { bShift = bCtrl = bAlt = bSuper = bMeta = false; }
 
 	bool bShift;
 	bool bCtrl;
 	bool bAlt;
-	bool bGui;
+	bool bSuper;
+	bool bMeta;
 };
 
 struct KeyboardEvent {
-	SDL_Keycode sym;
+	int sym;
     UnicodeChar ch;
 	bool down;
 	ModifiersState state;
-	KeyboardEvent() : sym(0), ch(0), down(false) {}
+};
+
+struct MouseEvent {
+	int x, y;
+	int button;
+	bool down;
 };
 
 // Keyboard structure
+// HINT: KeyDown is the state of the keyboard
+// KeyUp is like an event and will only be true once
 struct keyboard_t {
+	Uint8	*keys;
+	UnicodeChar	KeyUp[SDLK_LAST];
+	UnicodeChar	KeyDown[SDLK_LAST];
     int     queueLength;
     KeyboardEvent keyQueue[MAX_KEYQUEUE];
 };
@@ -68,9 +78,12 @@ struct mouse_t {
 	int		Down;
     int     FirstDown;
 
+	bool	WheelUp;
+	bool	WheelDown;
 	bool	WheelScrollUp;
 	bool	WheelScrollDown;
-		
+	
+	std::vector<MouseEvent> mouseQueue;
 };
 
 enum MouseButton  {
@@ -82,7 +95,6 @@ enum MouseButton  {
 };
 
 MouseButton SDLButtonToMouseButton(int sdlbut);
-MouseButton SDLButtonStateToMouseButton(int sdlbut);
 
 typedef Event<SDL_Event*> SDLEvent;
 
@@ -90,35 +102,29 @@ typedef Event<SDL_Event*> SDLEvent;
 // not be needed in most cases.
 // If you want to add a user event, DON'T add the handler here. Use SendSDLUserEvent()
 // and your event will get called automatically. 
-extern std::map<SDL_EventType, SDLEvent> sdlEvents;
+extern SDLEvent sdlEvents[SDL_NUMEVENTS];
 
-extern bool processedEvent;
 
 void 		InitEventSystem();
 void		ShutdownEventSystem();
-void		ProcessEvents(); // returns false if no new event
+bool		ProcessEvents(); // returns false if no new event
+bool		WaitForNextEvent(); // waits for next event and handles all of then; returns false if no new event
 
 bool		EventSystemInited();
 bool		IsWaitingForEvent();
-void		WakeupIfNeeded();
 
+// Should be called on SDL_SYSWMEVENT from main thread
+void		EvHndl_SysWmEvent_MainThread(SDL_Event* ev);
+
+// To inject key events from touchscreen input
+void		HandleCInputs_KeyEvent(KeyboardEvent& ev);
 
 keyboard_t	*GetKeyboard();
 mouse_t		*GetMouse();
 SDL_Event	*GetEvent();
 ModifiersState *GetCurrentModstate();
 
-// True while the player is using a mouse rather than touch (web build only;
-// always false elsewhere). Used to show the software cursor in-game.
-bool		InputUsingMouse();
-
-bool		WasKeyboardEventHappening(SDL_Keycode key, bool down = true);
-
-// Inject a synthetic keyboard event into the same pipeline real key events go
-// through. Used by the on-screen touch controls so that a touch button press
-// ends up in the player CInput state exactly like a real key press would.
-// Must be called from the main thread / gameloop thread.
-void		InjectSyntheticKey(SDL_Keycode sym, bool down);
+bool		WasKeyboardEventHappening(int sym, bool down = true);
 
 
 class CInput;

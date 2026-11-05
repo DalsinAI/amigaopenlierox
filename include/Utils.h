@@ -16,8 +16,7 @@
 #include <list>
 #include <cassert>
 #include <set>
-#include <boost/function.hpp>
-#include "util/Random.h"
+#include "MathLib.h"
 
 template <typename _dst, typename _src>
 bool isSameType(const _src& obj1, const _dst& obj2) {
@@ -38,7 +37,7 @@ template <class Iter> void SafeAdvance(Iter& it, size_t count, const Iter& end) 
 template <typename T>
 T& randomChoiceFrom(std::vector<T>& data) {
 	assert(data.size() > 0);
-	size_t i = GetRandomLong(data.size() - 1);
+	size_t i = (size_t)GetRandomInt(data.size() - 1);
 	return data[i];
 }
 
@@ -50,6 +49,15 @@ int highestBit(T d) {
 }
 
 
+class DontCopyTag {
+public:
+	DontCopyTag() {}
+private:
+	DontCopyTag(const DontCopyTag&) { assert(false); }
+	DontCopyTag& operator=(const DontCopyTag&) { assert(false); return *this; }
+};
+
+
 template<typename T>
 std::vector<T> ListAsVector(const std::list<T>& l) {
 	return std::vector<T>(l.begin(), l.end());
@@ -58,12 +66,6 @@ std::vector<T> ListAsVector(const std::list<T>& l) {
 template<typename T> std::set<T> Set(T v1) { std::set<T> ret; ret.insert(v1); return ret; }
 template<typename T> std::set<T> Set(T v1, T v2) { std::set<T> ret; ret.insert(v1); ret.insert(v2); return ret; }
 template<typename T> std::set<T> Set(T v1, T v2, T v3) { std::set<T> ret; ret.insert(v1); ret.insert(v2); ret.insert(v3); return ret; }
-
-template<typename RetT, typename ArgT>
-RetT ifTrue(ArgT v, boost::function<RetT (ArgT)> f, RetT fallback = RetT()) {
-	if(v) return f(v);
-	return fallback;
-}
 
 #endif
 

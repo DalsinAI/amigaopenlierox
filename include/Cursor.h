@@ -19,7 +19,6 @@
 #include <string>
 #include <SDL.h>
 #include "SmartPointer.h"
-#include "CodeAttributes.h"
 
 
 // Cursor indexes
@@ -51,7 +50,6 @@ public:
 	~CCursor();
 private:
 	SmartPointer<SDL_Surface>	bmpCursor;
-	SmartPointer<SDL_Texture>	bmpCursorTex; // GPU texture, lazily from bmpCursor
 	CCursor			*cDown;
 	CCursor			*cUp;
 	int				iFrame;
@@ -64,13 +62,11 @@ private:
 	void			Init(int type);
 public:
 	void			Draw(SDL_Surface *dst);
-	void			DrawOnRenderer(SDL_Renderer *renderer, int mouseX, int mouseY); // GPU, at a screen position
-	void			InvalidateTexture(); // drop the GPU texture before the renderer is destroyed
-	INLINE bool		IsAnimated()  { return bAnimated; }
-	INLINE int		GetType()  { return iType; }
-	INLINE void		SetType(int _t)  { iType = _t; }
-	INLINE int		GetHeight()  { return bmpCursor.get() ? bmpCursor->h : 0; }
-	INLINE int		GetWidth()  { return bmpCursor.get() ? bmpCursor->w : 0; }
+	inline bool		IsAnimated()  { return bAnimated; }
+	inline int		GetType()  { return iType; }
+	inline void		SetType(int _t)  { iType = _t; }
+	inline int		GetHeight()  { return bmpCursor.get() ? bmpCursor->h : 0; }
+	inline int		GetWidth()  { return bmpCursor.get() ? bmpCursor->w : 0; }
 };
 
 // Game cursors handling
@@ -80,11 +76,9 @@ void ShutdownCursors();
 void SetGameCursor(int c);
 void SetGameCursor(CCursor *c);
 void DrawCursor(SDL_Surface *dst);
-void DrawCursorOnRenderer(SDL_Renderer *renderer, int x, int y); // GPU, at a screen position
-void InvalidateCursorTextures(); // before the renderer is destroyed
 int GetCursorHeight(int c);
 int GetCursorWidth(int c);
-INLINE int GetMaxCursorHeight()  { return iMaxCursorHeight; }
-INLINE int GetMaxCursorWidth()  { return iMaxCursorWidth; }
+inline int GetMaxCursorHeight()  { return iMaxCursorHeight; }
+inline int GetMaxCursorWidth()  { return iMaxCursorWidth; }
 
 #endif // __CURSOR_H_

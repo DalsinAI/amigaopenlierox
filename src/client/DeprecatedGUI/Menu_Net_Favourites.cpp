@@ -15,7 +15,7 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "Clipboard.h"
 #include "AuxLib.h"
 #include "DeprecatedGUI/Graphics.h"
@@ -29,7 +29,6 @@
 #include "DeprecatedGUI/CTextbox.h"
 #include "ProfileSystem.h"
 #include "Debug.h"
-#include "game/ServerList.h"
 
 
 
@@ -51,9 +50,7 @@ enum {
 	mf_Clear
 };
 
-void Menu_Net_Favourites_ServerList_Refresher() {
-	ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
-}
+
 
 ///////////////////
 // Initialize the favourites menu
@@ -75,19 +72,22 @@ bool Menu_Net_FavouritesInitialize()
 
 	Menu_Net_AddTabBarButtons(&cFavourites);
 
-
 	// Fill the players box
 	CCombobox* PlayerSelection = (CCombobox*) cFavourites.getWidget( mf_PlayerSelection );
+	profile_t *p = GetProfiles();
 	bool validName = false;
-	for_each_iterator(SmartPointer<profile_t>, p, GetProfiles()) {
-		int index = PlayerSelection->addItem( p->get()->sName, p->get()->sName );
-		PlayerSelection->setImage( p->get()->cSkin.getPreview(), index );
-		if( p->get()->sName == tLXOptions->sLastSelectedPlayer )
-			validName = true;
+	for(;p;p=p->tNext) {
+		/*if(p->iType == PRF_COMPUTER)
+			continue;*/
+
+		int index = PlayerSelection->addItem( p->sName, p->sName );
+		PlayerSelection->setImage( p->cSkin.getPreview(), index );
+		if( p->sName == tLXOptions->sLastSelectedPlayer )
+			validName=true;
 	}
 
 	if( ! validName )
-		tLXOptions->sLastSelectedPlayer = MainHumanProfile()->sName;
+		tLXOptions->sLastSelectedPlayer = GetProfiles()->sName;
 
 	PlayerSelection->setCurSIndexItem( tLXOptions->sLastSelectedPlayer );
 
@@ -115,8 +115,10 @@ bool Menu_Net_FavouritesInitialize()
 	((CListview*) cFavourites.getWidget( mf_ServerList ))->SetSortColumn( tLXOptions->iFavouritesSortColumn, true ); // Sorting
 
 	// Fill the server list
-	ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
-	ServerList::get()->refreshList();
+	Menu_SvrList_Clear();
+	Menu_SvrList_LoadList("cfg/favourites.dat");
+	Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
+	Menu_SvrList_RefreshList();
 
 	return true;
 }
@@ -132,18 +134,18 @@ void Menu_Net_FavouritesShutdown()
 		CCombobox* combo = (CCombobox *) cFavourites.getWidget(mf_PlayerSelection);
 		if( combo )
 		{
-			const GuiListItem::Pt item = combo->getSelectedItem();
-			if (item.get())
-				tLXOptions->sLastSelectedPlayer = item->index();
+			const cb_item_t* item = combo->getSelectedItem();
+			if (item)
+				tLXOptions->sLastSelectedPlayer = item->sIndex;
 		}
 
 		// Save the list
-		if (iNetMode == net_favourites)  {
-			ServerList::get()->save();
+		if (iNetMode == net_favourites && cFavourites.getWidget(mf_ServerList))  {
+			Menu_SvrList_SaveList("cfg/favourites.dat");
 
 			// Save the column widths
 			for (int i=0;i<6;i++)
-				tLXOptions->iFavouritesList[i] = (int)cFavourites.SendMessage(mf_ServerList,LVM_GETCOLUMNWIDTH,i,0);
+				tLXOptions->iFavouritesList[i] = cFavourites.SendMessage(mf_ServerList,LVM_GETCOLUMNWIDTH,i,0);
 
 			// Save the sorting column
 			tLXOptions->iFavouritesSortColumn = ((CListview *)cFavourites.getWidget(mf_ServerList))->GetSortColumn();
@@ -165,15 +167,15 @@ void Menu_Net_FavouritesFrame(int mouse)
 
 	// Process & Draw the gui
 	ev = cFavourites.Process();
-	cFavourites.Draw( VideoPostProcessor::videoSurface().get() );
+	cFavourites.Draw( VideoPostProcessor::videoSurface() );
 
 	if (Menu_Net_ProcessTabBarButtons(ev))
 		return;
 
 	// Process the server list
-	if( ServerList::get()->process() ) {
+	if( Menu_SvrList_Process() ) {
 		// Add the servers to the listview
-		ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+		Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 	}
 
 
@@ -187,15 +189,15 @@ void Menu_Net_FavouritesFrame(int mouse)
 				if(ev->iEventMsg == BTN_CLICKED) {
 
 					CCombobox* combo = (CCombobox *) cFavourites.getWidget(mf_PlayerSelection);
-					const GuiListItem::Pt item = combo->getSelectedItem();
-					if (item.get())
-						tLXOptions->sLastSelectedPlayer = item->index();
+					const cb_item_t* item = combo->getSelectedItem();
+					if (item)
+						tLXOptions->sLastSelectedPlayer = item->sIndex;
 
 					// Click!
 					PlaySoundSample(sfxGeneral.smpClick);
 
 					// Save the list
-					ServerList::get()->save();
+					Menu_SvrList_SaveList("cfg/favourites.dat");
 
 					// Shutdown
 					cFavourites.Shutdown();
@@ -224,8 +226,8 @@ void Menu_Net_FavouritesFrame(int mouse)
 					PlaySoundSample(sfxGeneral.smpClick);
 
 					// Send out a ping
-					ServerList::get()->refreshList();
-					ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+					Menu_SvrList_RefreshList();
+					Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 				}
 				break;
 
@@ -234,7 +236,7 @@ void Menu_Net_FavouritesFrame(int mouse)
 				if(ev->iEventMsg == BTN_CLICKED) {
 
 					addr = "";
-					int result = (int)cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					lv_subitem_t *sub = ((CListview *)cFavourites.getWidget(mf_ServerList))->getCurSubitem(1);
 					if(result != -1 && addr != "" && sub) {
 
@@ -259,7 +261,7 @@ void Menu_Net_FavouritesFrame(int mouse)
 
 					// Just join for the moment
 					addr = "";
-					int result = (int)cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					lv_subitem_t *sub = ((CListview *)cFavourites.getWidget(mf_ServerList))->getCurSubitem(1);
 					if(result != -1 && addr != "" && sub) {
 						Menu_Net_FavouritesJoinServer(addr,sub->sText);
@@ -270,7 +272,7 @@ void Menu_Net_FavouritesFrame(int mouse)
                 // Right click
                 if( ev->iEventMsg == LV_RIGHTCLK ) {
                     addr = "";
-					int result = (int)cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					if(result && addr != "") {
                         // Display a menu
                         szFavouritesCurServer = addr;
@@ -291,7 +293,7 @@ void Menu_Net_FavouritesFrame(int mouse)
 				if( ev->iEventMsg == LV_ENTER )  {
 					// Join
 					addr = "";
-					int result = (int)cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					int result = cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
 					lv_subitem_t *sub = ((CListview *)cFavourites.getWidget(mf_ServerList))->getCurSubitem(1);
 					if(result != -1 && addr != "" && sub) {
      					Menu_Net_FavouritesJoinServer(addr,sub->sText);
@@ -303,17 +305,17 @@ void Menu_Net_FavouritesFrame(int mouse)
 				if( ev->iEventMsg == LV_DELETE )  {
 					//DrawImage(tMenu->bmpBuffer,VideoPostProcessor::videoSurface(),0,0);
 					addr = "";
-					int result = (int)cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
-					server_t::Ptr sv = ServerList::get()->findServerStr(addr);
+					int result = cFavourites.SendMessage(mf_ServerList, LVS_GETCURSINDEX, &addr, 0);
+					server_t *sv = Menu_SvrList_FindServerStr(addr);
 					std::string buf;
 					if (sv)  {
 						if (Menu_MessageBox("Confirmation","Are you sure you want to remove "+sv->szName+" server from favourites?",LMB_YESNO) == MBR_YES)  {
 							if(result && addr != "") {
-								ServerList::get()->removeServer(addr);
+								Menu_SvrList_RemoveServer(addr);
 								// Re-Fill the server list
-								ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+								Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 							}
-							ServerList::get()->save();
+							Menu_SvrList_SaveList("cfg/favourites.dat");
 						}
 						Menu_redrawBufferRect(0,0,640,480);
 					}
@@ -326,8 +328,8 @@ void Menu_Net_FavouritesFrame(int mouse)
 			case mf_Clear:
 				if (ev->iEventMsg == BTN_CLICKED)  {
 					if (Menu_MessageBox("Confirmation", "Do you really want to delete ALL your favourite servers?", LMB_YESNO) == MBR_YES)  {
-						ServerList::get()->clear(SLFT_Favourites);
-						ServerList::get()->save();
+						Menu_SvrList_Clear();
+						Menu_SvrList_SaveList("cfg/favourites.dat");
 						CListview *lv = (CListview *)cFavourites.getWidget(mf_ServerList);
 						if (lv)
 							lv->Clear();
@@ -337,18 +339,15 @@ void Menu_Net_FavouritesFrame(int mouse)
 
             // Popup menu
             case mf_PopupMenu:
-				// Only moving the selection, the menu stays
-				if( ev->iEventMsg == MNU_SELECTION_CHANGED )
-					break;
                 switch( ev->iEventMsg ) {
                      // Remove server from favourites
 				case MNU_USER+0:  {
-						server_t::Ptr sv = ServerList::get()->findServerStr(szFavouritesCurServer);
+						server_t *sv = Menu_SvrList_FindServerStr(szFavouritesCurServer);
 						std::string buf;
 						if (sv)  {
 							if (Menu_MessageBox("Confirmation","Are you sure you want to remove "+sv->szName+" server from favourites?",LMB_YESNO) == MBR_YES)  {
-								ServerList::get()->removeServer(szFavouritesCurServer);
-								ServerList::get()->save();  // Save changes
+								Menu_SvrList_RemoveServer(szFavouritesCurServer);
+								Menu_SvrList_SaveList("cfg/favourites.dat");  // Save changes
 							}
 							Menu_redrawBufferRect(0,0,640,480);
 						}
@@ -359,21 +358,21 @@ void Menu_Net_FavouritesFrame(int mouse)
                     case MNU_USER+1:
 						{
 							// Remove the menu widget
-							cFavourites.SendMessage(mf_PopupMenu, MNM_REDRAWBUFFER, (uintptr_t)0, 0);
+							cFavourites.SendMessage(mf_PopupMenu, MNM_REDRAWBUFFER, (DWORD)0, 0);
 							cFavourites.removeWidget(mf_PopupMenu);
 
-							server_t::Ptr sv = ServerList::get()->findServerStr(szFavouritesCurServer);
+							server_t *sv = Menu_SvrList_FindServerStr(szFavouritesCurServer);
 							Menu_Net_RenameServer(sv->szName);
-							ServerList::get()->save();  // Save changes
+							Menu_SvrList_SaveList("cfg/favourites.dat");  // Save changes
 						}
                         break;
 
                     // Refresh the server
                     case MNU_USER+2:
                         {
-							server_t::Ptr sv = ServerList::get()->findServerStr(szFavouritesCurServer);
+                            server_t *sv = Menu_SvrList_FindServerStr(szFavouritesCurServer);
                             if(sv)
-                                ServerList::get()->refreshServer(sv);
+                                Menu_SvrList_RefreshServer(sv);
                         }
                         break;
 
@@ -389,11 +388,11 @@ void Menu_Net_FavouritesFrame(int mouse)
 					// Send a "wants to join" message
                     case MNU_USER+4:
 						{
-							server_t::Ptr sv = ServerList::get()->findServerStr(szFavouritesCurServer);
+							server_t *sv = Menu_SvrList_FindServerStr(szFavouritesCurServer);
 							std::string Nick;
 							cFavourites.SendMessage(mf_PlayerSelection, CBS_GETCURNAME, &Nick, 0);
 							if (sv)
-								ServerList::get()->wantsToJoin(Nick, sv);
+								Menu_SvrList_WantsJoin(Nick, sv);
 						}
                         break;
 
@@ -412,10 +411,10 @@ void Menu_Net_FavouritesFrame(int mouse)
                 }
 
                 // Re-Fill the server list
-                ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+                Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 
                 // Remove the menu widget
-                cFavourites.SendMessage(mf_PopupMenu, MNM_REDRAWBUFFER, (uintptr_t)0, 0);
+                cFavourites.SendMessage(mf_PopupMenu, MNM_REDRAWBUFFER, (DWORD)0, 0);
                 cFavourites.removeWidget(mf_PopupMenu);
                 break;
 		}
@@ -424,12 +423,12 @@ void Menu_Net_FavouritesFrame(int mouse)
 
 	// F5 updates the list
 	if (WasKeyboardEventHappening(SDLK_F5))  {
-		ServerList::get()->refreshList();
-		ServerList::get()->fillList((CListview *) cFavourites.getWidget(mf_ServerList), SLFT_Favourites);
+		Menu_SvrList_RefreshList();
+		Menu_SvrList_FillList((CListview *) cFavourites.getWidget(mf_ServerList));
 	}
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 ///////////////////
@@ -438,19 +437,29 @@ void Menu_Net_FavouritesJoinServer(const std::string& sAddress, const std::strin
 {
 	// Fill in the game structure
 	CCombobox* combo = (CCombobox *) cFavourites.getWidget(mf_PlayerSelection);
-	const GuiListItem::Pt item = combo->getSelectedItem();
-	if(!item.get()) {
+	const cb_item_t* item = combo->getSelectedItem();
+	if(!item) {
 		errors << "no player selected" << endl;
 		return;
 	}
 	
-	tLXOptions->sLastSelectedPlayer = item->index();
+	tLXOptions->sLastSelectedPlayer = item->sIndex;
 	
-	if(!JoinServer(sAddress, sName, item->index()))
-		return;	
+	if(!JoinServer(sAddress, sName, item->sIndex))
+		return;
+	
+	// Shutdown
+	cFavourites.Shutdown();
+
+	iNetMode = net_join;
 
 	// Save the list
-	ServerList::get()->save();
+	Menu_SvrList_SaveList("cfg/favourites.dat");
+
+	tMenu->iReturnTo = net_favourites;
+
+	// Connect to the server
+	Menu_Net_JoinConnectionInitialize(sAddress);
 }
 
 enum  {
@@ -458,6 +467,7 @@ enum  {
 	fd_Refresh,
 	fd_Join
 };
+
 
 ///////////////////
 // Show a server's details
@@ -474,7 +484,7 @@ void Menu_Net_FavouritesShowServer(const std::string& szAddress)
 
 	Menu_RedrawMouse(true);
 
-	int center = VideoPostProcessor::menuWidth/2; // menu is presented centered
+	int center = VideoPostProcessor::videoSurface()->w/2;
 	int y = VideoPostProcessor::videoSurface()->h/2 - INFO_H/2;
 
     cDetails.Initialize();
@@ -492,7 +502,7 @@ void Menu_Net_FavouritesShowServer(const std::string& szAddress)
 
 	DrawRectFillA(tMenu->bmpBuffer.get(),200,400,350,420,tLX->clDialogBackground,230); // Dirty; because of button redrawing
 
-	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && game.state != Game::S_Quit) {
+    while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && tMenu->bMenuRunning) {
 		tLX->currentTime = GetTime();
 
 		Menu_RedrawMouse(true);
@@ -502,7 +512,7 @@ void Menu_Net_FavouritesShowServer(const std::string& szAddress)
 
 		Menu_SvrList_DrawInfo(szAddress, INFO_W, INFO_H);
 
-        cDetails.Draw(VideoPostProcessor::videoSurface().get());
+        cDetails.Draw(VideoPostProcessor::videoSurface());
         gui_event_t *ev = NULL;
 
 		ev = cDetails.Process();
@@ -529,7 +539,7 @@ void Menu_Net_FavouritesShowServer(const std::string& szAddress)
 			}
         }
 
-        DrawCursor(VideoPostProcessor::videoSurface().get());
+        DrawCursor(VideoPostProcessor::videoSurface());
 		doVideoFrameInMainThread();
 		CapFPS();
     }
@@ -578,18 +588,18 @@ void Menu_Net_RenameServer(std::string& szName)
 	cRename.SendMessage(2,TXS_SETTEXT,szName,0); // Fill in the current server name
 
 	ProcessEvents();
-	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && renameServerMsg && game.state != Game::S_Quit) {
+	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && renameServerMsg && tMenu->bMenuRunning) {
 		Menu_RedrawMouse(true);
-		DrawImageAdv(VideoPostProcessor::videoSurface().get(),tMenu->bmpBuffer, 200,220, 200,220, 240, 240);
+		DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 200,220, 200,220, 240, 240);
 
 		// Process the server list
-		if( ServerList::get()->process() ) {
+		if( Menu_SvrList_Process() ) {
 			// Add the servers to the listview
-			ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+			Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 		}
 
 
-		cRename.Draw( VideoPostProcessor::videoSurface().get() );
+		cRename.Draw( VideoPostProcessor::videoSurface() );
 		ev = cRename.Process();
 
 		// Process any events
@@ -603,7 +613,7 @@ void Menu_Net_RenameServer(std::string& szName)
 
 						cRename.SendMessage(2, TXS_GETTEXT, &szName, 0);
 
-						ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+						Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 
 						// Click!
 						PlaySoundSample(sfxGeneral.smpClick);
@@ -625,10 +635,10 @@ void Menu_Net_RenameServer(std::string& szName)
 		}
 
 
-		DrawCursor(VideoPostProcessor::videoSurface().get());
+		DrawCursor(VideoPostProcessor::videoSurface());
 		doVideoFrameInMainThread();
 		CapFPS();
-		ProcessEvents();
+		WaitForNextEvent();
 	}
 
 
@@ -679,17 +689,17 @@ void Menu_Net_FavouritesAddServer()
 	cAddSvr.SendMessage(3,TXM_SETMAX,32,0);
 
 	ProcessEvents();
-	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && addServerMsg && game.state != Game::S_Quit) {
+	while(!WasKeyboardEventHappening(SDLK_ESCAPE,false) && addServerMsg && tMenu->bMenuRunning) {
 		Menu_RedrawMouse(true);
-		DrawImageAdv(VideoPostProcessor::videoSurface().get(), tMenu->bmpBuffer, 200,220, 200,220, 240, 240);
+		DrawImageAdv(VideoPostProcessor::videoSurface(),tMenu->bmpBuffer, 200,220, 200,220, 240, 240);
 
 		// Process the server list
-		if( ServerList::get()->process() ) {
+		if( Menu_SvrList_Process() ) {
 			// Add the servers to the listview
-			ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+			Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 		}
 
-		cAddSvr.Draw( VideoPostProcessor::videoSurface().get() );
+		cAddSvr.Draw( VideoPostProcessor::videoSurface() );
 		ev = cAddSvr.Process();
 
 		// Process any events
@@ -706,8 +716,8 @@ void Menu_Net_FavouritesAddServer()
 						cAddSvr.SendMessage(2, TXS_GETTEXT, &addr, 0);
 						cAddSvr.SendMessage(3, TXS_GETTEXT, &name, 0);
 
-						ServerList::get()->addFavourite(name, addr);
-						ServerList::get()->fillList( (CListview *)cFavourites.getWidget( mf_ServerList ), SLFT_Favourites );
+						Menu_SvrList_AddServer(addr, true, name);
+						Menu_SvrList_FillList( (CListview *)cFavourites.getWidget( mf_ServerList ) );
 
 						// Click!
 						PlaySoundSample(sfxGeneral.smpClick);
@@ -729,10 +739,10 @@ void Menu_Net_FavouritesAddServer()
 		}
 
 
-		DrawCursor(VideoPostProcessor::videoSurface().get());
+		DrawCursor(VideoPostProcessor::videoSurface());
 		doVideoFrameInMainThread();
 		CapFPS();
-		ProcessEvents();
+		WaitForNextEvent();
 	}
 
 

@@ -28,11 +28,6 @@
 #include "StringUtils.h"
 #include "Options.h"
 #include "Debug.h"
-#include <boost/crc.hpp>
-
-#ifdef __ANDROID__
-#include <SDL_system.h>
-#endif
 
 
 #ifdef WIN32
@@ -42,7 +37,6 @@
 #   define  _WIN32_IE  0x0400  // Because of Dev-cpp
 #	endif
 
-#	include <windows.h>
 #	include <shlobj.h>
 
 #else // WIN32
@@ -58,8 +52,12 @@
 #			include <tr1/unordered_set>
 #			define hash_set std::tr1::unordered_set
 #		else
-#			include <unordered_set>
-#			define hash_set std::unordered_set
+#			include <ext/hash_set>
+#			ifdef _GLIBCXX_DEBUG
+				using namespace __gnu_debug_def;
+#			else
+				using namespace __gnu_cxx;
+#			endif
 #		endif
 #	else // STLPORT
 #		include <hash_set>
@@ -67,7 +65,9 @@
 #	endif
 
 // for getpwduid
+#	ifndef __amigaos__
 #	include <pwd.h>
+#	endif
 
 // for realpath
 #	include <sys/param.h>
@@ -79,13 +79,14 @@
 searchpathlist tSearchPaths;
 
 
-static bool doFileStat(const std::string& f, bool absolute, struct stat& s) {
+
+bool IsFileAvailable(const std::string& f, bool absolute) {
 	std::string abs_f;
 	if(absolute) {
 		abs_f = f;
 	} else
 		if((abs_f = GetFullFileName(f)) == "") return false;
-	
+
 	// remove trailing slashes
 	// don't remove them on WIN, if it is a drive-letter
 	while(abs_f.size() > 0 && (abs_f[abs_f.size()-1] == '\\' || abs_f[abs_f.size()-1] == '/')) {
@@ -94,40 +95,19 @@ static bool doFileStat(const std::string& f, bool absolute, struct stat& s) {
 #endif
 		abs_f.erase(abs_f.size()-1);
 	}
-	
+
 	abs_f = Utf8ToSystemNative(abs_f);
-	
+
 	// HINT: this should also work on WIN32, as we have _stat here
-	return stat(abs_f.c_str(), &s) == 0;
-}
-
-
-bool IsFileAvailable(const std::string& f, bool absolute, bool onlyregfiles) {
 	struct stat s;
-	if(!doFileStat(f, absolute, s))
-		// it's not stat-able or not found
-		return false;
-	
-	if(onlyregfiles && !S_ISREG(s.st_mode)) {
-		// it's not a reg file
+	if(stat(abs_f.c_str(), &s) != 0 || !S_ISREG(s.st_mode)) {
+		// it's not stat-able or not a reg file
 		return false;
 	}
 
+	// it's stat-able and a file
 	return true;
 }
-
-bool IsDirectory(const std::string& f, bool absolute) {
-	struct stat s;
-	if(!doFileStat(f, absolute, s))
-		// it's not stat-able or not found
-		return false;
-	
-	if(!S_ISDIR(s.st_mode))
-		return false;
-	
-	return true;	
-}
-
 
 
 
@@ -173,7 +153,7 @@ list.clear();
 	int len = GetLogicalDriveStrings(sizeof(drives),drives); // Get the list of drives
 	drive_t tmp;
 	if (len)  {
-		for (register int i=0; i<len; i+=(int)strnlen(&drives[i],4)+1)  {
+		for (int i=0; i<len; i+=(int)strnlen(&drives[i],4)+1)  {
 			// Create the name (for example: C:\)
 			tmp.name = &drives[i];
 			// Get the type
@@ -274,45 +254,36 @@ size_t GetLastName(const std::string& fullname, const char** seperators)
 
 
 
+struct strcasecomparer {
+	bool operator()(const std::string& str1, const std::string& str2) const {
+		return stringcaseequal(str1, str2);
+	}
+};
+
+typedef hash_set<std::string, simple_reversestring_hasher, strcasecomparer> exactfilenamecache_t;
 struct ExactFilenameCache {
-	struct simple_crc32_hasher {
-		size_t operator() (const std::string& str) const {
-			boost::crc_32_type crc;
-			const uchar* c = (const uchar*) &str[0];
-			const uchar* E = c + str.size();
-			for(; c < E; ++c)
-				crc.process_byte((uchar) tolower(*c));
-			return crc.checksum();
-		}
-	};
-	struct strcasecomparer {
-		bool operator()(const std::string& str1, const std::string& str2) const {
-			return stringcaseequal(str1, str2);
-		}
-	};
-	typedef hash_set<std::string, simple_crc32_hasher, strcasecomparer> exactfilenamecache_t;
 	exactfilenamecache_t cache;
 	Mutex mutex;
-
-	bool has_searchname(
-		 const std::string& searchname,
-		 std::string& exactname
-		 ) {
-		Mutex::ScopedLock lock(mutex);
-		exactfilenamecache_t::iterator it = cache.find(searchname);
-		if(it != cache.end()) {
-			exactname = *it;
-			return true;
-		} else
-			return false;
-	}
-
-	void add_searchname(const std::string& exactname) {
-		Mutex::ScopedLock lock(mutex);
-		cache.insert(exactname);
-	}
 }
 exactfilenamecache;
+
+bool is_searchname_in_exactfilenamecache(
+										 const std::string& searchname,
+										 std::string& exactname
+) {
+	Mutex::ScopedLock lock(exactfilenamecache.mutex);
+	exactfilenamecache_t::iterator it = exactfilenamecache.cache.find(searchname);
+	if(it != exactfilenamecache.cache.end()) {
+		exactname = *it;
+		return true;
+	} else
+		return false;
+}
+
+void add_searchname_to_exactfilenamecache(const std::string& exactname) {
+	Mutex::ScopedLock lock(exactfilenamecache.mutex);
+	exactfilenamecache.cache.insert(exactname);
+}
 
 
 // used by unix-GetExactFileName
@@ -335,21 +306,8 @@ bool CaseInsFindFile(const std::string& dir, const std::string& searchname, std:
 	DIR* dirhandle = opendir((dir == "") ? "." : dir.c_str());
 	if(dirhandle == NULL) return false;
 
-	// Only cache the dir entry after a certain amount.
-	// The purpose is to keep the cache small and still to be fast.
-	// We expect that we get the same order the next time we read the dir.
-	static const int CacheIgnoreNum = 100;
-	size_t count = 0;
 	dirent* direntry;
 	while((direntry = readdir(dirhandle))) {
-		// Cache fillup logic.
-		if(count >= CacheIgnoreNum) {
-			std::string dirSearchName = dir.empty() ? direntry->d_name : (dir + "/" + direntry->d_name);
-			exactfilenamecache.add_searchname(dirSearchName);
-		}
-		count++;
-
-		// Now do the actual filename check.
 		if(strcasecmp(direntry->d_name, searchname.c_str()) == 0) {
 			filename = direntry->d_name;
 			closedir(dirhandle);
@@ -360,6 +318,7 @@ bool CaseInsFindFile(const std::string& dir, const std::string& searchname, std:
 #endif
 			return true;
 		}
+		add_searchname_to_exactfilenamecache((dir == "") ? direntry->d_name : (dir + "/" + direntry->d_name));
 	}
 
 	closedir(dirhandle);
@@ -370,6 +329,14 @@ bool CaseInsFindFile(const std::string& dir, const std::string& searchname, std:
 
 // does case insensitive search for file
 bool GetExactFileName(const std::string& abs_searchname, std::string& filename) {
+#ifdef __amigaos__
+	// AmigaDOS names are case-insensitive already, and a "PROGDIR:" in front
+	// is no drawer to search: the name is the exact name if it is there.
+	// (amiga/amiga_paths.c makes AmigaDOS names of the Unix-style joins.)
+	filename = abs_searchname;
+	ReplaceFileVariables(filename);
+	return filename.size() > 0 && IsPathStatable(filename);
+#endif
 	const char* seps[] = {"\\", "/", (char*)NULL};
 	if(abs_searchname.size() == 0) {
 		filename = "";
@@ -378,12 +345,6 @@ bool GetExactFileName(const std::string& abs_searchname, std::string& filename) 
 
 	std::string sname = abs_searchname;
 	ReplaceFileVariables(sname);
-
-	// Fast direct check, if file exists.
-	if(IsPathStatable(sname)) {
-		filename = sname;
-		return true;
-	}
 
 	std::string nextname = "";
 	std::string nextexactname = "";
@@ -398,7 +359,7 @@ bool GetExactFileName(const std::string& abs_searchname, std::string& filename) 
 	std::string rest;
 	while(true) {
 		rest = sname.substr(0,pos);
-		if(exactfilenamecache.has_searchname(rest, filename)) {
+		if(is_searchname_in_exactfilenamecache(rest, filename)) {
 			if(IsPathStatable(filename)) {
 				if(pos == sname.size()) // do we got the whole filename?
 					return true;
@@ -460,6 +421,8 @@ bool GetExactFileName(const std::string& abs_searchname, std::string& filename) 
 
 		if(!first_iter) filename += "/";
 		filename += nextexactname;
+		if(nextexactname != "")
+			add_searchname_to_exactfilenamecache(filename);
 
 		if(pos == 0) break;
 		first_iter = false;
@@ -475,39 +438,22 @@ bool GetExactFileName(const std::string& abs_searchname, std::string& filename) 
 searchpathlist	basesearchpaths;
 void InitBaseSearchPaths() {
 	basesearchpaths.clear();
-#if defined(__ANDROID__)
-	// Android has no $HOME and no meaningful cwd. The Activity stages the
-	// packaged gamedir into getFilesDir()/OpenLieroX/, which SDL exposes via
-	// SDL_AndroidGetInternalStoragePath(). External app storage is offered
-	// as a secondary path so users can drop in mods/levels via a file
-	// manager or USB.
-	if (const char* internal = SDL_AndroidGetInternalStoragePath()) {
-		AddToFileList(&basesearchpaths, std::string(internal) + "/OpenLieroX");
-	}
-	if (const char* external = SDL_AndroidGetExternalStoragePath()) {
-		AddToFileList(&basesearchpaths, std::string(external) + "/OpenLieroX");
-	}
-#elif defined(__EMSCRIPTEN__)
-	// The build script preloads share/gamedir at /gamedir on the
-	// virtual MEMFS, and we chdir to / in main(). Persistent user data
-	// is mounted on IDBFS at /home/web_user (Emscripten's musl HOME).
-	AddToFileList(&basesearchpaths, "/gamedir");
-	AddToFileList(&basesearchpaths, "${HOME}/.OpenLieroX");
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
 	AddToFileList(&basesearchpaths, "${HOME}/Library/Application Support/OpenLieroX");
+	AddToFileList(&basesearchpaths, "Contents/Resources/gamedir");
 	AddToFileList(&basesearchpaths, ".");
-	AddToFileList(&basesearchpaths, "${BIN}/../Resources/gamedir");
 	AddToFileList(&basesearchpaths, SYSTEM_DATA_DIR"/OpenLieroX");
+#elif defined(__amigaos__)
+	// everything (data, options, profiles, screenshots) in the game's drawer
+	AddToFileList(&basesearchpaths, "PROGDIR:");
 #elif defined(WIN32)
 	AddToFileList(&basesearchpaths, "${HOME}/OpenLieroX");
 	AddToFileList(&basesearchpaths, ".");
 	AddToFileList(&basesearchpaths, "${BIN}");
-	AddToFileList(&basesearchpaths, "${BIN}/gamedir");
 #else // all other systems (Linux, *BSD, OS/2, ...)
 	AddToFileList(&basesearchpaths, "${HOME}/.OpenLieroX");
 	AddToFileList(&basesearchpaths, ".");
 	AddToFileList(&basesearchpaths, SYSTEM_DATA_DIR"/OpenLieroX"); // no use of ${SYSTEM_DATA}, because it is uncommon and could cause confusion to the user
-	AddToFileList(&basesearchpaths, "${BIN}/gamedir");
 #endif
 }
 
@@ -552,6 +498,9 @@ bool IsAbsolutePath(const std::string& path)
 		return false;
 
 	return (isalpha((uchar)path[0]) && path[1] == ':');
+#elif defined(__amigaos__)
+	// A volume or an assign ("PROGDIR:x", "Work:x")
+	return path.find(':') != std::string::npos;
 #else
 	// Must start with a slash
 	if (!path.size())
@@ -612,7 +561,6 @@ std::string GetFullFileName(const std::string& path, std::string* searchpath) {
 	std::string fname;
 	CheckSearchpathForFile checker(path, &fname, searchpath);
 	ForEachSearchpath(checker);
-
 	return fname;
 }
 
@@ -685,40 +633,6 @@ FILE *OpenGameFile(const std::string& path, const char *mode) {
 
 
 
-
-bool OpenGameFileR(std::ifstream& f, const std::string& path, std::ios_base::openmode mode) {
-	if(path.size() == 0)
-		return false;
-
-	std::string fullfn = GetFullFileName(path);
-	if(fullfn.size() != 0) {
-		try {
-			f.open(Utf8ToSystemNative(fullfn).c_str(), mode);
-			return f.is_open();
-		} catch(...) {}
-		return false;
-	}
-
-	return false;
-}
-
-bool OpenGameFileW(std::ofstream& f, const std::string& path) {
-	if(path.size() == 0)
-		return false;
-	
-	std::string fullfn = GetWriteFullFileName(path, true);
-	if(fullfn.size() != 0) {
-		try {
-			f.open(Utf8ToSystemNative(fullfn).c_str(), std::ios_base::out);
-			return f.is_open();
-		} catch(...) {}
-		return false;
-	}
-	
-	return false;	
-}
-
-
 std::ifstream* OpenGameFileR(const std::string& path) {
 	if(path.size() == 0)
 		return NULL;
@@ -774,12 +688,8 @@ bool FileListIncludesExact(const searchpathlist* l, const std::string& f) {
 }
 
 std::string GetHomeDir() {
-#if defined(__ANDROID__)
-	// Android apps have no user home directory. The closest analogue is the
-	// per-app private files dir, which is also where we stage the gamedir.
-	if (const char* internal = SDL_AndroidGetInternalStoragePath())
-		return internal;
-	return "";
+#if defined(__amigaos__)
+	return "PROGDIR:";
 #elif !defined(WIN32)
 	char* home = getenv("HOME");
 	if(home == NULL || home[0] == '\0') {
@@ -825,7 +735,9 @@ std::string GetBinaryDir() {
 }
 
 std::string GetTempDir() {
-#ifndef WIN32
+#if defined(__amigaos__)
+	return "T:";
+#elif !defined(WIN32)
 	return "/tmp"; // year, it's so simple :)
 #else
 	static char buf[1024] = "";
@@ -930,19 +842,19 @@ std::string GetAbsolutePath(const std::string& path) {
 		return path;
 #else
 	std::string exactpath;
-	if (!GetExactFileName(path, exactpath))
+#ifdef __amigaos__
+	// no realpath() in libnix; the search paths are absolute (PROGDIR:)
+	return GetExactFileName(path, exactpath) ? exactpath : path;
+#endif
+	if(GetExactFileName(path, exactpath)) {
+		char buf[PATH_MAX];
+		if(realpath(exactpath.c_str(), buf) != NULL) {
+			fix_markend(buf);
+			return buf;
+		} else
+			return exactpath;
+	} else
 		return path;
-	
-	// Earlier, we also did `realpath` on the path.
-	// This added a significant overhead on the whole FindFile system.
-	// Actually, not sure why it was there because I don't think it is really needed.
-	if (exactpath.length() > 0 && exactpath[0] != '/') {
-		char cwd[PATH_MAX];
-		if (getcwd(cwd, PATH_MAX)) {
-			exactpath = std::string(cwd) + "/" + exactpath;
-		}
-	}
-	return exactpath;
 #endif
 }
 
@@ -1129,47 +1041,7 @@ SDL_RWops *RWopsFromFP(FILE *fp, bool autoclose)  {
 	return(rwops);
 
 #else
-	return SDL_RWFromFP(fp, (SDL_bool)autoclose);
+	return SDL_RWFromFP(fp, (int)autoclose);
 #endif
 }
-
-
-
-
-struct FileIter : Iterator<std::string> {
-	typedef std::set<std::string> List;
-	boost::shared_ptr<List> files;
-	List::iterator it;
-	
-	FileIter() : files(new List) {}
-
-	bool operator() (const std::string& path) {
-		files->insert( GetBaseFilename(path) );
-		return true;
-	}
-		
-	Iterator<std::string>* copy() const { return new FileIter(*this); }
-	bool isValid() { return it != files->end(); }
-	void reset() { it = files->begin(); }
-	void next() { ++it; }
-	bool operator==(const Iterator<std::string>& _oth) const {
-		if( const FileIter* oth = dynamic_cast<const FileIter*> (&_oth) )
-			return oth->files == files && oth->it == it;
-		return false;
-	}
-	std::string get() { return *it; }
-};
-
-Iterator<std::string>::Ref FileListIter(
-										const std::string& dir,
-										bool absolutePath,
-										const filemodes_t modefilter,
-										const std::string& namefilter) {
-	FileIter* iter = new FileIter();
-	FindFiles(*iter, dir, absolutePath, modefilter, namefilter);
-	iter->reset();
-	return iter;
-}
-
-
 

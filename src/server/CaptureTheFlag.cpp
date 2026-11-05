@@ -9,10 +9,8 @@
 
 #include "CGameMode.h"
 #include "CServer.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "FlagInfo.h"
-#include "gusanos/gusgame.h"
-#include "game/Game.h"
 
 struct CaptureTheFlag : public CGameMode {
 	
@@ -60,7 +58,7 @@ struct CaptureTheFlag : public CGameMode {
 	
 	void initFlag(int t, const CVec& pos) {
 		// currently, just use this easy method to find a spot for the flag
-		CVec spawnPoint = game.gameMap()->groundPos(pos) - CVec(0, (float)(cServer->flagInfo()->getHeight()/4));
+		CVec spawnPoint = cServer->getMap()->groundPos(pos) - CVec(0, (float)(cServer->flagInfo()->getHeight()/4));
 		cServer->flagInfo()->applyInitFlag(t, spawnPoint);
 	}
 	
@@ -74,42 +72,33 @@ struct CaptureTheFlag : public CGameMode {
 	}
 	
 	void wormCatchFlag_Handler(CWorm* worm, Flag* flag) {
-		if(!(bool)gameSettings[FT_CTF_AllowRopeForCarrier])
+		if(!(bool)tLXOptions->tGameInfo.features[FT_CTF_AllowRopeForCarrier])
 			cServer->SetWormCanUseNinja(worm->getID(), false);
-		cServer->SetWormSpeedFactor(worm->getID(), gameSettings[FT_CTF_SpeedFactorForCarrier]);
+		cServer->SetWormSpeedFactor(worm->getID(), tLXOptions->tGameInfo.features[FT_CTF_SpeedFactorForCarrier]);
 	}
 	
 	void wormLooseFlag_Handler(CWorm* worm, Flag* flag) {
-		if(!(bool)gameSettings[FT_CTF_AllowRopeForCarrier])
+		if(!(bool)tLXOptions->tGameInfo.features[FT_CTF_AllowRopeForCarrier])
 			cServer->SetWormCanUseNinja(worm->getID(), true);
-		cServer->SetWormSpeedFactor(worm->getID(), gameSettings[FT_WormSpeedFactor]);		
+		cServer->SetWormSpeedFactor(worm->getID(), tLXOptions->tGameInfo.features[FT_WormSpeedFactor]);		
 	}
 	
 	void wormDropFlag(CWorm* worm) {
 		Flag* flag = cServer->flagInfo()->getFlagOfWorm(worm->getID());
 		if(flag) {
 			wormLooseFlag_Handler(worm, flag);
-			CVec pos = game.gameMap()->groundPos(worm->getPos()) - CVec(0,(float)(cServer->flagInfo()->getHeight()/4));
+			CVec pos = cServer->getMap()->groundPos(worm->getPos()) - CVec(0,(float)(cServer->flagInfo()->getHeight()/4));
 			cServer->flagInfo()->applyCustomPos(flag, pos);
 			cServer->SendGlobalText(worm->getName() + " lost " + flagName(flag->id), TXT_NORMAL);			
 		}		
 	}
 	
-	CVec getTeamBasePos(int team, CVec fallback) {
-		for(size_t i = 0; i < game.gameMap()->config()->teamBases.size(); ++i) {
-			if(game.gameMap()->config()->teamBases[i].team == team + 1) // Gus team numbers
-				return CVec(game.gameMap()->config()->teamBases[i].pos);
-		}
-		
-		return fallback;
-	}
-	
-	virtual bool Spawn(CWorm* worm, CVec& pos) {
+	virtual bool Spawn(CWorm* worm, CVec pos) {
 		if(!CGameMode::Spawn(worm, pos)) return false;
 		
 		if(!cServer->flagInfo()->getFlag(worm->getTeam())) {
 			// we have to create the new flag, there isn't any yet
-			initFlag(worm->getTeam(), getTeamBasePos(worm->getTeam(), pos));
+			initFlag(worm->getTeam(), pos);
 		}
 		return true;
 	}
@@ -121,8 +110,7 @@ struct CaptureTheFlag : public CGameMode {
 			killer->addKill();
 		
 		// Victim is out of the game
-		victim->Kill(true);
-		if(victim->getLives() == WRM_OUT && networkTexts->sPlayerOut != "<none>")
+		if(victim->Kill() && networkTexts->sPlayerOut != "<none>")
 			cServer->SendGlobalText(replacemax(networkTexts->sPlayerOut, "<player>",
 											   victim->getName(), 1), TXT_NORMAL);
 	}
@@ -136,13 +124,11 @@ struct CaptureTheFlag : public CGameMode {
 			if(!flag->atSpawnPoint && flag->holderWorm < 0) {
 				cServer->flagInfo()->applySetBack(flag);
 				cServer->SendGlobalText(worm->getName() + " returned " + flagName(flag->id), TXT_NORMAL);
-				cServer->SendPlaySound("ctf-" + TeamName(flag->id) + "flag-returned");
 			}
 		}
 		else { // enemy flag
 			cServer->flagInfo()->applyHolderWorm(flag, worm->getID());
 			cServer->SendGlobalText(worm->getName() + " caught " + flagName(flag->id), TXT_NORMAL);
-			cServer->SendPlaySound("ctf-" + TeamName(flag->id) + "flag-taken");
 			wormCatchFlag_Handler(worm, flag);
 		}
 	}
@@ -156,7 +142,6 @@ struct CaptureTheFlag : public CGameMode {
 				wormLooseFlag_Handler(worm, wormsFlag);
 				cServer->flagInfo()->applySetBack(wormsFlag);
 				cServer->SendGlobalText(worm->getName() + " scored for " + TeamName(worm->getTeam()), TXT_NORMAL);
-				cServer->SendPlaySound("ctf-" + TeamName(worm->getTeam()) + "-scores");
 				cServer->SendTeamScoreUpdate();
 				cServer->RecheckGame();
 			}

@@ -24,12 +24,11 @@
 #include <vector>
 #include <string>
 #include <map>
-#include <atomic>
 #include <stdio.h>  // for FILE
 #include "ThreadPool.h"
 #include <SDL_mutex.h>
 #include "HTTP.h"
-#include "olx-types.h"
+#include "types.h"
 #include "CBytestream.h"
 
 
@@ -148,19 +147,18 @@ public:
 private:
 	std::list<CHttpDownloader *> tDownloads;
 	std::vector<std::string>	 tDownloadServers;
-	SmartPointer<ThreadPoolItem>	tThread;
+	ThreadPoolItem					*tThread;
 	SDL_mutex					*tMutex;
 	size_t						 iActiveDownloads;
 
-	friend Result ManagerMain(void *param);
-	std::atomic<bool>			bBreakThread;
+	friend int ManagerMain(void *param);
+	bool						bBreakThread;
 
 public:
 	void						ProcessDownloads();
 	void						StartFileDownload(const std::string& filename, const std::string& dest_dir);
 	void						CancelFileDownload(const std::string& filename);
 	void						RemoveFileDownload(const std::string& filename);
-	void						RemoveAllDownloads();
 	bool						IsFileDownloaded(const std::string& filename);
 	DownloadError				FileDownloadError(const std::string& filename);
 	int							GetFileProgress(const std::string& filename);

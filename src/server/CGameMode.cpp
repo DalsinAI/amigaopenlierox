@@ -10,11 +10,8 @@
 #include "CGameMode.h"
 #include "CServer.h"
 #include "Options.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Protocol.h"
-#include "CServerConnection.h"
-#include "CServerNetEngine.h"
-#include "ProfileSystem.h"
 
 int CGameMode::GeneralGameType() {
 	if(GameTeams() == 1)
@@ -29,7 +26,7 @@ int CGameMode::GameTeams() {
 }
 
 float CGameMode::TimeLimit() {
-	return (float)gameSettings[FT_TimeLimit] * 60.0f;
+	return tLXOptions->tGameInfo.fTimeLimit * 60.0f;
 }
 
 std::string CGameMode::TeamName(int t) {
@@ -40,38 +37,20 @@ std::string CGameMode::TeamName(int t) {
 
 void CGameMode::PrepareGame()
 {
-	lastTimeLimitReport = int(TimeLimit());
-	lastFragsLeftReport = -1;
 	bFirstBlood = true;
 	for(int i = 0; i < MAX_WORMS; i++) {
 		iKillsInRow[i] = 0;
 		iDeathsInRow[i] = 0;
 	}
-	cServer->SendPlaySound("prepareforbattle");
 }
 
-static void playSoundForWorm(CWorm* worm, const std::string& s) {
-	if(worm->getType() == PRF_HUMAN && worm->getClient() && worm->getClient()->getNetEngine())
-		worm->getClient()->getNetEngine()->SendPlaySound(s);	
-}
-
-static void playSoundForWorm(int wormId, const std::string& s) {
-	CWorm* w = game.wormById(wormId, false);
-	if(w)
-		playSoundForWorm(w, s);
-}
-
-
-bool CGameMode::Spawn(CWorm* worm, CVec& pos) {
+bool CGameMode::Spawn(CWorm* worm, CVec pos) {
+	worm->Spawn(pos);
 	return true;
 }
 
 void CGameMode::Kill(CWorm* victim, CWorm* killer)
 {
-	int oldLeadWorm = HighestScoredWorm();
-	int oldLeadTeam = HighestScoredTeam();
-	bool wasZeroScore = TeamScores(oldLeadTeam) == 0;
-	
 	// Kill or suicide message
 	std::string buf;
 	if( killer )
@@ -96,14 +75,6 @@ void CGameMode::Kill(CWorm* victim, CWorm* killer)
 			{
 				replacemax(networkTexts->sKilled, "<killer>", killer->getName(), buf, 1);
 				replacemax(buf, "<victim>", victim->getName(), buf, 1);
-				
-				// If we have info about the killing weapon, then show that as well
-				if (!victim->getLastWeaponHitBy().empty()) {
-				  replacemax(buf, "<weapon>", victim->getLastWeaponHitBy().c_str(), buf, 1);
-				}
-				else {
-				  replacemax(buf, "with <weapon>", "", buf, 1);
-				}			
 			}
 			killer->addKill();
 		}
@@ -130,29 +101,8 @@ void CGameMode::Kill(CWorm* victim, CWorm* killer)
 	iKillsInRow[victim->getID()] = 0;
 	iDeathsInRow[victim->getID()]++;
 
-	// Killing spree message
-	// Now with configurable thresholds.
-	// NOTE: The sound effects introduced in 0.59 are still played in a hard-coded order. 
-	// At least the "03kills" sound is unsuitable for other numbers as it says "triple kill".
+	// Killing spree message -- now with configurable thresholds
 	if(killer && killer != victim) {
-		switch(iKillsInRow[killer->getID()]) {
-			case 3:
-				playSoundForWorm(killer, "03kills");
-				break;
-			case 5:
-				playSoundForWorm(killer, "05kills");
-				break;
-			case 10:
-				playSoundForWorm(killer, "10kills");
-				break;
-			case 15:
-			case 20:
-			case 25:
-			case 30:
-				playSoundForWorm(killer, itoa(iKillsInRow[killer->getID()]) + "kills");
-				break;
-		}
-		
 		if(iKillsInRow[killer->getID()] == tLXOptions->iSpreeThreshold1) {
 			if(networkTexts->sSpree1 != "<none>")
 				cServer->SendGlobalText(replacemax(networkTexts->sSpree1, "<player>", killer->getName(), 1), TXT_NORMAL); }
@@ -172,11 +122,10 @@ void CGameMode::Kill(CWorm* victim, CWorm* killer)
 		else if(iKillsInRow[killer->getID()] == tLXOptions->iSpreeThreshold5) {
 			if(networkTexts->sSpree5 != "<none>")
 				cServer->SendGlobalText(replacemax(networkTexts->sSpree5, "<player>", killer->getName(), 1), TXT_NORMAL); }
-
+		
 	}
 
-	// Dying spree message
-	// Now with configurable thresholds
+	// Dying spree message -- now with configurable thresholds
 	if(iDeathsInRow[victim->getID()] == tLXOptions->iDyingSpreeThreshold1){
 		if(networkTexts->sDSpree1 != "<none>")
 				cServer->SendGlobalText(replacemax(networkTexts->sDSpree1, "<player>", victim->getName(), 1), TXT_NORMAL); }
@@ -196,58 +145,25 @@ void CGameMode::Kill(CWorm* victim, CWorm* killer)
 	else if(iDeathsInRow[victim->getID()] == tLXOptions->iDyingSpreeThreshold5){
 		if(networkTexts->sDSpree5 != "<none>")
 				cServer->SendGlobalText(replacemax(networkTexts->sDSpree5, "<player>", victim->getName(), 1), TXT_NORMAL); }
+	
 
 	// Victim is out of the game
-	victim->Kill(true);
-	if(victim->getLives() == WRM_OUT && networkTexts->sPlayerOut != "<none>") {
-		playSoundForWorm(victim, "terminated");
+	if(victim->Kill() && networkTexts->sPlayerOut != "<none>")
 		cServer->SendGlobalText(replacemax(networkTexts->sPlayerOut, "<player>",
 								victim->getName(), 1), TXT_NORMAL);
-	}
-	
+
 	if( GameTeams() > 1 )
 	{
-		std::vector<int> worms(4, 0);
-		for_each_iterator(CWorm*, w, game.worms())
-			if(w->get()->getLives() != WRM_OUT)
-				if(w->get()->getTeam() >= 0 && w->get()->getTeam() < MAX_TEAMS)
-					worms[w->get()->getTeam()]++;
+		int worms[4] = { 0, 0, 0, 0 };
+		for(int i = 0; i < MAX_WORMS; i++)
+			if(cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getLives() != WRM_OUT)
+				if(cServer->getWorms()[i].getTeam() >= 0 && cServer->getWorms()[i].getTeam() < 4)
+					worms[cServer->getWorms()[i].getTeam()]++;
 	
 		// Victim's team is out of the game
 		if(worms[victim->getTeam()] == 0 && networkTexts->sTeamOut != "<none>")
 			cServer->SendGlobalText(replacemax(networkTexts->sTeamOut, "<team>",
 				TeamName(victim->getTeam()), 1), TXT_NORMAL);
-	}
-	
-	int newLeadWorm = HighestScoredWorm();
-	int newLeadTeam = HighestScoredTeam();
-
-	if(oldLeadWorm != newLeadWorm) {
-		playSoundForWorm(oldLeadWorm, "leadlost");
-		playSoundForWorm(newLeadWorm, "leadgained");		
-	}
-	
-	if(isTeamGame() && (oldLeadTeam != newLeadTeam || wasZeroScore)) {
-		// for all
-		cServer->SendPlaySound(TeamName(newLeadTeam) + "teamtakeslead");
-	}
-	
-	if((int)gameSettings[FT_KillLimit] > 0) {
-		CWorm* w = (newLeadWorm >= 0) ? game.wormById(newLeadTeam, false) : NULL;
-		int rest = w ? ((int)gameSettings[FT_KillLimit] - w->getScore()) : 0;
-		if(lastFragsLeftReport < 0 || lastFragsLeftReport > rest) {
-			if(rest >= 1 && rest <= 3)
-				cServer->SendPlaySound(itoa(rest) + "fragsleft");
-			lastFragsLeftReport = rest;
-		}
-	}
-	else if(isTeamGame() && (int)gameSettings[FT_TeamScoreLimit] > 0) {
-		int rest = (int)gameSettings[FT_TeamScoreLimit] - TeamScores(newLeadTeam);
-		if(lastFragsLeftReport < 0 || lastFragsLeftReport > rest) {
-			if(rest >= 1 && rest <= 3)
-				cServer->SendPlaySound(itoa(rest) + "fragsleft");
-			lastFragsLeftReport = rest;
-		}		
 	}
 }
 
@@ -263,11 +179,13 @@ void CGameMode::Drop(CWorm* worm)
 }
 
 static int getWormHitKillLimit() {
-	if((int)gameSettings[FT_KillLimit] <= 0) return -1;
+	if(tLXOptions->tGameInfo.iKillLimit <= 0) return -1;
 	
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if(w->get()->getScore() >= (int)gameSettings[FT_KillLimit])
-			return w->get()->getID();
+	for(int i = 0; i < MAX_WORMS; ++i) {
+		CWorm* w = &cServer->getWorms()[i];
+		if(!w->isUsed()) continue;
+		if(w->getScore() >= tLXOptions->tGameInfo.iKillLimit)
+			return i;
 	}
 	
 	return -1;
@@ -275,15 +193,15 @@ static int getWormHitKillLimit() {
 
 bool CGameMode::CheckGameOver() {
 	// In game?
-	if (!cServer || game.state == Game::S_Lobby || game.gameOver)
+	if (!cServer || cServer->getState() == SVS_LOBBY || cServer->getGameOver())
 		return true;
 
 	// check for teamscorelimit
-	if(GameTeams() > 1 && (int)gameSettings[FT_TeamScoreLimit] > 0) {
+	if(GameTeams() > 1 && (int)tLXOptions->tGameInfo.features[FT_TeamScoreLimit] > 0) {
 		for(int i = 0; i < GameTeams(); ++i) {
-			if(TeamScores(i) >= (int)gameSettings[FT_TeamScoreLimit]) {
+			if(TeamScores(i) >= (int)tLXOptions->tGameInfo.features[FT_TeamScoreLimit]) {
 				// TODO: make configureable
-				cServer->SendGlobalText("Team score limit " + itoa((int)gameSettings[FT_TeamScoreLimit]) + " hit by " + TeamName(i), TXT_NORMAL);
+				cServer->SendGlobalText("Team score limit " + itoa((int)tLXOptions->tGameInfo.features[FT_TeamScoreLimit]) + " hit by " + TeamName(i), TXT_NORMAL);
 				notes << "team score limit hit by team " << i << endl;
 				return true;
 			}
@@ -291,43 +209,44 @@ bool CGameMode::CheckGameOver() {
 	}
 
 	// check for maxkills
-	if((int)gameSettings[FT_KillLimit] > 0) {
+	if(tLXOptions->tGameInfo.iKillLimit > 0) {
 		int w = getWormHitKillLimit();
 		if(w >= 0) {
 			// TODO: make configureable
-			cServer->SendGlobalText("Kill limit " + itoa((int)gameSettings[FT_KillLimit]) + " hit by worm " + game.wormName(w), TXT_NORMAL);
+			cServer->SendGlobalText("Kill limit " + itoa(tLXOptions->tGameInfo.iKillLimit) + " hit by worm " + cServer->getWorms()[w].getName(), TXT_NORMAL);
 			notes << "worm " << w << " hit the kill limit" << endl;
 			return true;
 		}
 	}
 	
 	// Check if the timelimit has been reached
-	if(TimeLimit() > 0) {		
-		if (game.serverTime() > TimeLimit()) {
-			cServer->SendPlaySound("timeoutcalled");
+	if(TimeLimit() > 0) {
+		if (cServer->getServerTime() > TimeLimit()) {
 			if(networkTexts->sTimeLimit != "<none>")
 				cServer->SendGlobalText(networkTexts->sTimeLimit, TXT_NORMAL);
-			notes << "time limit (" << TimeLimit() << ") reached with current time " << game.serverTime().seconds();
+			notes << "time limit (" << TimeLimit() << ") reached with current time " << cServer->getServerTime().seconds();
 			notes << " -> game over" << endl;
 			return true;
 		}
 	}
 	
 	bool allowEmptyGames =
-		gameSettings[FT_AllowEmptyGames] &&
-		tLXOptions->bAllowConnectDuringGame &&
-		!game.isLocalGame() &&
-		(int)gameSettings[FT_Lives] < 0;
+		tLXOptions->tGameInfo.features[FT_AllowEmptyGames] &&
+		tLXOptions->tGameInfo.bAllowConnectDuringGame &&
+		tLX->iGameType != GME_LOCAL &&
+		tLXOptions->tGameInfo.iLives < 0;
 	
 	if(!allowEmptyGames) {
 		// TODO: move that worms-num calculation to GameServer
 		int worms = 0;
-		for_each_iterator(CWorm*, w, game.worms())
-			if (w->get()->getLives() != WRM_OUT)
-				worms++;
+		for(int i = 0; i < MAX_WORMS; i++)
+			if(cServer->getWorms()[i].isUsed()) {
+				if (cServer->getWorms()[i].getLives() != WRM_OUT)
+					worms++;
+			}
 
 		int minWormsNeeded = 2;
-		if(game.isLocalGame() && game.worms()->size() == 1) minWormsNeeded = 1;
+		if(tLX->iGameType == GME_LOCAL && cServer->getNumPlayers() == 1) minWormsNeeded = 1;
 		if(worms < minWormsNeeded) {
 			// TODO: make configureable
 			// HINT: thins is kinda spammy, because in this kind of games everybody knows why it ended
@@ -359,32 +278,6 @@ bool CGameMode::CheckGameOver() {
 	return false;
 }
 
-void CGameMode::Simulate() {
-	// play time remaining sounds
-	if(TimeLimit() > 0) {		
-		if(game.serverTime() <= TimeLimit()) {
-			int restSecs = int( (TimeDiff(TimeLimit()) - game.serverTime()).seconds() );
-			// can happen if we set the timelimit while in game
-			if(lastTimeLimitReport < 0) lastTimeLimitReport = restSecs + 1;
-			
-			for(int i = 1; i <= 5; ++i)
-				if(restSecs <= i && lastTimeLimitReport > i) {
-					cServer->SendPlaySound(itoa(i));
-					lastTimeLimitReport = restSecs;
-				}
-			
-			if(restSecs <= 60 && lastTimeLimitReport > 60) {
-				cServer->SendPlaySound("1minuteremains");
-				lastTimeLimitReport = restSecs;
-			}
-			else if(restSecs <= 5*60  && lastTimeLimitReport > 5*60) {
-				cServer->SendPlaySound("5minutesremain");
-				lastTimeLimitReport = restSecs;		
-			}
-		}
-	}	
-}
-
 int CGameMode::Winner() {
 	// In case of last man standing, that one must win
 	CWorm *alive = cServer->getFirstAliveWorm();
@@ -396,34 +289,24 @@ int CGameMode::Winner() {
 }
 
 int CGameMode::HighestScoredWorm() {
-	CWorm* highest = NULL;
-	for_each_iterator(CWorm*, w, game.worms()) {
-		if(!highest) highest = w->get();
-		else
-			highest = (CompareWormsScore(w->get(), highest) > 0) ? w->get() : highest; // Take the worm with the best score
-	}
+	int wormid = -1;
+	for(int i = 0; i < MAX_WORMS; i++)
+		if(cServer->getWorms()[i].isUsed()) {
+			if(wormid < 0) wormid = i;
+			else
+				wormid = CompareWormsScore(&cServer->getWorms()[i], &cServer->getWorms()[wormid]) > 0 ? i : wormid; // Take the worm with the best score
+		}
 	
-	return highest ? highest->getID() : -1;
+	return wormid;
 }
 
 int CGameMode::CompareWormsScore(CWorm* w1, CWorm* w2) {
 
 	// Lives first
-	if((int)cClient->getGameLobby()[FT_Lives] >= 0) {
-		// Only exception is max kills - if there's a worm with max kills hit, that one is clearly the best
-		int killLimit = (int)cClient->getGameLobby()[FT_KillLimit];
-		if (killLimit > 0)  {
-			if (w1->getScore() >= killLimit) return 1;
-			if (w2->getScore() >= killLimit) return -1;
-		}
-
+	if(cClient->getGameLobby()->iLives >= 0) {
 		if (w1->getLives() > w2->getLives()) return 1;
 		if (w1->getLives() < w2->getLives()) return -1;		
 	}
-
-	// If one worm is out and another has infinite lives, the infinite lives win
-	if (w1->getLives() != WRM_OUT && w2->getLives() == WRM_OUT) return 1;
-	if (w2->getLives() != WRM_OUT && w1->getLives() == WRM_OUT) return -1;
 	
 	// Kills
 	if (w1->getScore() > w2->getScore()) return 1;
@@ -436,10 +319,11 @@ int CGameMode::CompareWormsScore(CWorm* w1, CWorm* w2) {
 int CGameMode::WinnerTeam() {
 	if(GameTeams() > 1)  {
 		// Only one team left, that one must be the winner
-		if (cServer->getAliveTeamCount() < 2 && (int)gameSettings[FT_Lives] >= 0)  {
-			for_each_iterator(CWorm*, w, game.worms())
-				if (w->get()->getLives() != WRM_OUT && w->get()->getTeam() >= 0 && w->get()->getTeam() < MAX_TEAMS)
-					return w->get()->getTeam();
+		if (cServer->getAliveTeamCount() < 2 && tLXOptions->tGameInfo.iLives >= 0)  {
+			CWorm *w = cServer->getWorms();
+			for (int i = 0; i < MAX_WORMS; i++, w++)
+				if (w->isUsed() && w->getLives() != WRM_OUT && w->getTeam() >= 0 && w->getTeam() < 4)
+					return w->getTeam();
 		}
 
 		return HighestScoredTeam();
@@ -459,8 +343,8 @@ int CGameMode::HighestScoredTeam() {
 
 int CGameMode::WormsAliveInTeam(int t) {
 	int c = 0;
-	for_each_iterator(CWorm*, w, game.worms())
-		if(w->get()->getLives() != WRM_OUT && w->get()->getTeam() == t)
+	for(int i = 0; i < MAX_WORMS; i++)
+		if(cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getLives() != WRM_OUT && cServer->getWorms()[i].getTeam() == t)
 			c++;
 	return c;
 }
@@ -471,24 +355,24 @@ int CGameMode::TeamScores(int t) {
 
 int CGameMode::TeamKills(int t) {
 	int c = 0;
-	for_each_iterator(CWorm*, w, game.worms())
-		if(w->get()->getTeam() == t)
-			c += w->get()->getScore();
+	for(int i = 0; i < MAX_WORMS; i++)
+		if(cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getTeam() == t)
+			c += cServer->getWorms()[i].getScore();
 	return c;
 }
 
 float CGameMode::TeamDamage(int t) {
 	float c = 0;
-	for_each_iterator(CWorm*, w, game.worms())
-		if(w->get()->getTeam() == t)
-			c += w->get()->getDamage();
+	for(int i = 0; i < MAX_WORMS; i++)
+		if(cServer->getWorms()[i].isUsed() && cServer->getWorms()[i].getTeam() == t)
+			c += cServer->getWorms()[i].getDamage();
 	return c;
 }
 
 
 int CGameMode::CompareTeamsScore(int t1, int t2) {
 	// Lives first
-	if((int)gameSettings[FT_Lives] >= 0) {
+	if(tLXOptions->tGameInfo.iLives >= 0) {
 		int d = WormsAliveInTeam(t1) - WormsAliveInTeam(t2);
 		if(d != 0) return d;
 	}
@@ -520,25 +404,23 @@ extern CGameMode* gameMode_Race;
 extern CGameMode* gameMode_TeamRace;
 
 
-// must match GameModeIndex
-static CGameMode* gameModes[] = {
-	gameMode_DeathMatch,
-	gameMode_TeamDeathMatch,
-	gameMode_Tag,
-	gameMode_Demolitions,
-	gameMode_HideAndSeek,
-	gameMode_CaptureTheFlag,
-	gameMode_Race,
-	gameMode_TeamRace
-};
+static std::vector<CGameMode*> gameModes;
 
-static size_t gameModesSize = sizeof(gameModes) / sizeof(CGameMode*);
-
-void InitGameModes() {}
+void InitGameModes() {
+	gameModes.resize(8);
+	gameModes[0] = gameMode_DeathMatch;
+	gameModes[1] = gameMode_TeamDeathMatch;
+	gameModes[2] = gameMode_Tag;
+	gameModes[3] = gameMode_Demolitions;
+	gameModes[4] = gameMode_HideAndSeek;
+	gameModes[5] = gameMode_CaptureTheFlag;
+	gameModes[6] = gameMode_Race;
+	gameModes[7] = gameMode_TeamRace;
+}
 
 CGameMode* GameMode(GameModeIndex i) {
-	if(i < 0 || (uint)i >= gameModesSize) {
-		errors << "GameMode(): gamemode index " << i << " requested, we don't have such one" << endl;
+	if(i < 0 || (uint)i >= gameModes.size()) {
+		errors << "gamemode " << i << " requested, we don't have such one" << endl;
 		return NULL;
 	}
 	
@@ -546,27 +428,28 @@ CGameMode* GameMode(GameModeIndex i) {
 }
 
 CGameMode* GameMode(const std::string& name) {
-	for(size_t i = 0; i < gameModesSize; ++i) {
-		if(name == gameModes[i]->Name())
-			return gameModes[i];
+	for(std::vector<CGameMode*>::iterator i = gameModes.begin(); i != gameModes.end(); ++i) {
+		if(name == (*i)->Name())
+			return *i;
 	}
-	warnings << "GameMode(): gamemode name " << name << " requested, we don't have such one" << endl;
+	warnings << "gamemode " << name << " requested, we don't have such one" << endl;
 	return NULL;
 }
 
-GameModeIndex GetGameModeIndex(CGameMode* gameMode, GameModeIndex fallback) {
-	if(gameMode == NULL) return fallback;
-	for(size_t i = 0; i < gameModesSize; ++i) {
-		if(gameMode == gameModes[i])
-			return (GameModeIndex)i;
+GameModeIndex GetGameModeIndex(CGameMode* gameMode) {
+	if(gameMode == NULL) return GM_DEATHMATCH;
+	int index = 0;
+	for(std::vector<CGameMode*>::iterator i = gameModes.begin(); i != gameModes.end(); ++i, ++index) {
+		if(gameMode == *i)
+			return (GameModeIndex)index;
 	}
-	return fallback;
+	return GM_DEATHMATCH;
 }
 
 
 
-Iterator<CGameMode*>::Ref GameModeIterator() {
-	return GetConstIterator(ArrayRef(gameModes, gameModesSize));
+Iterator<CGameMode* const&>::Ref GameModeIterator() {
+	return GetConstIterator(gameModes);
 }
 
 std::string guessGeneralGameTypeName(int iGeneralGameType)

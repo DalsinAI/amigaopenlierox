@@ -15,7 +15,7 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
@@ -88,11 +88,10 @@ void Menu_Net_ChatFrame(int mouse)
 
 	// Process & Draw the gui
 	ev = cChat.Process();
-	cChat.Draw( VideoPostProcessor::videoSurface().get() );
+	cChat.Draw( VideoPostProcessor::videoSurface() );
 
 	if (Menu_Net_ProcessTabBarButtons(ev))
 		return;
-
 
 	// Process any events
 	if(ev) {
@@ -145,7 +144,7 @@ void Menu_Net_ChatFrame(int mouse)
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 }; // namespace DeprecatedGUI

@@ -12,30 +12,21 @@
 
 #include <string>
 #include <cassert>
-#include "CodeAttributes.h"
-#include "util/StringConv.h"
-#include "util/IPrintOutFct.h"
-#include "ThreadId.h" // ThreadId
+#include "StringUtils.h"
 
 // { these function should be safe to be called from everywhere, also from signalhandlers
 bool AmIBeingDebugged();
 void RaiseDebugger(); // if run in a debugger, it should raise it; if not, it should do nothing
 void OlxWriteCoreDump(const char* file_postfix = NULL);
+void DumpCallstackPrintf(void* callpnt = NULL);
 // }
 
 // Returns current sourcefile pos as string
 #define FILELINE1 (std::string(__FILE__) + ":" + itoa(__LINE__))
 #define FILELINE FILELINE1
 
-// If threadId is 0, assumes the current thread.
-// Returns the amount of items written in the buffer-array.
-int GetCallstack(ThreadId threadId, void **buffer, int size);
 
-void DumpCallstack(const PrintOutFct& printer, void*const* buffer, int size);
 void DumpCallstack(const PrintOutFct& printer);
-void DumpCallstackPrintf(void* callpnt = NULL);
-
-void DumpAllThreadsCallstack(const PrintOutFct& printer);
 
 struct SDL_mutex;
 
@@ -75,8 +66,8 @@ struct Logger {
 	void operator()(const std::string& str) { (*this) << str; flush(); }
 };
 
-INLINE Logger& endl(Logger& __os) { return (__os << "\n").flush(); }
-INLINE Logger& flush(Logger& __os) { return __os.flush(); }
+inline Logger& endl(Logger& __os) { return (__os << "\n").flush(); }
+inline Logger& flush(Logger& __os) { return __os.flush(); }
 
 struct PrintOnLogger : PrintOutFct {
 	Logger& l;

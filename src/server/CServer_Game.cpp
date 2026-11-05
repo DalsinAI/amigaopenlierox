@@ -20,7 +20,7 @@
 #include "CServerNetEngine.h"
 #include "StringUtils.h"
 #include "Protocol.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "MathLib.h"
 #include "DedicatedControl.h"
 #include "Physics.h"
@@ -28,58 +28,112 @@
 #include "CGameMode.h"
 #include "FlagInfo.h"
 #include "WeaponDesc.h"
-#include "game/Game.h"
-#include "CGameScript.h"
 
 
+CVec GameServer::FindSpotCloseToPos(const std::list<CVec>& goodPos, const std::list<CVec>& badPos, bool keepDistanceToBad) {
+	// TODO: optimise this!
+	
+	float team_dist = -9999999.0f;
+	CVec pos = FindSpot();
+	CVec pos1;
+	
+	for( int k=0; k<100; k++ )
+	{
+		float team_dist1 = 0;
+		pos1 = FindSpot();
+		for(std::list<CVec>::const_iterator i = goodPos.begin(); i != goodPos.end(); ++i)
+			team_dist1 -= ( pos1 - *i ).GetLength() / (goodPos.size() * 10.0f);
+		for(std::list<CVec>::const_iterator i = badPos.begin(); i != badPos.end(); ++i) {
+			if(keepDistanceToBad)
+				team_dist1 += 2.0f * ( ( pos1 - *i ).GetLength() ) / badPos.size();
+			else
+				// sqrt will make sure there's no large dist between team1 and 2 and short dist between 2 and 3
+				// The sum will get considerably smaller if any two teams are on short dist
+				team_dist1 += sqrt( ( pos1 - *i ).GetLength() ) / badPos.size();			
+		}
+		
+		if( team_dist1 > team_dist )
+		{
+			team_dist = team_dist1;
+			pos = pos1;
+		}
+	}
+	
+	return pos;	
+}
+
+CVec GameServer::FindSpotCloseToTeam(int t, CWorm* exceptionWorm, bool keepDistanceToEnemy) {
+	std::list<CVec> goodPos;
+	std::list<CVec> badPos;
+	bool *coveredTeam = new bool[getGameMode()->GameTeams()];
+	for(int i = 0; i < getGameMode()->GameTeams(); ++i)
+		coveredTeam[i] = false;
+	
+	CWorm * w = cWorms;
+	for(int i = 0; i < MAX_WORMS; i++, w++) {
+		if( !w->isUsed() || w->getLives() == WRM_OUT || !w->getWeaponsReady() || !w->getAlive())
+			continue;
+		if(exceptionWorm && exceptionWorm->getID() == w->getID())
+			continue;
+		if(w->getTeam() < 0 || w->getTeam() >= getGameMode()->GameTeams())
+			continue;
+		if(coveredTeam[w->getTeam()])
+			continue;
+		
+		coveredTeam[w->getTeam()] = true;
+		if(w->getTeam() == t)
+			goodPos.push_back(w->getPos());
+		else
+			badPos.push_back(w->getPos());
+	}
+	
+	CVec ret = FindSpotCloseToPos(goodPos, badPos, keepDistanceToEnemy);
+
+	delete[] coveredTeam;
+	
+	return ret;
+}
 
 ///////////////////
 // Spawn a worm
-void GameServer::SpawnWorm(CWorm *Worm, const std::string& reason, CVec * _pos, CServerConnection * client)
+void GameServer::SpawnWorm(CWorm *Worm, CVec * _pos, CServerConnection * client)
 {
-	if (game.gameOver || Worm->isSpectating())
+	if (bGameOver || Worm->isSpectating())
 		return;
 
 	CVec pos;
-
-	//notes << "spawn worm " << Worm->getID() << ":" << Worm->getName() << ": " << reason << endl;
 
 	if( _pos )
 		pos = *_pos;
 	else
 	{
-		if( game.gameMap()->getPredefinedSpawnLocation(Worm, &pos) ) {
-			// ok
-		}
-		else if( gameSettings[FT_GameMode].as<GameModeInfo>()->actualIndex() == GM_CTF ) {
+		if( getGameMode() == GameMode(GM_CTF) ) {
 			Flag* flag = m_flagInfo->getFlag(Worm->getTeam());
 			if(!flag) // no flag yet, choose like in respawngroupteams
-				pos = game.gameMap()->FindSpotCloseToTeam(Worm->getTeam(), Worm, true);
+				pos = FindSpotCloseToTeam(Worm->getTeam(), Worm, true);
 			else
-				pos = game.gameMap()->FindSpotCloseToPos(flag->spawnPoint.pos);
+				pos = FindSpotCloseToPos(flag->spawnPoint.pos);
 		}
 		// Spawn worm closer to it's own team and away from other teams
-		else if( gameSettings[FT_RespawnGroupTeams] && ( game.gameMode()->GameTeams() > 1 ) )
+		else if( tLXOptions->tGameInfo.bRespawnGroupTeams && ( getGameMode()->GameTeams() > 1 ) )
 		{
-			pos = game.gameMap()->FindSpotCloseToTeam(Worm->getTeam(), Worm);
+			pos = FindSpotCloseToTeam(Worm->getTeam(), Worm);
 		}
 		else
-			pos = game.gameMap()->FindSpot();			
+			pos = FindSpot();			
 	}
 
 	if(pos.x == -1 && pos.y == -1)
-		pos = game.gameMap()->FindSpot();
+		pos = FindSpot();
 
 	// Allow the game mode to override spawns
-	if(!game.gameMode()->Spawn(Worm, pos))
+	if(!getGameMode()->Spawn(Worm, pos))
 		return;
 
-	Worm->pos().ext.S2CupdateNeeded = true;
-	Worm->health.ext.S2CupdateNeeded = true;
-	Worm->Spawn(pos);
+	Worm->setAlive(true);
 	bool sendWormUpdate = true;
 	if(Worm->getLives() == WRM_OUT) {
-		if((int)gameSettings[FT_Lives] < 0)
+		if(tLXOptions->tGameInfo.iLives < 0)
 			Worm->setLives(WRM_UNLIM);
 		else
 			Worm->setLives(0);
@@ -98,17 +152,101 @@ void GameServer::SpawnWorm(CWorm *Worm, const std::string& reason, CVec * _pos, 
 			if(sendWormUpdate) cClients[i].getNetEngine()->SendWormScore(Worm);
 		}
 
-		if( gameSettings[FT_EmptyWeaponsOnRespawn] )
+		if( tLXOptions->tGameInfo.bEmptyWeaponsOnRespawn )
 			cServer->SendEmptyWeaponsOnRespawn( Worm );
 	}
 }
 
+///////////////////
+// Find a spot with no rock
+CVec GameServer::FindSpot()
+{
+	int	 x, y;
+	int	 px, py;
+	bool	first = true;
+	int	 cols = cMap->getGridCols() - 1;	   // Note: -1 because the grid is slightly larger than the
+	int	 rows = cMap->getGridRows() - 1;	   // level size
+	int	 gw = cMap->getGridWidth();
+	int	 gh = cMap->getGridHeight();
 
+	uchar pf, pf1, pf2, pf3, pf4;
+	cMap->lockFlags();
+	
+	// Find a random cell to start in - retry if failed
+	for( int tries = 0; tries < 40; tries++ ) {
+		px = (int)(fabs(GetRandomNum()) * (float)cols);
+		py = (int)(fabs(GetRandomNum()) * (float)rows);
+		x = px; y = py;
+
+		if( x + y < 6 )	// Do not spawn in top left corner
+			continue;
+
+		pf = *(cMap->getAbsoluteGridFlags() + y * cMap->getGridCols() + x);
+		pf1 = (x>0) ? *(cMap->getAbsoluteGridFlags() + y * cMap->getGridCols() + (x-1)) : PX_ROCK;
+		pf2 = (x<cols-1) ? *(cMap->getAbsoluteGridFlags() + y * cMap->getGridCols() + (x+1)) : PX_ROCK;
+		pf3 = (y>0) ? *(cMap->getAbsoluteGridFlags() + (y-1) * cMap->getGridCols() + x) : PX_ROCK;
+		pf4 = (y<rows-1) ? *(cMap->getAbsoluteGridFlags() + (y+1) * cMap->getGridCols() + x) : PX_ROCK;
+		if( !(pf & PX_ROCK) && !(pf1 & PX_ROCK) && !(pf2 & PX_ROCK) && !(pf3 & PX_ROCK) && !(pf4 & PX_ROCK) ) {
+			cMap->unlockFlags();
+			return CVec((float)x * gw + gw / 2, (float)y * gh + gh / 2);
+		}
+	}
+
+	int smallx = -1, smally = -1;
+	
+	// Start from the cell and go through until we get to an empty cell
+	while(true) {
+		while(true) {
+			// If we're on the original starting cell, and it's not the first move we have checked all cells
+			// and should leave
+			if(!first) {
+				if(px == x && py == y) {
+					cMap->unlockFlags();
+					
+					if(smallx >= 0 && smally >= 0) { x = smallx; y = smally; }
+					else errors << "FindSpot(): didn't found anything!" << endl;
+					return CVec((float)x * gw + gw / 2, (float)y * gh + gh / 2);
+				}
+			}
+			first = false;
+
+			pf = *(cMap->getAbsoluteGridFlags() + y * cMap->getGridCols() + x);
+			pf1 = (x>0) ? *(cMap->getAbsoluteGridFlags() + y * cMap->getGridCols() + (x-1)) : PX_ROCK;
+			pf2 = (x<cols-1) ? *(cMap->getAbsoluteGridFlags() + y * cMap->getGridCols() + (x+1)) : PX_ROCK;
+			pf3 = (y>0) ? *(cMap->getAbsoluteGridFlags() + (y-1) * cMap->getGridCols() + x) : PX_ROCK;
+			pf4 = (y<rows-1) ? *(cMap->getAbsoluteGridFlags() + (y+1) * cMap->getGridCols() + x) : PX_ROCK;
+			if( !(pf & PX_ROCK) && !(pf1 & PX_ROCK) && !(pf2 & PX_ROCK) && !(pf3 & PX_ROCK) && !(pf4 & PX_ROCK) )  {
+				cMap->unlockFlags();
+				return CVec((float)x * gw + gw / 2, (float)y * gh + gh / 2);
+			}
+
+			if( !(pf & PX_ROCK) ) {
+				// at least at this grid, we have some space, so save it as fallback
+				if(smallx < 0) { smallx = x; smally = y; }
+			}
+			
+			if(++y >= rows) {
+				y = 0;
+				break;
+			}
+		}
+
+		if(++x >= cols) {
+			x = 0;
+			y = 0;
+		}
+	}
+	cMap->unlockFlags();
+
+	// Can't get here
+	errors << "FindSpot(): strange error!" << endl;
+	return CVec((float)x, (float)y);
+}
 
 void GameServer::killWorm( int victim, int killer, int suicidesCount )
 {
 	// If the game is already over, ignore this
-	if (game.gameOver)  {
+	if (bGameOver)  {
 		warnings << "GameServer::killWorm: Game is over, ignoring." << endl;
 		return;
 	}
@@ -123,11 +261,13 @@ void GameServer::killWorm( int victim, int killer, int suicidesCount )
 	if(victim == killer && suicidesCount == 0 )
 		suicidesCount = 1;
 
-	CWorm *vict = game.wormById(victim);
-	CWorm *kill = game.wormById(killer, false);
+	CWorm *vict = &cWorms[victim];
+	CWorm *kill = NULL;
+	if(killer >= 0 && killer < MAX_WORMS && cWorms[killer].isUsed())
+		kill = &cWorms[killer];
 	
 	// Cheat prevention, game behaves weird if this happens
-	if (vict->getLives() < 0 && (int)gameSettings[FT_Lives] >= 0)  {
+	if (vict->getLives() < 0 && tLXOptions->tGameInfo.iLives >= 0)  {
 		vict->setLives(WRM_OUT);  // Safety
 		warnings("GameServer::killWorm: victim is already out of the game.\n");
 		return;
@@ -135,11 +275,11 @@ void GameServer::killWorm( int victim, int killer, int suicidesCount )
 
 	// Adjust the score if there were multiple suicides
 	if (suicidesCount > 1)  {
-		if ((int)gameSettings[FT_Lives] != WRM_UNLIM) // Substracting from infinite makes no sense
-			vict->setLives(MAX<int>(0, vict->getLives() - suicidesCount + 1)); // HINT: +1 because one life is substracted in vict->Kill()
+		if (tLXOptions->tGameInfo.iLives != WRM_UNLIM) // Substracting from infinite makes no sense
+			vict->setLives(MAX<int>(WRM_OUT, vict->getLives() - suicidesCount + 1)); // HINT: +1 because one life is substracted in vict->Kill()
 	}
 
-	game.gameMode()->Kill(vict, kill);
+	getGameMode()->Kill(vict, kill);
 	for(int i = 0; i < MAX_CLIENTS; i++) {
 		if(!cClients[i].isConnected()) continue;		
 		cClients[i].getNetEngine()->SendWormScore(vict);
@@ -166,30 +306,16 @@ void GameServer::killWorm( int victim, int killer, int suicidesCount )
 // Simulate the game stuff
 void GameServer::SimulateGame()
 {
-	if(recheckGame) {
-		if(game.state == Game::S_Preparing)
-			// Check if all the clients are ready
-			CheckReadyClient();
-
-		if(!game.gameOver && game.state == Game::S_Playing)
-			if(game.gameMode()->CheckGameOver())
-				GameOver();
-
-		for(int t = 0; t < game.gameMode()->GameTeams(); ++t) {
-			game.writeTeamScore(t) = game.gameMode()->TeamScores(t);
-		}
-	}
-
-	if(game.state != Game::S_Playing)
+	if(iState != SVS_PLAYING)
 		return;
 
 	// If this is a remote game, and game over,
 	// and we've seen the scoreboard for a certain amount of time, go back to the lobby
-	if(game.gameOver
-	&& (game.gameOverTime() > LX_ENDWAIT || (bDedicated && game.localWorms()->size() <= 1)) // dedicated server should go to lobby immediatly if alone
-	&& game.state != Game::S_Lobby
-	&& (game.isServer() && !game.isLocalGame())) {
-		game.gotoLobby("timeout for gameover scoreboard");
+	if(bGameOver
+	&& (tLX->currentTime - fGameOverTime > LX_ENDWAIT || (bDedicated && iNumPlayers <= 1)) // dedicated server should go to lobby immediatly if alone
+	&& iState != SVS_LOBBY
+	&& tLX->iGameType == GME_HOST) {
+		gotoLobby(true, "timeout for gameover scoreboard");
 		return;
 	}
 
@@ -198,40 +324,42 @@ void GameServer::SimulateGame()
 		return;
 
 	// Process worms
-	for_each_iterator(CWorm*, w_, game.worms()) {
-		CWorm* w = w_->get();
+	CWorm *w = cWorms;
+	for(short i=0;i<MAX_WORMS;i++,w++) {
+		if(!w->isUsed())
+			continue;
 
-		if(!w->getAlive() && w->getLives() != WRM_OUT && w->bWeaponsReady) {
+		// HINT: this can happen when a new client connects during game and has not selected weapons yet
+		// We just skip him
+		if (w->getClient())
+			// TODO: why do we check getGameReady() and not getWeaponsReady() here? what's the difference?
+			if (!w->getClient()->getGameReady())
+				continue;
+
+		if(!w->getAlive() && w->getLives() != WRM_OUT && w->getWeaponsReady()) {
 
 			// Check to see if they have been dead for longer than fRespawnTime (originally 2.5 seconds)
-			if(!w->haveSpawnedOnce() || (tLX->currentTime > w->getTimeofDeath() + TimeDiff((float)gameSettings[FT_RespawnTime])) )
+			if(tLX->currentTime > w->getTimeofDeath() + TimeDiff(tLXOptions->tGameInfo.fRespawnTime) )
 			{
-				// with MaxRespawnTime set, we automatically spawn if that time has been hit
-				if((float)gameSettings[FT_MaxRespawnTime] >= 0.f &&
-				   (tLX->currentTime > w->getTimeofDeath() + TimeDiff((float)gameSettings[FT_MaxRespawnTime]))) {
-					SpawnWorm(w, "max respawn-time reached");
-				}
-				else { // MaxRespawnTime disabled or not yet reached
-					// only spawn if the client cannot. otherwise wait for clientside respawn request
-					if(w->bRespawnRequested)
-						SpawnWorm(w, "respawn requested");
-					else if(!CanWormHandleClientSideRespawn(w))
-						SpawnWorm(w, "worm cannot handle respawn-request");
-					else
-						w->bCanRespawnNow = true;
-				}
+				SpawnWorm(w);
 			}
 		}
+
+		// Simulate the worm's weapons
+		// TODO: why are we doing this? we are not simulating the worm but why the weapon?
+		// please try to remove this here and then remove also the dt parameter in PhysicsEngine
+		if( w->getAlive() )
+			PhysicsEngine::Get()->simulateWormWeapon(w);
 	}
 
 	// Check if any bonuses have been in for too long and need to be destroyed
-	if (gameSettings[FT_Bonuses])  {
+	if (tLXOptions->tGameInfo.bBonusesOn)  {
 		for(short i=0; i<MAX_BONUSES; i++) {
 			if(!cBonuses[i].getUsed())
 				continue;
 
 			// If it's been here too long, destroy it
-			if( tLX->currentTime - cBonuses[i].getSpawnTime() > gameSettings[FT_BonusLife] ) {
+			if( tLX->currentTime - cBonuses[i].getSpawnTime() > tLXOptions->tGameInfo.fBonusLife ) {
 				cBonuses[i].setUsed(false);
 
 				// TODO: move this out here
@@ -244,19 +372,24 @@ void GameServer::SimulateGame()
 	}
 
 	// Check if we need to spawn a bonus
-	if(tLX->currentTime - fLastBonusTime > gameSettings[FT_BonusFreq] && gameSettings[FT_Bonuses] && !game.gameOver) {
+	if(tLX->currentTime - fLastBonusTime > tLXOptions->tGameInfo.fBonusFreq && tLXOptions->tGameInfo.bBonusesOn && !bGameOver) {
 		SpawnBonus();
 		fLastBonusTime = tLX->currentTime;
 	}
+	UpdateBonuses();
 
 	// check for flag
-	for_each_iterator(CWorm*, w, game.worms())
-		flagInfo()->checkWorm(w->get());
+	w = cWorms;
+	for(short i=0;i<MAX_WORMS;i++,w++) {
+		if(!w->isUsed())
+			continue;
+		flagInfo()->checkWorm(w);
+	}
 	
 	// Simulate anything needed by the game mode
-	game.gameMode()->Simulate();
+	getGameMode()->Simulate();
 
-	if( game.gameMode()->TimeLimit() > 0 && game.serverTime() > game.gameMode()->TimeLimit() )
+	if( getGameMode()->TimeLimit() > 0 && fServertime > getGameMode()->TimeLimit() )
 		RecheckGame();
 }
 
@@ -266,13 +399,13 @@ void GameServer::SimulateGame()
 void GameServer::SpawnBonus()
 {
 	// Find an empty spot for the bonus
-	CVec pos = game.gameMap()->FindSpot();
+	CVec pos = FindSpot();
 
 	// Carve a hole for it
-	//game.gameMap()->CarveHole(SPAWN_HOLESIZE,pos);
+	//cMap->CarveHole(SPAWN_HOLESIZE,pos);
 
 	// NOTE: Increase to 2 when we want to use the fullcharge bonus
-	int type = (GetRandomInt(999) >= (float)gameSettings[FT_BonusHealthToWeaponChance] * 1000.0f) ? BNS_HEALTH : BNS_WEAPON;
+	int type = (GetRandomInt(999) >= tLXOptions->tGameInfo.fBonusHealthToWeaponChance * 1000.0f) ? BNS_HEALTH : BNS_WEAPON;
 
 	// Find a free bonus spot
 	CBonus *b = cBonuses;
@@ -290,14 +423,14 @@ void GameServer::SpawnBonus()
 		return;
 
 	std::vector<int> goodWpns;
-	for(int i = 0; i < game.gameScript()->GetNumWeapons(); ++i)
-		if(game.weaponRestrictions()->getWeaponState( (game.gameScript()->GetWeapons()+i)->Name ) != wpr_banned)
+	for(int i = 0; i < cGameScript.get()->GetNumWeapons(); ++i)
+		if(cWeaponRestrictions.getWeaponState( (cGameScript.get()->GetWeapons()+i)->Name ) != wpr_banned)
 			goodWpns.push_back(i);
 	
 	int wpn = (goodWpns.size() > 0) ? randomChoiceFrom(goodWpns) : -1;
 	if(type == BNS_WEAPON && wpn < 0) return; // no weapon found
 	
-	b->Spawn(pos, type, wpn, game.gameScript());
+	b->Spawn(pos, type, wpn, cGameScript.get());
 
 
 	// Send the spawn the everyone
@@ -315,17 +448,61 @@ void GameServer::SpawnBonus()
 	SendGlobalPacket(&bs);
 }
 
+void GameServer::UpdateBonuses()
+{
+	// Respawn the bonus if it exploded at the same spot where it was.
+	// Needed only for old clients, which do not support FT_IndestructibleBonuses
+	if (!tLXOptions->tGameInfo.bBonusesOn || !tLXOptions->tGameInfo.features[FT_IndestructibleBonuses] || fOldClientsBonusUpdateTime > tLX->currentTime )
+		return;
+
+	fOldClientsBonusUpdateTime = tLX->currentTime + 3.0f;
+
+	// Grab the bonus list from the client, because server-side bonuses do not update their position
+	CBonus *b = cClient->getBonusList();
+	CBonus *spawnb = cBonuses;
+	for (short i=0; i < MAX_BONUSES; i++, b++, spawnb++) {
+		if (!b->getUsed())
+			continue;
+
+		CServerConnection *cl = cClients;
+		for (short c = 0; c < MAX_CLIENTS; c++, cl++) {
+			// Not in 0.59 branch
+			if (cl->getClientVersion() >= OLXRcVersion(0, 58, 4) && cl->getClientVersion() < OLXBetaVersion(0, 59, 0))
+				continue;
+
+			CBytestream bs;
+
+			bs.writeByte(S2C_SPAWNBONUS);
+			bs.writeInt(b->getType(), 1);
+			if(b->getType() == BNS_WEAPON)
+				bs.writeInt(b->getWeapon(), 1);
+			bs.writeInt(i, 1);
+
+			bs.writeInt((int)b->pos().x, 2);
+			// Spawning the bonus generates small explosion, make sure it won't dig the dirt all the way down
+			int y = b->pos().y;
+			if (spawnb->pos().y <= y - 6)
+				y -= 6;
+			bs.writeInt(y, 2);
+
+			cl->getNetEngine()->SendPacket(&bs);
+		}
+	}
+}
+
 
 void GameServer::WormShootEnd(CWorm* w, const weapon_t* wpn) {
 	// Don't shoot when the game is over
-	if (game.gameOver)
+	if (cClient->isGameOver())
 		return;
 	
-	if(!game.gameMode()->Shoot(w))
+	if(!getGameMode()->Shoot(w))
 		return;
 	
-	if(!wpn)
+	if(!wpn) {
+		warnings << "WormShootEnd: trying to shoot with an unitialized weapon!" << endl;
 		return;
+	}
 	
 	if(!wpn->FinalProj.isSet())
 		return;
@@ -347,11 +524,12 @@ void GameServer::WormShootEnd(CWorm* w, const weapon_t* wpn) {
 	CVec vel = w->getVelocity();
 	speed = NormalizeVector( &vel );
 	
-	TimeDiff time = game.serverTime();
+	TimeDiff time = getServerTime();
 	if( w->hasOwnServerTime() )
 		time = w->serverTime();
 	
 	// Add the shot to ALL the connected clients shootlist
+	w->increaseShotCount();
 	CServerConnection *cl = getClients();
 	for(short i=0; i<MAX_CLIENTS; i++,cl++) {
 		if(cl->getStatus() == NET_DISCONNECTED)
@@ -365,17 +543,14 @@ void GameServer::WormShootEnd(CWorm* w, const weapon_t* wpn) {
 // Worm is shooting
 void GameServer::WormShoot(CWorm *w)
 {
-	if(game.gameScript()->gusEngineUsed()) return; // right now, this only handles LX weapons
-
 	// Don't shoot when the game is over
-	if (game.gameOver)
+	if (cClient->isGameOver())
 		return;
 
-	if(!game.gameMode()->Shoot(w))
+	if(!getGameMode()->Shoot(w))
 		return;
 
-	if(w->tWeapons.size() == 0) return;
-	wpnslot_t *Slot = w->writeCurWeapon();
+	wpnslot_t *Slot = w->getCurWeapon();
 
 	if(Slot->Reloading)
 		return;
@@ -383,28 +558,35 @@ void GameServer::WormShoot(CWorm *w)
 	if(Slot->LastFire>0)
 		return;
 
-	if(!Slot->weapon())
+	// Don't shoot with disabld weapons
+	if (!Slot->Enabled)
 		return;
+
+	if(!Slot->Weapon) {
+		warnings << "WormShoot: trying to shoot with an unitialized weapon!" << endl;
+		return;
+	}
 
 	// Safe the ROF time (Rate of Fire). That's the pause time after each shot.
 	// In simulateWormWeapon, we decrease this by deltatime and
 	// the next shot is allowed if lastfire<=0.
-	Slot->LastFire = Slot->weapon()->ROF;
+	Slot->LastFire = Slot->Weapon->ROF;
 
 
 	// Must be a projectile or beam.
 	// We send also beam via the shootlist. See CClient::ProcessShot which is calling CClient::ProcessShot_Beam in that case.
-	if(Slot->weapon()->Type != WPN_PROJECTILE && Slot->weapon()->Type != WPN_BEAM) {
+	if(Slot->Weapon->Type != WPN_PROJECTILE && Slot->Weapon->Type != WPN_BEAM) {
 		// It's not a projectile, so the client is handling this, but we take track of charge to disable weapon if needed.
 		
 		// Drain the Weapon charge
-		Slot->Charge -= Slot->weapon()->Drain / 100;
-		if(Slot->Charge <= 0.f) {
-			Slot->Charge = 0.f;
+		Slot->Charge -= Slot->Weapon->Drain / 100;
+		if(Slot->Charge <= 0) {
+			Slot->Charge = 0;
 			
-			if(gameSettings[FT_DisableWpnsWhenEmpty]) {
-				Slot->WeaponId = -1;
-				SendWeapons(NULL, w);
+			if(tLXOptions->tGameInfo.features[FT_DisableWpnsWhenEmpty]) {
+				Slot->Enabled = false;
+				Slot->Weapon = NULL;
+				SendWeapons(w);
 			} else
 				Slot->Reloading = true;
 		}
@@ -426,26 +608,26 @@ void GameServer::WormShoot(CWorm *w)
 	float speed = 0.0f;
 
 	// only projectile wpns have speed; Beam weapons have no speed
-	if(Slot->weapon()->Type == WPN_PROJECTILE) {
+	if(Slot->Weapon->Type == WPN_PROJECTILE) {
 		// Add the shot to the shooting list
 		CVec vel = w->getVelocity();
 		speed = NormalizeVector( &vel );
 	}
 	
-	TimeDiff time = game.serverTime();
-	if( game.isClient() && w->hasOwnServerTime() )
+	TimeDiff time = getServerTime();
+	if( w->hasOwnServerTime() )
 		time = w->serverTime();
 	
 	// Add the shot to ALL the connected clients shootlist
+	w->increaseShotCount();
 	CServerConnection *cl = getClients();
 	for(short i=0; i<MAX_CLIENTS; i++,cl++) {
 		if(cl->getStatus() == NET_DISCONNECTED)
 			continue;
 
-		cl->getShootList()->addShoot(Slot->weapon()->ID, time, speed, (int)Angle, w, false);
+		cl->getShootList()->addShoot(Slot->Weapon->ID, time, speed, (int)Angle, w, false);
 	}
 
-	
 
 	//
 	// Note: Drain does NOT have to use a delta time, because shoot timing is controlled by the ROF
@@ -453,13 +635,14 @@ void GameServer::WormShoot(CWorm *w)
 	//
 
 	// Drain the Weapon charge
-	Slot->Charge -= Slot->weapon()->Drain / 100;
-	if(Slot->Charge <= 0.f) {
-		Slot->Charge = 0.f;
+	Slot->Charge -= Slot->Weapon->Drain / 100;
+	if(Slot->Charge <= 0) {
+		Slot->Charge = 0;
 		
-		if(gameSettings[FT_DisableWpnsWhenEmpty]) {
-			Slot->WeaponId = -1;
-			SendWeapons(NULL, w);
+		if(tLXOptions->tGameInfo.features[FT_DisableWpnsWhenEmpty]) {
+			Slot->Enabled = false;
+			Slot->Weapon = NULL;
+			SendWeapons(w);
 		} else
 			Slot->Reloading = true;
 	}
@@ -470,29 +653,80 @@ void GameServer::WormShoot(CWorm *w)
 
 ///////////////////
 // Go back to the lobby
-void GameServer::gotoLobby()
+void GameServer::gotoLobby(bool alsoWithMenu, const std::string& reason)
 {
-	if(game.state != Game::S_Lobby) {
-		errors << "server gotolobby handling: not in lobby, current state: " << game.state << endl;
+	notes << "GameServer: gotoLobby (" << reason << ")" << endl;
+
+	if(getState() == SVS_LOBBY) {
+		notes << "already in lobby, doing nothing" << endl;
 		return;
 	}
 	
+	short i;
+
 	// Tell all the clients
 	CBytestream bs;
 	bs.writeByte(S2C_GOTOLOBBY);
 	SendGlobalPacket(&bs);
 
+	// Clear the info
+	iState = SVS_LOBBY;
+	bool bUpdateWorms = false;
+	for(i=0;i<MAX_WORMS;i++) {
+		if(cWorms[i].isUsed()) {
+			cWorms[i].Unprepare();
+			cWorms[i].setLobbyReady( false );
+			cWorms[i].setGameReady(false);
+			cWorms[i].setTagIT(false);
+			cWorms[i].setTagTime(TimeDiff(0));
+			if( cWorms[i].getAFK() == AFK_TYPING_CHAT )
+			{
+				cWorms[i].setAFK(AFK_BACK_ONLINE, "");
+				CBytestream bs;
+				bs.writeByte( S2C_AFK );
+				bs.writeByte( (uchar)i );
+				bs.writeByte( AFK_BACK_ONLINE );
+				bs.writeString( "" );
+	
+				CServerConnection *cl;
+				int i;
+				for( i=0, cl=cClients; i < MAX_CLIENTS; i++, cl++ )
+					if( cl->getStatus() == NET_CONNECTED && cl->getClientVersion() >= OLXBetaVersion(7) )
+						cl->getNetEngine()->SendPacket(&bs);
+			}
+		}
+	}
 	UpdateGameLobby();
 
-	for(short i=0; i<MAX_CLIENTS; i++) {
+	for(i=0; i<MAX_CLIENTS; i++) {
 		cClients[i].setGameReady(false);
 	}
 
 	fLastUpdateSent = AbsTime();
+	fGameOverTime = AbsTime();
 
 	SendWormLobbyUpdate();
+	
+	if(bUpdateWorms)
+		UpdateWorms();
 
-	DeprecatedGUI::Menu_Net_GotoHostLobby();
+	if( DedicatedControl::Get() )
+		DedicatedControl::Get()->BackToServerLobby_Signal();
+
+	// Goto the host lobby
+	if(alsoWithMenu)
+		DeprecatedGUI::Menu_Net_GotoHostLobby();
+
+	for( i=0; i<MAX_CLIENTS; i++ )
+		cClients[i].getUdpFileDownloader()->allowFileRequest(true);
+
+	// Re-register the server to reflect the state change
+	if( tLXOptions->bRegServer && tLX->iGameType == GME_HOST )
+		RegisterServerUdp();
+
+	CheckForFillWithBots();
+	
+	// HINT: the gamescript is shut down by the cache
 }
 
 
@@ -503,7 +737,13 @@ void GameServer::gotoLobby()
 // Called iff game state has changed (e.g. player left etc.)
 void GameServer::RecheckGame()
 {
-	recheckGame = true;
+	if(iState == SVS_GAME)
+		// Check if all the clients are ready
+		CheckReadyClient();
+	
+	if(!bGameOver && iState == SVS_PLAYING)
+		if(getGameMode()->CheckGameOver())
+			GameOver();
 }
 
 
@@ -511,13 +751,13 @@ void GameServer::RecheckGame()
 // Checks if all the clients are ready to play
 void GameServer::CheckReadyClient()
 {
-	if(game.state != Game::S_Preparing)
+	if(iState != SVS_GAME)
 		return;
 
 	bool allready = true;
 	CServerConnection *client = cClients;
 	for(short c=0; c<MAX_CLIENTS; c++, client++) {
-		if(client->getStatus() == NET_DISCONNECTED || client->getStatus() == NET_ZOMBIE || game.wormsOfClient(client)->size() == 0)
+		if(client->getStatus() == NET_DISCONNECTED || client->getStatus() == NET_ZOMBIE || client->getNumWorms() == 0)
 			continue;
 
 		if(!client->getGameReady()) {

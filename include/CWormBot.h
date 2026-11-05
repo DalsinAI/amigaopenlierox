@@ -13,15 +13,14 @@
 #ifndef __CWORMBOT_H__
 #define __CWORMBOT_H__
 
-#include "game/CWorm.h"
-#include "game/WormInputHandler.h"
+#include "CWorm.h"
 
 class searchpath_base;
-struct NEW_ai_node_t;
 
 class CWormBotInputHandler : public CWormInputHandler {
 public:
 	CWormBotInputHandler(CWorm* w);
+	virtual ~CWormBotInputHandler();
 	
 	virtual std::string name() { return "Bot input handler"; }
 	
@@ -34,18 +33,15 @@ public:
     virtual void clearInput() {}
 
 	virtual void onRespawn();
-
-	virtual void deleteThis();
 	
 protected:
-	virtual ~CWormBotInputHandler();
 	
     /*
 	 Artificial Intelligence
 	 */
     int         nAIState;
     int         nAITargetType;
-    int         nAITargetWormId;
+    CWorm       *psAITarget;
     CBonus      *psBonusTarget;
     CVec        cPosTarget;
     int         nPathStart[2];
@@ -77,6 +73,7 @@ protected:
 	TimeDiff		fRopeHookFallingTime;
 	
     // Path Finding
+    int         nGridCols, nGridRows;
 	AbsTime       fLastPathUpdate;
 	bool		bPathFinished;
 	AbsTime		fSearchStartTime;
@@ -125,7 +122,7 @@ public:
 	bool		findRandomSpot(bool highSpot = false);
     CWorm       *findTarget(); // for games where we have to kill other people
 	CWorm*		nearestEnemyWorm();
-	bool		weaponCanHit(float gravity,float speed, CVec cTrgPos);
+	bool		weaponCanHit(int gravity,float speed, CVec cTrgPos);
 	int			traceWeaponLine(CVec target, float *fDist, int *nType);
 	
 	
@@ -134,8 +131,10 @@ public:
 	bool		AI_CheckFreeCells(int Num);
 	bool		AI_IsInAir(CVec pos, int area_a=3);
 	CVec		AI_FindClosestFreeSpotDir(CVec vPoint, CVec vDirection, int Direction);
+	CVec		AI_FindBestFreeSpot(CVec vPoint, CVec vStart, CVec vDirection, CVec vTarget, CVec* vEndPoint);
 	int			AI_CreatePath(bool force_break = false);
 	void		AI_MoveToTarget();
+	CVec		AI_GetNearestRopeSpot(CVec trg);
 	void		AI_Carve();
 	bool		AI_Jump();
 	CVec		AI_FindShootingSpot();
@@ -145,10 +144,6 @@ public:
 #endif
 	
 	
-	// ----------- Gusanos ---------------
-
-	virtual void subThink();
-
 };
 
 #endif  //  __CWORMBOT_H__

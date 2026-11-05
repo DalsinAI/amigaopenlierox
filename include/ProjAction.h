@@ -28,14 +28,13 @@
 #include <vector>
 #include <limits.h>
 #include <cassert>
-#include "olx-types.h"
+#include "types.h"
 #include "CVec.h"
 
 struct proj_t;
 class CProjectile;
 struct shoot_t;
-class SoundSample;
-struct LX56ProjAttribs;
+struct SoundSample;
 class IniReader;
 
 /*

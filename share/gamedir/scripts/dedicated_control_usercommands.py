@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -u
+#!/usr/bin/python -u
 # Dedicated Control handler script for OpenLieroX
 # (http://openlierox.sourceforge.net)
 
@@ -8,6 +8,7 @@ import sys
 import threading
 import traceback
 import math
+import random
 
 import dedicated_control_io as io
 setvar = io.setvar
@@ -34,7 +35,6 @@ def adminCommandHelp(wormid):
 	io.privateMsg(wormid, "%spreset presetName" % cfg.ADMIN_PREFIX)
 	io.privateMsg(wormid, "%smod modName (or part of name)" % cfg.ADMIN_PREFIX)
 	io.privateMsg(wormid, "%smap mapName" % cfg.ADMIN_PREFIX)
-	io.privateMsg(wormid, "%slt loadingTime" % cfg.ADMIN_PREFIX)
 	io.privateMsg(wormid, "%steam wormID teamID (0123 or brgy)" % cfg.ADMIN_PREFIX)
 	io.privateMsg(wormid, "%sstart - start game now" % cfg.ADMIN_PREFIX)
 	io.privateMsg(wormid, "%sstop - go to lobby" % cfg.ADMIN_PREFIX)
@@ -92,7 +92,7 @@ def parseAdminCommand(wormid,message):
 			if preset == -1:
 				io.privateMsg(wormid,"Invalid preset, available presets: " + ", ".join(hnd.availablePresets))
 			else:
-				hnd.selectPreset( Preset = hnd.availablePresets[preset] )
+				hnd.selectPreset( Mod = hnd.availablePresets[preset] )
 		elif cmd == "mod":
 			mod = ""
 			for m in io.listMods():
@@ -113,8 +113,6 @@ def parseAdminCommand(wormid,message):
 				io.privateMsg(wormid,"Invalid map, available maps: " + ", ".join(io.listMaps()))
 			else:
 				hnd.selectPreset( Level = level )
-		elif cmd == "lt":
-			hnd.selectPreset( LT = int(params[0]) )
 		elif cmd == "start":
 			io.startGame()
 		elif cmd == "stop":
@@ -141,7 +139,7 @@ def parseAdminCommand(wormid,message):
 		elif parseAdminCommand_Preset and parseAdminCommand_Preset(wormid, cmd, params):
 			pass
 		else:
-			raise Exception("Invalid admin command")
+			raise Exception, "Invalid admin command"
 
 	except: # All python classes derive from main "Exception", but confused me, this has the same effect.
 		if wormid >= 0:
@@ -154,26 +152,26 @@ def parseAdminCommand(wormid,message):
 
 def userCommandHelp(wormid):
 	if cfg.ALLOW_TEAM_CHANGE:
-		msg = "%steam [b/r" % (cfg.USER_PREFIX)
+		msg = "%sb or %sr or %sg or %steam [b/r" % (cfg.USER_PREFIX, cfg.USER_PREFIX, cfg.USER_PREFIX, cfg.USER_PREFIX)
 		if cfg.MAX_TEAMS >= 3:
 			msg += "/g"
 		if cfg.MAX_TEAMS >= 4:
 			msg += "/y"
 		msg += "] - set your team"
-		io.privateMsg(wormid, msg + " - set your team")
+		io.privateMsg(wormid, msg)
 	if cfg.RANKING:
 		io.privateMsg(wormid, "%stoprank - display the best players" % cfg.USER_PREFIX )
 		io.privateMsg(wormid, "%srank [name] - display your or other player rank" % cfg.USER_PREFIX )
 		io.privateMsg(wormid, "%sranktotal - display the number of players in the ranking" % cfg.USER_PREFIX )
 	if cfg.VOTING:
-		io.privateMsg(wormid, "%skick wormID - add vote to kick player etc" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%smute wormID - add vote" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%smod modName (or part of name) - add vote" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%smap mapName - add vote" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%slt loadingTime - add vote" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%sstart - start game now" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%sstop - go to lobby" % cfg.ADMIN_PREFIX)
-		io.privateMsg(wormid, "%sy / %sn - vote yes / no" % (cfg.ADMIN_PREFIX, cfg.ADMIN_PREFIX) )
+		io.privateMsg(wormid, "%skick wormID" % cfg.USER_PREFIX)
+		io.privateMsg(wormid, "%smute wormID" % cfg.USER_PREFIX)
+		io.privateMsg(wormid, "%smod modName (or part of name)" % cfg.USER_PREFIX)
+		io.privateMsg(wormid, "%smap mapName" % cfg.USER_PREFIX)
+		io.privateMsg(wormid, "%sset option value" % cfg.USER_PREFIX)
+		io.privateMsg(wormid, "%sstart or %sgo [mod] [map]" % (cfg.USER_PREFIX, cfg.USER_PREFIX))
+		io.privateMsg(wormid, "%sstop - go to lobby" % cfg.USER_PREFIX)
+		io.privateMsg(wormid, "%sy / %sn - vote yes / no" % (cfg.USER_PREFIX, cfg.USER_PREFIX) )
 	if userCommandHelp_Preset:
 		userCommandHelp_Preset(wormid)
 
@@ -198,6 +196,7 @@ def addVote( command, poster, description ):
 	hnd.worms[poster].Voted = 1
 	voteTime = time.time()
 	voteDescription = description
+	io.messageLog("%s: %s" % (hnd.worms[poster].Name, description), io.LOG_USRCMD)
 	recheckVote()
 
 def recheckVote(verbose = True):
@@ -245,6 +244,12 @@ def recheckVote(verbose = True):
 		io.chatMsg("Vote: " + voteDescription + ", " + str( needVoices - voteCount ) + " voices to go, " +
 				str(int( cfg.VOTING_TIME + voteTime - time.time() )) + ( " seconds, say %sy or %sn" % ( cfg.ADMIN_PREFIX, cfg.ADMIN_PREFIX ) ) )
 
+def increaseVoteTime():
+	global voteCommand, voteTime, votePoster, voteDescription
+	global kickedUsers
+	if not voteCommand:
+		return
+	voteTime += 5
 
 def parseUserCommand(wormid,message):
 	global kickedUsers
@@ -259,11 +264,11 @@ def parseUserCommand(wormid,message):
 			cmd = message.split(" ")[0]
 			cmd = cmd.replace(cfg.USER_PREFIX,"",1).lower() #Remove the prefix
 		
-		if wormid >= 0:
-			io.messageLog("%i:%s issued %s" % (wormid,hnd.worms[wormid].Name,cmd.replace(cfg.USER_PREFIX,"",1)),io.LOG_USRCMD)
-		else:
-			io.messageLog("ded admin issued %s" % cmd, io.LOG_USRCMD)
-			
+		#if wormid >= 0:
+		#	io.messageLog("%i:%s issued %s" % (wormid,hnd.worms[wormid].Name,cmd.replace(cfg.USER_PREFIX,"",1)),io.LOG_USRCMD)
+		#else:
+		#	io.messageLog("ded admin issued %s" % cmd, io.LOG_USRCMD)
+
 		# Unnecesary to split multiple times, this saves CPU.
 		params = message.split(" ")[1:]
 		
@@ -273,7 +278,7 @@ def parseUserCommand(wormid,message):
 		if cfg.ALLOW_TEAM_CHANGE and cmd == "team":
 			if not params:
 				io.privateMsg(wormid, "You need to specify a team" )
-				raise Exception("You need to specify a team")
+				raise Exception, "You need to specify a team"
 			else:
 				if params[0].lower() == "blue" or params[0].lower() == "b":
 					io.setWormTeam(wormid, 0)
@@ -283,7 +288,23 @@ def parseUserCommand(wormid,message):
 					io.setWormTeam(wormid, 2)
 				elif ( params[0].lower() == "yellow" or params[0].lower() == "y" ) and cfg.MAX_TEAMS >= 4:
 					io.setWormTeam(wormid, 3)
-		
+
+		if cfg.ALLOW_TEAM_CHANGE and (cmd == "b" or cmd == "r" or cmd == "g" or cmd[:3] == "yel"):
+			if cmd == "b":
+				io.setWormTeam(wormid, 0)
+			elif cmd == "r":
+				io.setWormTeam(wormid, 1)
+			elif cmd == "g":
+				io.setWormTeam(wormid, 2)
+			elif cmd[:3] == "yel":
+				io.setWormTeam(wormid, 3)
+
+		if cmd == "teams" or cmd == "teamgame":
+			addVote( 'hnd.selectPreset( VarName = "GameOptions.GameInfo.GameType", VarValue = "1" ); hnd.randomizeTeams()', wormid, "Team game" )
+
+		if cmd[:6] == "random":
+			addVote( 'hnd.randomizeTeams()', wormid, "Randomize teams" )
+
 		if cfg.RANKING:
 			if cmd == "toprank":
 				ranking.firstRank(wormid)
@@ -301,31 +322,27 @@ def parseUserCommand(wormid,message):
 			if cmd == "kick":
 				kicked = int( params[0] )
 				if not kicked in hnd.worms.keys():
-					raise Exception("Invalid worm ID")
-				addVote( "io.kickWorm(" + str(kicked) +
-							", 'You are kicked for " + str(cfg.VOTING_KICK_TIME) + " minutes')",
+					raise Exception, "Invalid worm ID"
+				addVote( "io.kickWorm(" + str(kicked) + 
+							", 'You are kicked for " + str(cfg.VOTING_KICK_TIME) + " minutes')", 
 							wormid, "Kick %i: %s" % ( kicked, hnd.worms[kicked].Name ) )
 				hnd.worms[kicked].Voted = -1
-
+			
 			if cmd == "mute":
 				if not kicked in hnd.worms.keys():
-					raise Exception("Invalid worm ID")
+					raise Exception, "Invalid worm ID"
 				kicked = int( params[0] )
 				addVote( "io.muteWorm(" + str(kicked) +")", wormid, "Mute %i: %s" % ( kicked, hnd.worms[kicked].Name ) )
 				hnd.worms[kicked].Voted = -1
 			
 			if cmd == "mod":
-				
-				# Users are proven to be stupid and can't tell the difference between mod and preset
-				# so here we're first looking for a preset, and then looking for a mod with the same name if preset not found
-				# (well, let's call that UI simplification)
 				preset = -1
 				for p in range(len(hnd.availablePresets)):
 					if hnd.availablePresets[p].lower().find(params[0].lower()) != -1:
 						preset = p
 						break
 				if preset != -1:
-					addVote( 'hnd.selectPreset( Preset = "%s" )' % hnd.availablePresets[preset], wormid, "Preset %s" % hnd.availablePresets[preset] )
+					addVote( 'hnd.selectPreset( Mod = "%s" )' % hnd.availablePresets[preset], wormid, "Mod %s" % hnd.availablePresets[preset] )
 				else:
 					mod = ""
 					for m in io.listMods():
@@ -333,30 +350,112 @@ def parseUserCommand(wormid,message):
 							mod = m
 							break
 					if mod == "":
-						io.privateMsg(wormid,"Invalid mod, available mods: " + ", ".join(hnd.availablePresets) + ", ".join(io.listMods()))
+						io.privateMsg(wormid,"Invalid mod, available mods: " + ", ".join(hnd.availablePresets) + ", " + ", ".join(io.listMods()))
 					else:
 						addVote( 'hnd.selectPreset( Mod = "%s" )' % mod, wormid, "Mod %s" % mod )
 			
 			if cmd == "map":
 				level = ""
 				for l in io.listMaps():
-					if l.lower().find(" ".join(params[0:]).lower()) != -1:
+					if l.lower().replace(".lxl", "").find(" ".join(params[0:]).lower()) != -1:
 						level = l
 						break
 				if level == "":
-					io.privateMsg(wormid,"Invalid map, available maps: " + ", ".join(io.listMaps()))
+					io.privateMsg(wormid,"Invalid map, available maps: " + ", ".join([x.replace(".lxl", "") for x in io.listMaps()]))
 				else:
-					addVote( 'hnd.selectPreset( Level = "%s" )' % level, wormid, "Map %s" % level )
+					addVote( 'hnd.selectPreset( Level = "%s" )' % level, wormid, "Map %s" % level.replace(".lxl", "") )
 			
-			if cmd == "lt":
-				addVote( 'hnd.selectPreset( LT = %i )' % int(params[0]), wormid, "Loading time %i" % int(params[0]) )
-			
-			if cmd == "start":
-				addVote( 'hnd.lobbyWaitAfterGame = time.time(); hnd.lobbyWaitBeforeGame = time.time()', wormid, "Start game now" )
+			if cmd == "set":
+				name = ""
+				varlistraw = io.listVars("GameOptions.GameInfo.")
+				varlist = [x.replace("GameOptions.GameInfo.", "") for x in varlistraw]
+				varlist.remove("AllowConnectDuringGame")
+				varlist.remove("AllowEmptyGames")
+				varlist.remove("AllowWeaponsChange")
+				varlist.remove("ImmediateStart")
+				varlist.remove("MaxPlayers")
+				varlist.remove("NewNetEngine")
+				varlist.remove("ScreenShaking")
+				varlist.remove("WeaponSelectionMaxTime")
+				aliases = {
+							"MaxKills": "KillLimit",
+							"MaxScore": "KillLimit",
+							"MaxLives": "Lives",
+							"MaxTime": "TimeLimit"
+							}
+				for v in varlist:
+					if len(params) > 0 and v.lower().find(params[0].lower()) != -1:
+						name = v
+						break
+				if name == "":
+					for v in aliases.keys():
+						if len(params) > 0 and v.lower().find(params[0].lower()) != -1:
+							name = aliases[v]
+							break
+				if name == "":
+					io.privateMsg(wormid,"Available options: " + " ".join(varlist))
+				else:
+					fullname = "GameOptions.GameInfo.%s" % name
+					value = " ".join(params[1:]).replace('"', '')
+					addVote( 'hnd.selectPreset( VarName = "%s", VarValue = "%s" )' % (fullname, value), wormid, "Set %s to %s" % (name, value) )
+
+			if cmd == "start" or cmd == "go":
+				cmd = 'io.gotoLobby(); voteCommand = "hnd.lobbyWaitAfterGame = time.time(); hnd.lobbyWaitBeforeGame = time.time()"'
+				msg = "Start game"
+				level = ""
+				mod = ""
+
+				if len(params) > 0:
+					preset = -1
+					for p in range(len(hnd.availablePresets)):
+						if hnd.availablePresets[p].lower().find(params[0].lower()) != -1:
+							preset = p
+							break
+					if preset != -1:
+						mod = hnd.availablePresets[preset]
+						msg += ", preset %s" % hnd.availablePresets[preset]
+					else:
+						for m in io.listMods():
+							if m.lower().find(params[0].lower()) != -1:
+								mod = m
+								break
+						if mod == "":
+							io.privateMsg(wormid, "Invalid mod, available mods: " + ", ".join(hnd.availablePresets) + ", " + ", ".join(io.listMods()))
+							cmd = ""
+						else:
+							msg += ", mod %s" % mod
+
+				if len(params) > 1 and cmd != "":
+					for l in io.listMaps():
+						if l.lower().replace(".lxl", "").find(params[1].lower()) != -1:
+							level = l
+							break
+					if level == "":
+						io.privateMsg(wormid, "Invalid map, available maps: " + ", ".join([x.replace(".lxl", "") for x in io.listMaps()]))
+						cmd = ""
+					else:
+						msg += " on %s" % level.replace(".lxl", "")
+
+				if cmd != "" and mod != "":
+					if level != "":
+						cmd += '; hnd.selectPreset( Mod = "%s", Level = "%s" )' % (mod, level)
+					else:
+						cmd += '; hnd.selectPreset( Mod = "%s" )' % mod
+					addVote( cmd, wormid, msg )
 			
 			if cmd == "stop":
 				addVote( 'io.gotoLobby()', wormid, "Go to lobby" )
-			
+
+			if cmd == "hax":
+				if random.random() < 0.1:
+					io.chatMsg("!!..!!...!!!!...!!..!!.")
+					io.chatMsg("!!..!!..!!..!!...!!!!..")
+					io.chatMsg("!!!!!!..!!!!!!....!!...")
+					io.chatMsg("!!..!!..!!..!!...!!!!..")
+					io.chatMsg("!!..!!..!!..!!..!!..!!.")
+				else:
+					io.chatMsg("Plz no hax")
+
 			if ( cmd == "y" or cmd == "yes" ):
 				if hnd.worms[wormid].Voted != 1:
 					hnd.worms[wormid].Voted = 1
@@ -369,7 +468,7 @@ def parseUserCommand(wormid,message):
 		elif parseUserCommand_Preset and parseUserCommand_Preset(wormid, cmd, params):
 			pass
 		else:
-			raise Exception("Invalid user command")
+			raise Exception, "Invalid user command"
 	
 	except: # All python classes derive from main "Exception", but confused me, this has the same effect.
 		if wormid >= 0:

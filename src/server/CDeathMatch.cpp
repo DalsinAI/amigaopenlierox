@@ -8,7 +8,7 @@
  */
 
 #include <iostream>
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Options.h"
 #include "Consts.h"
 #include "CServer.h"

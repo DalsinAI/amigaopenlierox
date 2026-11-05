@@ -1,8 +1,0 @@
-blender = add
-alpha = 255
-col_layer = -1
-render_layer = 7
-sprite = bluedragonhead.png
-
-on timer( 1 )
- remove()

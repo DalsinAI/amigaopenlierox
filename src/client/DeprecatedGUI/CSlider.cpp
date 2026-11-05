@@ -19,7 +19,7 @@
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/CSlider.h"
 
 
@@ -74,25 +74,18 @@ int CSlider::MouseDown(mouse_t *tMouse, int nDown)
 	return SLD_CHANGE;
 }
 
-// Wide ranges move 2% per key press, narrow ones 10%
-int CSlider::keyboardStep() const
-{
-	int range = iMax - iMin;
-	return range >= 50 ? range / 50 : range >= 10 ? range / 10 : 1;
-}
-
 int CSlider::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 {
 	switch (keysym)  {
 		case SDLK_LEFT:
-			iValue -= keyboardStep();
+			iValue -= (iMax - iMin) >= 50 ? (iMax - iMin) / 50 : (iMax - iMin) >= 10 ? (iMax - iMin) / 10 : 1;
 			iValue = MAX(iMin,iValue);
 			iValue = MIN(iMax,iValue);
 			PlaySoundSample(sfxGeneral.smpClick);
 		return SLD_CHANGE;
 
 		case SDLK_RIGHT:
-			iValue += keyboardStep();
+			iValue += (iMax - iMin) >= 50 ? (iMax - iMin) / 50 : (iMax - iMin) >= 10 ? (iMax - iMin) / 10 : 1;
 			iValue = MAX(iMin,iValue);
 			iValue = MIN(iMax,iValue);
 			PlaySoundSample(sfxGeneral.smpClick);
@@ -105,7 +98,7 @@ int CSlider::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 
 ///////////////////
 // This widget is send a message
-uintptr_t CSlider::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
+DWORD CSlider::SendMessage(int iMsg, DWORD Param1, DWORD Param2)
 {
 	switch(iMsg) {
 
@@ -115,7 +108,7 @@ uintptr_t CSlider::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2)
 
 		// Set the value
 		case SLM_SETVALUE:
-			iValue = (int)Param1;
+			iValue = Param1;
 			break;
 
 	}

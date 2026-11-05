@@ -24,7 +24,7 @@
 #include "CServerNetEngine.h"
 #include "CChannel.h"
 #include "StringUtils.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "Protocol.h"
 #include "ConfigHandler.h"
 #include "ChatCommand.h"
@@ -41,15 +41,8 @@
 #include "FlagInfo.h"
 #include "WeaponDesc.h"
 #include "Autocompletion.h"
-#include "OLXCommand.h"
+#include "Command.h"
 #include "TaskManager.h"
-#include "gusanos/network.h"
-#include "game/Level.h"
-#include "game/Mod.h"
-#include "game/Game.h"
-#include "CGameScript.h"
-#include "client/ClientConnectionRequestInfo.h" // for WormJoinInfo
-#include "game/GameState.h"
 
 
 #ifdef _MSC_VER
@@ -124,14 +117,17 @@ void CServerNetEngine::ParsePacket(CBytestream *bs) {
 			ParseImReady(bs);
 			break;
 
+			// Update packet
 		case C2S_UPDATE:
 			ParseUpdate(bs);
 			break;
 
+			// Death
 		case C2S_DEATH:
 			ParseDeathPacket(bs);
 			break;
 
+			// Chat text
 		case C2S_CHATTEXT:
 			ParseChatText(bs);
 			break;
@@ -144,14 +140,17 @@ void CServerNetEngine::ParsePacket(CBytestream *bs) {
 			ParseAFK(bs);
 			break;
 
+			// Update lobby
 		case C2S_UPDATELOBBY:
 			ParseUpdateLobby(bs);
 			break;
 
+			// Disconnect
 		case C2S_DISCONNECT:
 			ParseDisconnect();
 			break;
 
+			// Bonus grabbed
 		case C2S_GRABBONUS:
 			ParseGrabBonus(bs);
 			break;
@@ -163,20 +162,6 @@ void CServerNetEngine::ParsePacket(CBytestream *bs) {
 		case C2S_REPORTDAMAGE:
 			ParseReportDamage(bs);
 			break;
-
-		case C2S_GUSANOS:
-			network.olxParse(NetConnID_conn(cl), *bs);
-			break;
-
-		case C2S_GUSANOSUPDATE:
-			network.olxParseUpdate(NetConnID_conn(cl), *bs);
-			break;
-		
-		case C2S_GAMEATTRUPDATE: {
-			AttrUpdateByClientScope updateScope(cl);
-			GameStateUpdates::handleFromBs(bs, cl);
-			break;
-		}
 
 		default:
 			// HACK, HACK: old olx/lxp clients send the ping twice, once normally once per channel
@@ -237,7 +222,7 @@ void CServerNetEngine::ParsePacket(CBytestream *bs) {
 ///////////////////
 // Parse a 'im ready' packet
 void CServerNetEngine::ParseImReady(CBytestream *bs) {
-	if ( game.state == Game::S_Lobby )
+	if ( server->iState == SVS_LOBBY )
 	{
 		notes << "GameServer::ParseImReady: Not waiting for ready, packet is being ignored." << endl;
 
@@ -251,6 +236,7 @@ void CServerNetEngine::ParseImReady(CBytestream *bs) {
 		return;
 	}
 
+	int i, j;
 	// Note: This isn't a lobby ready
 
 	// Read the worms weapons
@@ -259,16 +245,15 @@ void CServerNetEngine::ParseImReady(CBytestream *bs) {
 		// It's only a note because <Beta9 clients will do that wrong anyway.
 		notes << "ParseImReady: " << cl->debugName() << " wants to set own weapons but we have serverChoosesWeapons" << endl;		
 	}
-	for (int i = 0; i < num; i++) {
+	for (i = 0; i < num; i++) {
 		if(bs->isPosAtEnd()) {
 			warnings << "ParseImReady: packaged screwed" << endl;
 			break;
 		}
 		int id = bs->readByte();
 		if (id >= 0 && id < MAX_WORMS)  {
-			CWorm* w = game.wormById(id, false);
-			if(!w) {
-				warnings << "ParseImReady: got unused worm-ID " << id << endl;
+			if(!server->cWorms[id].isUsed()) {
+				warnings << "ParseImReady: got unused worm-ID!" << endl;
 				CWorm::skipWeapons(bs);
 				continue;
 			}
@@ -282,8 +267,14 @@ void CServerNetEngine::ParseImReady(CBytestream *bs) {
 				CWorm::skipWeapons(bs);
 				continue;
 			}
-			//notes << "Server:ParseImReady: ";
-			w->readWeapons(bs);
+			notes << "Server:ParseImReady: ";
+			server->cWorms[id].readWeapons(bs);
+			for (j = 0; j < 5; j++) {
+				if(server->cWorms[id].getWeapon(j)->Weapon)
+					server->cWorms[id].getWeapon(j)->Enabled =
+						server->cWeaponRestrictions.isEnabled(server->cWorms[id].getWeapon(j)->Weapon->Name) ||
+						server->cWeaponRestrictions.isBonus(server->cWorms[id].getWeapon(j)->Weapon->Name);
+			}
 			
 		} else { // wrong id -> Skip to get the right position
 			warnings << "ParseImReady: got wrong worm-ID!" << endl;
@@ -293,12 +284,14 @@ void CServerNetEngine::ParseImReady(CBytestream *bs) {
 
 
 	// Set this client to 'ready'
-	notes << "Server: client " << cl->debugName(true) << " got ready" << endl;
+	notes << "Server: client " << cl->debugName() << " got ready" << endl;
 	cl->setGameReady(true);
 
 	SendClientReady(NULL);
 	
-	if(game.state == Game::S_Playing)
+	if(server->iState == SVS_PLAYING)
+		server->BeginMatch(cl);
+	else if(tLXOptions->tGameInfo.features[FT_ImmediateStart])
 		server->BeginMatch(cl);
 	else
 		// Check if all the clients are ready
@@ -309,22 +302,20 @@ void CServerNetEngine::ParseImReady(CBytestream *bs) {
 ///////////////////
 // Parse an update packet
 void CServerNetEngine::ParseUpdate(CBytestream *bs) {
-	AttrUpdateByClientScope updateScope(cl);
+	for (short i = 0; i < cl->getNumWorms(); i++) {
+		CWorm *w = cl->getWorm(i);
 
-	for_each_iterator(CWorm*, w_, game.wormsOfClient(cl)) {
-		CWorm* w = w_->get();
+		bool wasShootingBefore = w->getWormState()->bShoot;
+		const weapon_t* oldWeapon = (w->getCurWeapon() && w->getCurWeapon()->Enabled) ? w->getCurWeapon()->Weapon : NULL;
+		w->readPacket(bs, server->cWorms);
 
-		bool wasShootingBefore = w->tState.get().bShoot;
-		const weapon_t* oldWeapon = w->getCurWeapon() ? w->getCurWeapon()->weapon() : NULL;
-		w->readPacket(bs);
-
-		if(game.state == Game::S_Playing) {
+		if(server->iState == SVS_PLAYING) {
 			// If the worm is shooting, handle it
-			if (w->tState.get().bShoot && w->getAlive())
+			if (w->getWormState()->bShoot && w->getAlive())
 				server->WormShoot(w); // handle shot and add to shootlist to send it later to the clients
 			
 			// handle FinalProj for weapon
-			if(oldWeapon && ((wasShootingBefore && !w->tState.get().bShoot) || (wasShootingBefore && oldWeapon != w->getCurWeapon()->weapon())))
+			if(oldWeapon && ((wasShootingBefore && !w->getWormState()->bShoot) || (wasShootingBefore && oldWeapon != w->getCurWeapon()->Weapon)))
 				server->WormShootEnd(w, oldWeapon);
 		}
 	}
@@ -335,7 +326,7 @@ void CServerNetEngine::ParseUpdate(CBytestream *bs) {
 // Parse a death packet
 void CServerNetEngine::ParseDeathPacket(CBytestream *bs) {
 	// No kills in lobby
-	if (game.state != Game::S_Playing)  {
+	if (server->iState != SVS_PLAYING)  {
 		notes << "GameServer::ParseDeathPacket: Not playing, ignoring the packet." << endl;
 
 		// Skip to get the correct position in the stream
@@ -354,37 +345,27 @@ void CServerNetEngine::ParseDeathPacket(CBytestream *bs) {
 	}
 
 	// If the game is already over, ignore this
-	if (game.gameOver)  {
-		notes("GameServer::ParseDeathPacket: Game is over, ignoring.\n");
+	if (server->bGameOver)  {
+		notes("GameServer::killWorm: Game is over, ignoring.\n");
 		return;
 	}
-
-	CWorm* victimW = game.wormById(victim, false);
-	CWorm* killerW = game.wormById(killer, false);
-
 	// Safety check
-	if (!victimW)  {
-		warnings << "GameServer::ParseDeathPacket: victim ID " << victim << " invalid." << endl;
+	if (victim < 0 || victim >= MAX_WORMS)  {
+		warnings("GameServer::killWorm: victim ID out of bounds.\n");
 		return;
 	}
-	if (!killerW)  {
-		warnings << "GameServer::ParseDeathPacket: killer ID " << killer << " invalid." << endl;
-		return;
-	}
-
-	if(!victimW->getAlive()) {
-		// silently ignore for now. too much legancy code...
+	if (killer < 0 || killer >= MAX_WORMS)  {
+		warnings("GameServer::killWorm: killer ID out of bounds.\n");
 		return;
 	}
 
-	if (tLXOptions->bServerSideHealth)  {
+	if (tLXOptions->tGameInfo.bServerSideHealth)  {
 		// Cheat prevention check (God Mode etc), make sure killer is the host or the packet is sent by the client owning the worm
 		if (!cl->isLocalClient())  {
-			if (cl->OwnsWorm(victim))  {
-				// ignore client death packet and reset alive-state (respawn if needed)
-				CWorm *w = game.wormById(victim);
-				if(w->getAlive())
-					cl->getNetEngine()->SendSpawnWorm(w, w->pos());
+			if (cl->OwnsWorm(victim))  {  // He wants to die, let's fulfill his dream ;)
+				CWorm *w = cClient->getRemoteWorms() + victim;
+				if (!w->getAlreadyKilled())  // Prevents killing the worm twice (once by server and once by the client itself)
+					cClient->getNetEngine()->SendDeath(victim, killer);
 			} else {
 				warnings << "GameServer::ParseDeathPacket: victim " << victim << " is not one of the clients (" << cl->debugName(true) << ") worms, killer was " << killer << endl;
 				server->netError = "ParseDeathPacket with invalid victim + SSH";
@@ -430,76 +411,53 @@ void CServerNetEngine::ParseDeathPacket(CBytestream *bs) {
 void CServerNetEngine::ParseChatText(CBytestream *bs) {
 	std::string buf = Utf8String(bs->readString());
 
+	if(cl->getNumWorms() == 0 && !cl->isLocalClient()) {
+		warnings << cl->debugName() << " with no worms sends message '" << buf << "'" << endl;
+		return;
+	}
+
 	if (buf.empty()) { // Ignore empty messages
 		warnings << cl->debugName() << " sends empty message" << endl;
 		return;
 	}
 	
 	//Check message length.
-	//OLX seems to allow sending arbitrarily long chat messages.
+	//OLX seems to allow sending arbitrary long chat messages.
 	//These messages can be a problem as they can cause excessive lag.
-	//Resize oversized messages and optionally kick the sender
-	//TODO: Implement check at lower level to drop packets without ever passing them to chat handler? Or would this cause problems or confusion?
 	//TODO: Limit message length client side too?
-	// A non-positive limit is treated as "no limit" (check disabled),
-	// which also keeps the size_t cast below well-defined.
-	if (tLXOptions->bCheckChatMessageLength && tLXOptions->iMaxChatMessageLength > 0
-			&& buf.size() > (size_t)tLXOptions->iMaxChatMessageLength){
+	if ((int)buf.size() > tLXOptions->iMaxChatMessageLength) {
 		buf.resize(tLXOptions->iMaxChatMessageLength);
-		if (tLXOptions->bKickOversizedMsgSenders){
-			server->DropClient(cl, CLL_KICK, "Attempt to send oversized message or command");
-			//NOTE BUG: If we allow the message to pass (by not returning now), 
-			// the later check (check if player tries to fake other player) will fail because 
-			// the player doesn't exist on the server anymore, and a log entry will be generated.
-			// The function will then return and the message will be dropped anyway.
-			//Possible workarounds: Instead of kicking here, set a "kick flag" and kick later. 
-			// Or, do the entire length check later.
-			// But is it constructive to pass the message any further?
-			// It complicates code and might cause confusion 
-			// if some kicks result from an apparent message and others do not,
-			// as chat commands are not broadcasted anyway.
-			// Also, this check should be done as early as possible to minimize any effects resulting from oversized messages..
-			return;
-		}
 	}
 	
 	
-	CWorm* senderWorm = NULL;
-	std::string msgWithoutName;
-	for_each_iterator(CWorm*, w, game.wormsOfClient(cl))
-		if( buf.find(w->get()->getName() + ": ") == 0 ) {
-			senderWorm = w->get();
-			msgWithoutName = buf.substr(senderWorm->getName().size() + 2);
-			break;
-		}
-	
-	if( !cl->isLocalClient() && senderWorm == NULL )
+	// TODO: is it correct that we check here only for worm 0 ?
+	// TODO: should we perhaps also check, if the beginning of buf is really the correct name?
+
+	std::string command_buf = buf;
 	{
-		notes << "Client " << cl->debugName() << " probably tries to fake other player, or an old client uses /me cmd" << endl;
-		return;
+		std::string startStr = (cl->getWorm(0) ? cl->getWorm(0)->getName() : "") + ": ";
+		if( strStartsWith(buf, startStr) )
+			command_buf = buf.substr(startStr.size());  // Special buffer used for parsing special commands (begin with /)
 	}
 		
 	// Check for special commands
-	std::string command_buf = senderWorm ? msgWithoutName : buf;
 	if (command_buf.size() > 2)
 		if (command_buf[0] == '/' && command_buf[1] != '/')  {  // When two slashes at the beginning, parse as a normal message
 			ParseChatCommand(command_buf);
 			return;
 		}
 
-	// people could try wrong chat command
-	if(strStartsWith(command_buf, "!login") || strStartsWith(command_buf, "//login")) {
-		SendText("Msg not send! This looked like a login-chat-command but it was not. Use /login", TXT_NETWORK);
-		return;
+	//Previously, OLX logged all chat to the main log when hosting a server.
+	//It clutters the log so now log only if configured to do so.
+	//NOTE: This has nothing to do with the "Log conversations" option - it goes to different log!
+	if (tLXOptions->bLogServerChatToMainlog) {
+		if(!strStartsWith(command_buf, "!login") && !strStartsWith(command_buf, "//login"))	// people could try wrong chat command
+			notes << "CHAT: " << buf << endl;
 	}
 	
-	if (tLXOptions->bLogServerChatToMainlog)
-		notes << "CHAT: " << buf << endl;
-
 	// Check for Clx (a cheating version of lx)
 	if(buf[0] == 0x04) {
 		server->SendGlobalText(cl->debugName() + " seems to have CLX or some other hack", TXT_NORMAL);
-		return;
 	}
 
 	// Don't send text from muted players
@@ -507,11 +465,24 @@ void CServerNetEngine::ParseChatText(CBytestream *bs) {
 		notes << "ignored message from muted " << cl->debugName() << endl;
 		return;
 	}
+
+	if( !cl->isLocalClient() ) {
+		// Check if player tries to fake other player
+		bool nameMatch = false;
+		for( int i=0; i<cl->getNumWorms(); i++ )
+			if( buf.find(cl->getWorm(i)->getName() + ": ") == 0 )
+				nameMatch = true;
+		if( !nameMatch )
+		{
+			notes << "Client " << cl->debugName() << " probably tries to fake other player, or an old client uses /me cmd" << endl;
+			return;
+		}
+	}
 	
 	server->SendGlobalText(buf, TXT_CHAT);
 
-	if( DedicatedControl::Get() && senderWorm && msgWithoutName != "" )
-		DedicatedControl::Get()->ChatMessage_Signal(senderWorm, msgWithoutName);
+	if( DedicatedControl::Get() && buf.size() > cl->getWorm(0)->getName().size() + 2 )
+		DedicatedControl::Get()->ChatMessage_Signal(cl->getWorm(0),buf.substr(cl->getWorm(0)->getName().size() + 2));
 }
 
 void CServerNetEngineBeta7::ParseChatCommandCompletionRequest(CBytestream *bs) {
@@ -658,24 +629,24 @@ void CServerNetEngineBeta7::ParseChatCommandCompletionRequest(CBytestream *bs) {
 					std::string solution;
 					SuggestionSender(int i, CServerNetEngine* c, const std::string& req, const std::string& sol)
 					: AutocompleteSender(i,c), request(req), solution(sol) {}
-					Result handle() {
-						if(!checkValid()) return "not valid";
+					int handle() {
+						if(!checkValid()) return -1;
 						cl->SendChatCommandCompletionSolution(request, solution);
-						return true;
+						return 0;
 					}
 				};
 
 				struct MsgSender : AutocompleteSender {
 					std::string msg;
 					MsgSender(int i, CServerNetEngine* c, const std::string& m) : AutocompleteSender(i,c), msg(m) {}
-					Result handle() {
-						if(!checkValid()) return "not valid";
+					int handle() {
+						if(!checkValid()) return -1;
 						cl->SendText(msg, TXT_NOTICE);
-						return true;
+						return 0;
 					}
 				};
 								
-				Result handle() {
+				int handle() {
 					AutoComplete(cmdToBeCompleted, cmdToBeCompleted.size(), cli, info);
 					bool fail = false;
 					AutocompletionInfo::InputState replace;
@@ -689,14 +660,14 @@ void CServerNetEngineBeta7::ParseChatCommandCompletionRequest(CBytestream *bs) {
 					if(!fail)
 						// we need to do that from the gameloopthread
 						mainQueue->push(new SuggestionSender(conn.connectionIndex, conn.cl, oldChatCmd, replaceStr));						
-					return true;
+					return 0;
 				}
 			};
 			
 			int connectionIndex = getConnectionArrayIndex();
 			if(connectionIndex < 0) return;
 			
-			taskManager->start(new AutoCompleter(startStr, cmdToBeCompleted, connectionIndex, this), TaskManager::QT_GlobalQueue);
+			taskManager->start(new AutoCompleter(startStr, cmdToBeCompleted, connectionIndex, this), true);
 			return;
 		} // end autocomplete for ded
 		   
@@ -751,8 +722,8 @@ void CServerNetEngineBeta7::ParseAFK(CBytestream *bs) {
 	if (wormid < 0 || wormid >= MAX_WORMS)
 		return;
 	
-	CWorm *w = game.wormById(wormid, false);
-	if( !w || w->getClient() != cl )
+	CWorm *w = &server->cWorms[wormid];
+	if( ! w->isUsed() || w->getClient() != cl )
 		return;
 	
 	w->setAFK( (AFK_TYPE)afkType, message );
@@ -766,7 +737,7 @@ void CServerNetEngineBeta7::ParseAFK(CBytestream *bs) {
 	CServerConnection *cl1;
 	int i;
 	for( i=0, cl1=server->cClients; i < MAX_CLIENTS; i++, cl1++ )
-		if( cl1->getStatus() == NET_CONNECTED && cl1->getClientVersion() >= OLXBetaVersion(0,57,7) )
+		if( cl1->getStatus() == NET_CONNECTED && cl1->getClientVersion() >= OLXBetaVersion(7) )
 			cl1->getNetEngine()->SendPacket( &bs1 );
 }
 
@@ -775,7 +746,7 @@ void CServerNetEngineBeta7::ParseAFK(CBytestream *bs) {
 // Parse a 'update lobby' packet
 void CServerNetEngine::ParseUpdateLobby(CBytestream *bs) {
 	// Must be in lobby
-	if ( game.state != Game::S_Lobby )  {
+	if ( server->iState != SVS_LOBBY )  {
 		notes << "GameServer::ParseUpdateLobby: Not in lobby." << endl;
 
 		// Skip to get the right position
@@ -785,10 +756,12 @@ void CServerNetEngine::ParseUpdateLobby(CBytestream *bs) {
 	}
 
 	bool ready = bs->readBool();
+	int i;
 
 	// Set the client worms lobby ready state
-	for_each_iterator(CWorm*, w, game.wormsOfClient(cl))
-		w->get()->setLobbyReady( ready );
+	for (i = 0; i < cl->getNumWorms(); i++) {
+		cl->getWorm(i)->setLobbyReady( ready );
+	}
 	
 	// Let all the worms know about the new lobby state
 	for( int i=0; i<MAX_CLIENTS; i++ )
@@ -837,21 +810,15 @@ void CServerNetEngine::ParseGrabBonus(CBytestream *bs) {
 	int curwpn = bs->readByte();
 
 	// Check
-	if (game.state != Game::S_Playing)  {
+	if (server->iState != SVS_PLAYING)  {
 		notes << "GameServer::ParseGrabBonus: Not playing." << endl;
 		return;
 	}
 
-	// A client may only grab bonuses for a worm it owns,
-	// like the other worm-addressed C2S handlers.
-	if( !cl->OwnsWorm(wormid) && !cl->isLocalClient() ) {
-		notes << "GameServer::ParseGrabBonus: worm " << wormid << " not owned by client." << endl;
-		return;
-	}
 
 	// Worm ID ok?
-	CWorm *w = game.wormById(wormid, false);
-	if (w) {
+	if (wormid >= 0 && wormid < MAX_WORMS) {
+		CWorm *w = &server->cWorms[wormid];
 
 		// Bonus id ok?
 		if (id >= 0 && id < MAX_BONUSES) {
@@ -862,22 +829,31 @@ void CServerNetEngine::ParseGrabBonus(CBytestream *bs) {
 				// If it's a weapon, change the worm's current weapon
 				if (b->getType() == BNS_WEAPON) {
 
-					if (curwpn >= 0 && (size_t)curwpn < w->tWeapons.size()) {
-						wpnslot_t *wpn = &w->weaponSlots.write()[curwpn];
-						const weapon_t* oldWeapon = wpn->weapon();
-						if(b->getWeapon() >= 0 && b->getWeapon() < game.gameScript()->GetNumWeapons()) {
-							wpn->WeaponId = b->getWeapon();
-							wpn->Charge = 1.f;
+					if (curwpn >= 0 && curwpn < w->getNumWeaponSlots()) {
+						wpnslot_t *wpn = w->getWeapon(curwpn);
+						const weapon_t* oldWeapon = wpn->Weapon;
+						if(b->getWeapon() >= 0 && b->getWeapon() < server->cGameScript->GetNumWeapons()) {
+							wpn->Weapon = server->cGameScript.get()->GetWeapons() + b->getWeapon();
+							wpn->Enabled = true;
+							wpn->Charge = 1;
 							wpn->Reloading = false;
 						}
 						else {
 							notes << "worm " << w->getID() << " selected invalid bonus weapon" << endl;
-							wpn->WeaponId = -1;
+							wpn->Weapon = NULL;
+							wpn->Enabled = false;
 						}
 						
 						// handle worm shoot end if needed
-						if(oldWeapon && wpn->weapon() != oldWeapon && w->tState.get().bShoot)
+						if(oldWeapon && wpn->Weapon != oldWeapon && w->getWormState()->bShoot)
 							server->WormShootEnd(w, oldWeapon);
+						if (wpn->Weapon != oldWeapon) {
+							for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+								if ( !server->getClients()[i].isConnected() || w->getClient() == &(server->getClients()[i]) )
+									continue;
+								server->SendWeapons(&(server->getClients()[i])); // Tell other clients about weapons of this worm, otherwise laser will not be drawn
+							}
+						}
 					}
 				}
 
@@ -940,15 +916,21 @@ bool CServerNetEngine::ParseChatCommand(const std::string& message)
 		return false;
 	}
 	
-
-	if ( (cmd->tProcFunc != &ProcessLogin) && ((cmd->tProcFunc != &ProcessPrivate) || (tLXOptions->bLogServerChatToMainlog)) && ((cmd->tProcFunc != &ProcessTeamChat) || (tLXOptions->bLogServerChatToMainlog)) )
+	
+	//Previously, OLX logged all private messages and team chat to the main log when hosting a server.
+	//It clutters the log and can be considered a privacy violation.
+	//So now log only if configured to do so.
+	//NOTE: This has nothing to do with the "Log conversations" option - it goes to a different log!
+	//Other commands except login are logged as previously.
+	if ((cmd->tProcFunc != &ProcessLogin) && ((cmd->tProcFunc != &ProcessPrivate) ||
+		(tLXOptions->bLogServerChatToMainlog)) && ((cmd->tProcFunc != &ProcessTeamChat) || (tLXOptions->bLogServerChatToMainlog)))
 		notes << "ChatCommand from " << cl->debugName(true) << ": " << message << endl;
 	
 	// Get the parameters
 	std::vector<std::string> parameters = std::vector<std::string>(parsed.begin() + 1, parsed.end());
 
 	// Process the command
-	std::string error = cmd->tProcFunc(parameters, game.wormsOfClient(cl)->isValid() ? game.wormsOfClient(cl)->get()->getID() : -1);
+	std::string error = cmd->tProcFunc(parameters, (cl->getNumWorms() > 0) ? cl->getWorm(0)->getID() : -1);
 	if (error.size() != 0)  {
 		SendText(error, TXT_NETWORK);
 		notes << "ChatCommand " << cmd->sName << " returned error: " << error << endl;
@@ -964,22 +946,22 @@ void CServerNetEngineBeta9::ParseReportDamage(CBytestream *bs)
 	float damage = bs->readFloat();
 	int offenderId = bs->readByte();
 
-	if( game.state != Game::S_Playing )
+	if( server->iState != SVS_PLAYING )
 		return;
 
 	if( id < 0 || id >= MAX_WORMS || offenderId < 0 || offenderId >= MAX_WORMS )
 		return;
 
-	CWorm *w = game.wormById(id, false);
-	CWorm *offender = game.wormById(offenderId, false);
+	CWorm *w = & server->getWorms()[id];
+	CWorm *offender = & server->getWorms()[offenderId];
 	
-	if( !w || !offender )
+	if( ! w->isUsed() || ! offender->isUsed() )
 		return;
 	
 	if( ! cl->OwnsWorm(id) && ! cl->isLocalClient() )	// Allow local client to send damage for pre-Beta9 clients
 		return;
 	
-	offender->addDamage( damage, w, true );
+	offender->addDamage( damage, w, tLXOptions->tGameInfo );
 
 	//notes << "CServerNetEngineBeta9::ParseReportDamage() offender " << offender->getID() << " dmg " << damage << " victim " << id << endl;
 	// Re-send the packet to all clients, except the sender
@@ -995,16 +977,6 @@ void CServerNetEngineBeta9::ParseReportDamage(CBytestream *bs)
 
 ===========================
 */
-
-
-// Send a "lx::badconnect" refusal (a connectionless packet) to a connecting peer.
-static void sendBadConnect(const SmartPointer<NetworkSocket>& sock, const std::string& reason) {
-	CBytestream bs;
-	bs.writeInt(-1, 4);
-	bs.writeString("lx::badconnect");
-	bs.writeString(reason);
-	bs.Send(sock);
-}
 
 
 ///////////////////
@@ -1040,7 +1012,10 @@ void GameServer::ParseConnectionlessPacket(const SmartPointer<NetworkSocket>& tS
 ///////////////////
 // Handle a "getchallenge" msg
 void GameServer::ParseGetChallenge(const SmartPointer<NetworkSocket>& tSocket, CBytestream *bs_in) {
+	int			i;
 	NetworkAddr	adrFrom;
+	AbsTime		OldestTime = AbsTime::Max();
+	int			ChallengeToSet = -1;
 	CBytestream	bs;
 
 	//hints << "Got GetChallenge packet" << endl;
@@ -1052,7 +1027,11 @@ void GameServer::ParseGetChallenge(const SmartPointer<NetworkSocket>& tSocket, C
 		client_version = bs_in->readString(128);
 
 	if( Version(client_version).isBanned() ) {
-		sendBadConnect(tSocket, "Your " + client_version + " support was dropped, please download a new version at http://openlierox.net/");
+		// TODO: move this out here
+		bs.writeInt(-1, 4);
+		bs.writeString("lx::badconnect");
+		bs.writeString("Your " + client_version + " support was dropped, please download a new version at http://openlierox.net/");
+		bs.Send(tSocket);
 		notes << "GameServer::ParseGetChallenge: client has version " + client_version + " which is not supported." << endl;
 		return;
 	}
@@ -1060,28 +1039,54 @@ void GameServer::ParseGetChallenge(const SmartPointer<NetworkSocket>& tSocket, C
 	if( tLXOptions->bForceCompatibleConnect ) {
 		std::string incompReason;
 		if(!isVersionCompatible(Version(client_version), &incompReason)) {
-			sendBadConnect(tSocket, "Your " + client_version + " is incompatible with the server, please download a new version at http://openlierox.net/.\n"
+			// TODO: move this out here
+			bs.writeInt(-1, 4);
+			bs.writeString("lx::badconnect");
+			bs.writeString("Your " + client_version + " is incompatible with the server, please download a new version at http://openlierox.net/.\n"
 						   "Incompatibility reason: " + incompReason);
+			bs.Send(tSocket);
 			notes << "GameServer::ParseGetChallenge: client has incompatible version " << client_version << ": " << incompReason << endl;
 			return;			
 		}
 	}
 	
-	if(game.isLocalGame() && bLocalClientConnected) {
-		sendBadConnect(tSocket, "This game is local.");
-		return;
-	}
-
 	// If were in the game, deny challenges
-	if ( game.state != Game::S_Lobby && !serverAllowsConnectDuringGame() ) {
-		sendBadConnect(tSocket, OldLxCompatibleString(networkTexts->sGameInProgress));
+	if ( iState != SVS_LOBBY && !serverAllowsConnectDuringGame() ) {
+		// TODO: move this out here
+		bs.writeInt(-1, 4);
+		bs.writeString("lx::badconnect");
+		bs.writeString(OldLxCompatibleString(networkTexts->sGameInProgress));
+		bs.Send(tSocket.get());
 		notes << "GameServer::ParseGetChallenge: Client from " << tSocket->debugString() << " cannot join, the game is in progress." << endl;
 		return;
 	}
 	
-	// Issue (or reuse) a challenge slot for this address.
-	int challNum = ChallengeTable_issue(
-		tChallenges, MAX_CHALLENGES, adrFrom, tLX->currentTime, client_version);
+	// see if we already have a challenge for this ip
+	for (i = 0;i < MAX_CHALLENGES;i++) {
+
+		if (IsNetAddrValid(tChallenges[i].Address)) {
+			if (AreNetAddrEqual(adrFrom, tChallenges[i].Address))
+				continue;
+			if (ChallengeToSet < 0 || tChallenges[i].fTime < OldestTime) {
+				OldestTime = tChallenges[i].fTime;
+				ChallengeToSet = i;
+			}
+		} else {
+			ChallengeToSet = i;
+			break;
+		}
+	}
+
+	if (ChallengeToSet >= 0) {
+
+		// overwrite the oldest
+		tChallenges[ChallengeToSet].iNum = (rand() << 16) ^ rand();
+		tChallenges[ChallengeToSet].Address = adrFrom;
+		tChallenges[ChallengeToSet].fTime = tLX->currentTime;
+		tChallenges[ChallengeToSet].sClientVersion = client_version;
+
+		i = ChallengeToSet;
+	}
 
 	// Send the challenge details back to the client
 	tSocket->setRemoteAddress(adrFrom);
@@ -1090,7 +1095,7 @@ void GameServer::ParseGetChallenge(const SmartPointer<NetworkSocket>& tSocket, C
 	// TODO: move this out here
 	bs.writeInt(-1, 4);
 	bs.writeString("lx::challenge");
-	bs.writeInt(challNum, 4);
+	bs.writeInt(tChallenges[i].iNum, 4);
 	if( client_version != "" )
 		bs.writeString(GetFullGameName());
 	bs.Send(tSocket.get());
@@ -1102,17 +1107,21 @@ void GameServer::ParseGetChallenge(const SmartPointer<NetworkSocket>& tSocket, C
 void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBytestream *bs) {
 	NetworkAddr		adrFrom;
 	int				p;
+	int				numplayers;
 	CServerConnection	*newcl = NULL;
 
+	//hints << "Got Connect packet" << endl;
 
 	// Connection details
 	int		ProtocolVersion;
+	//int		Port = LX_PORT;
 	int		ChallId;
 	int		iNetSpeed = 0;
 
 
 	// Ignore if we are playing (the challenge should have denied the client with a msg)
-	if ( !serverAllowsConnectDuringGame() && game.state != Game::S_Lobby )  {
+	if ( !serverAllowsConnectDuringGame() && iState != SVS_LOBBY )  {
+//	if (iState == SVS_PLAYING) {
 		notes << "GameServer::ParseConnect: In game, ignoring." << endl;
 		return;
 	}
@@ -1152,7 +1161,11 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 			buf = " ";
 
 		// Wrong protocol version, don't connect client
-		sendBadConnect(net_socket, OldLxCompatibleString(buf));
+		CBytestream bytestr;
+		bytestr.writeInt(-1, 4);
+		bytestr.writeString("lx::badconnect");
+		bytestr.writeString(OldLxCompatibleString(buf));
+		bytestr.Send(net_socket.get());
 		hints << "GameServer::ParseConnect: Wrong protocol version" << endl;
 		return;
 	}
@@ -1163,10 +1176,15 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	// Is this IP banned?
 	if (getBanList()->isBanned(szAddress))  {
 		hints << "Banned client " << szAddress << " was trying to connect" << endl;
-		sendBadConnect(net_socket, OldLxCompatibleString(networkTexts->sYouAreBanned));
+		CBytestream bytestr;
+		bytestr.writeInt(-1, 4);
+		bytestr.writeString("lx::badconnect");
+		bytestr.writeString(OldLxCompatibleString(networkTexts->sYouAreBanned));
+		bytestr.Send(net_socket.get());
 		return;
 	}
 
+	//Port = pack->ReadShort();
 	ChallId = bs->readInt(4);
 	iNetSpeed = bs->readInt(1);
 
@@ -1176,12 +1194,18 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	// Get user info
 	int numworms = bs->readInt(1);
 	
-	//Block attempts to join without worms - this fixes the "empty name join glitch"
-	//NOTE: The local client should be allowed to connect without worms in dedicated mode??
-	if (numworms<=0 && !(addrFromStr.find("127.0.0.1")==0)){
-		sendBadConnect(net_socket, OldLxCompatibleString("Connection failed - you must have a name"));
+	//Block attempts to join without any "worms" - this fixes the "empty name join glitch"
+	//NOTE: The local client should we allowed to connect without worms in dedicated mode??
+	//NOTE: Is this the correct/best way to do it?
+	if (numworms<=0 && !(addrFromStr.find("127.0.0.1")==0)) {
+		CBytestream sKickmsg;
+		sKickmsg.writeInt(-1, 4);
+		sKickmsg.writeString("lx::badconnect");
+		sKickmsg.writeString(OldLxCompatibleString("Connection failed - you must have a name"));
+		sKickmsg.Send(net_socket.get());
 		return;
 	}
+	
 	
 	numworms = CLAMP(numworms, 0, (int)MAX_PLAYERS);
 	
@@ -1189,24 +1213,60 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	
 	// If we ignored this challenge verification, there could be double connections
 
-	// See if the challenge is valid.
-	// A reconnecting client keeps its slot on the server (reconnectFrom set),
-	// so its challenge need not still match.
+	// See if the challenge is valid
 	{
-		std::string challClientVersion;
-		bool validChallenge =
-			ChallengeTable_consume(tChallenges, MAX_CHALLENGES, adrFrom, ChallId, challClientVersion);
+		bool valid_challenge = false;
+		int i;
+		for (i = 0; i < MAX_CHALLENGES; i++) {
+			if (IsNetAddrValid(tChallenges[i].Address) && AreNetAddrEqual(adrFrom, tChallenges[i].Address)) {
 
-		if (!reconnectFrom && !validChallenge) {
+				if (ChallId == tChallenges[i].iNum)  { // good
+					SetNetAddrValid(tChallenges[i].Address, false); // Invalidate it here to avoid duplicate connections
+					tChallenges[i].iNum = 0;
+					valid_challenge = true;
+					break;
+				} else { // bad
+					valid_challenge = false;
+
+					// HINT: we could receive another connect packet which will contain this challenge
+					// and therefore get the worm connected twice. To avoid it, we clear the challenge here
+					SetNetAddrValid(tChallenges[i].Address, false);
+					tChallenges[i].iNum = 0;
+					if(!reconnectFrom) {
+						hints << "HINT: deleting a doubled challenge" << endl;
+					}
+					
+					// There can be more challanges from one client, if this one doesn't match,
+					// perhaps some other does
+				}
+			}
+		}
+
+		// Ran out of challenges
+		if (!reconnectFrom && i == MAX_CHALLENGES ) {
 			notes << "No connection verification for client found" << endl;
-			sendBadConnect(net_socket, OldLxCompatibleString(networkTexts->sNoIpVerification));
+			CBytestream bytestr;
+			bytestr.writeInt(-1, 4);
+			bytestr.writeString("lx::badconnect");
+			bytestr.writeString(OldLxCompatibleString(networkTexts->sNoIpVerification));
+			bytestr.Send(net_socket.get());
 			return;
 		}
 
+		if (!reconnectFrom && !valid_challenge)  {
+			notes << "Bad connection verification of client" << endl;
+			CBytestream bytestr;
+			bytestr.writeInt(-1, 4);
+			bytestr.writeString("lx::badconnect");
+			bytestr.writeString(OldLxCompatibleString(networkTexts->sBadVerification));
+			bytestr.Send(net_socket.get());
+			return;
+		}
+				
 		if(reconnectFrom)
 			clientVersion = reconnectFrom->getClientVersion();
 		else
-			clientVersion = challClientVersion;
+			clientVersion = tChallenges[i].sClientVersion;
 	}
 
 
@@ -1226,6 +1286,31 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 			bLocalClientConnected = true; // we just assume that
 			reconnectFrom->setLocalClient(false);
 		}
+				
+		/*
+		 // Must not have got the connection good packet
+		 if(cl->getStatus() == NET_CONNECTED) {
+		 hints << "Duplicate connection" << endl;
+		 
+		 // Resend the 'good connection' packet
+		 bytestr.Clear();
+		 bytestr.writeInt(-1,4);
+		 bytestr.writeString("lx::goodconnection");
+		 // Send the worm ids
+		 for( int i=0; i<cl->getNumWorms(); i++ )
+		 bytestr.writeInt(cl->getWorm(i)->getID(), 1);
+		 bytestr.Send(net_socket);
+		 return;
+		 }
+		 
+		 // TODO: does this make sense? the already connected client tries to connect again while playing?
+		 // Trying to connect while playing? Drop the client
+		 if(cl->getStatus() == NET_PLAYING) {
+		 //conprintf("Client tried to reconnect\n");
+		 //DropClient(&players[p]);
+		 return;
+		 }
+		 */		
 	}
 
 	// Find a spot for the client
@@ -1238,30 +1323,48 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 			}
 		}
 
+	
+	// Calculate number of current players on this server
+	numplayers = 0;
+	for (p = 0; p < MAX_WORMS; p++) {
+		if (cWorms[p].isUsed())
+			numplayers++;
+	}
+	if(numplayers != iNumPlayers)
+		warnings << "WARNING: stored player count " << iNumPlayers << " is different from recalculated player count " << numplayers << endl;
 
 	// Ran out of slots
 	if (!newcl) {
 		warnings << "I have no more open slots for the new client" << endl;
 		notes << GetDateTime() << " - Server Error report" << endl;
-		notes << "currentTime is " << (tLX->currentTime - AbsTime()).seconds() << " Numplayers is " << game.worms()->size() << endl;
+		notes << "currentTime is " << (tLX->currentTime - AbsTime()).seconds() << " Numplayers is " << numplayers << endl;
 		std::string msg;
 
-		sendBadConnect(net_socket, OldLxCompatibleString(networkTexts->sNoEmptySlots));
+		CBytestream bytestr;
+		bytestr.writeInt(-1, 4);
+		bytestr.writeString("lx::badconnect");
+		bytestr.writeString(OldLxCompatibleString(networkTexts->sNoEmptySlots));
+		bytestr.Send(net_socket.get());
 		return;
 	}
 
 	// Server full (maxed already, or the number of extra worms wanting to join will go over the max)
-	size_t max_players = ((game.isServer() && !game.isLocalGame()) && tLXOptions->iMaxPlayers > 0) ? tLXOptions->iMaxPlayers : MAX_WORMS; // No limits (almost) for local play
-	if (!newcl->isLocalClient() && game.worms()->size() + numworms > max_players) {
+	int max_players = (tLX->iGameType == GME_HOST ? tLXOptions->tGameInfo.iMaxPlayers : MAX_WORMS); // No limits (almost) for local play
+	if (!newcl->isLocalClient() && numplayers + numworms > max_players) {
 		notes << "I am full, so the new client cannot join" << endl;
-		sendBadConnect(net_socket, OldLxCompatibleString(networkTexts->sServerFull));
+		CBytestream bytestr;
+		bytestr.writeInt(-1, 4);
+		bytestr.writeString("lx::badconnect");
+		bytestr.writeString(OldLxCompatibleString(networkTexts->sServerFull));
+		bytestr.Send(net_socket.get());
 		return;
 	}
 
 
-	if(!reconnectFrom)
-		newcl->Clear();
-		
+	// Connect
+	if (!newcl)
+		return;
+
 	// TODO: this is a bad hack, fix it
 	// If this is the first client connected, it is our local client
 	if (!bLocalClientConnected)  {
@@ -1277,6 +1380,8 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 
 	if( newcl->getChannel() ) {
 		// Note: do it also for reconnecting clients as reconnecting detection could be wrong
+		// TODO: It seems that this happens very often. Why?
+		//warnings << "ParseConnect: new client has old channel set" << endl;
 		newcl->resetChannel();
 	}
 
@@ -1284,7 +1389,11 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		if(! newcl->createChannel( std::min(clientVersion, GetGameVersion() ) ) )
 		{	// This should not happen - just in case
 			errors << "Cannot create CChannel for client - invalid client version " << clientVersion.asString() << endl;
-			sendBadConnect(net_socket, OldLxCompatibleString("Your client is incompatible to this server"));
+			CBytestream bytestr;
+			bytestr.writeInt(-1, 4);
+			bytestr.writeString("lx::badconnect");
+			bytestr.writeString(OldLxCompatibleString("Your client is incompatible to this server"));
+			bytestr.Send(net_socket.get());
 			return;
 		}
 
@@ -1312,11 +1421,15 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		newcl->getRights()->Nothing();  // Reset the rights here
 	
 	// check version compatibility already earlier to not add/kick bots if not needed
-	if( game.state != Game::S_Lobby ) {
+	if( iState != SVS_LOBBY ) {
 		std::string msg;
 		if(!checkVersionCompatibility(newcl, false, false, &msg)) {
 			notes << "ParseConnect: " << newcl->debugName(false) << " is too old: " << msg << endl;
-			sendBadConnect(net_socket, OldLxCompatibleString("Your OpenLieroX version is too old, please update.\n" + msg));
+			CBytestream bytestr;
+			bytestr.writeInt(-1, 4);
+			bytestr.writeString("lx::badconnect");
+			bytestr.writeString(OldLxCompatibleString("Your OpenLieroX version is too old, please update.\n" + msg));
+			bytestr.Send(net_socket.get());
 			RemoveClient(newcl, "version too old (while connecting)");
 			return;
 		}
@@ -1329,11 +1442,11 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	if(strWelcomeMessage == "<none>") strWelcomeMessage = "";
 	if(strWelcomeMessage != "")  {
 		
-		// Server name
+		// Server name3
 		replacemax(strWelcomeMessage, "<server>", tLXOptions->sServerName, strWelcomeMessage, 1);
 		
 		// Host name
-		replacemax(strWelcomeMessage, "<me>", game.firstLocalHumanWorm() ? game.firstLocalHumanWorm()->getName() : "no-local-human-worm", strWelcomeMessage, 1);
+		replacemax(strWelcomeMessage, "<me>", cWorms[0].getName(), strWelcomeMessage, 1);
 		
 		// Version
 		replacemax(strWelcomeMessage, "<version>", clientVersion.asHumanString(), strWelcomeMessage, 1);
@@ -1376,16 +1489,22 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	
 	
 	// Find spots in our list for the worms
-	std::vector<int> ids(numworms, -1);	
-
-	std::vector<WormJoinInfo> newWorms(numworms);
+	int ids[MAX_PLAYERS];
+	for(int i = 0; i < MAX_PLAYERS; ++i) ids[i] = -1;
+	
+	std::vector<WormJoinInfo> newWorms;
+	newWorms.resize(numworms);
 	for (int i = 0; i < numworms; i++) {
 		newWorms[i].readInfo(bs);
 
 		// If bots aren't allowed, disconnect the client
 		if (newWorms[i].m_type == PRF_COMPUTER && !tLXOptions->bAllowRemoteBots && !strincludes(szAddress, "127.0.0.1"))  {
 			hints << "Bot was trying to connect from " << newcl->debugName() << endl;
-			sendBadConnect(net_socket, OldLxCompatibleString(networkTexts->sBotsNotAllowed));
+			CBytestream bytestr;
+			bytestr.writeInt(-1, 4);
+			bytestr.writeString("lx::badconnect");
+			bytestr.writeString(OldLxCompatibleString(networkTexts->sBotsNotAllowed));
+			bytestr.Send(net_socket.get());
 			
 			RemoveClient(newcl, "bot tried to connect");
 			return;
@@ -1394,23 +1513,32 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		//Check name length - by using tricks it's possible (at least in 0.58) to create excessively long names
 		//which cause lots of annoyance. This server-side check prevents that and truncates oversized nicks.
 		//Because the player creation menu allows max 20 characters, we can check it very easily.
-		//Hard-coding the length isn't nice - however, it seems to be hard-coded elsewhere...
-		if (newWorms[i].sName.size() > 20)
-			newWorms[i].sName.resize(20);
-		
+		//Player name does not allow Unicode characters for backward compatibility
+		if (newWorms[i].sName.size() > MAX_WORM_NAME_LENGTH)
+			newWorms[i].sName.resize(MAX_WORM_NAME_LENGTH);
 	}
 
 	std::set<CWorm*> removeWormList;
 	
 	if(reconnectFrom) {
-		for_each_iterator(CWorm*, w, game.wormsOfClient(reconnectFrom)) {			
+		for(int i = 0; i < reconnectFrom->getNumWorms(); ++i) {
+			CWorm* w = reconnectFrom->getWorm(i);
+			if(!w) {
+				warnings << "ParseConnect with reconnecting client: worm nr " << i << " from client is unset" << endl;
+				continue;
+			}
+			if(!w->isUsed()) {
+				warnings << "ParseConnect with reconnecting client: worm nr " << i << " from client is not used" << endl;
+				continue;
+			}
+			
 			bool found = false;
-			for(size_t j = 0; j < newWorms.size(); ++j) {
+			for(int j = 0; j < numworms; ++j) {
 				// compare by name, we have no possibility to do it more exact but it's also not that important
-				if(ids[j] < 0 && newWorms[j].sName == w->get()->getName()) {
+				if(ids[j] < 0 && newWorms[j].sName == w->getName()) {
 					// found one
 					found = true;
-					ids[j] = w->get()->getID();
+					ids[j] = w->getID();
 					// HINT: Don't apply the other information from WormJoinInfo,
 					// the worm should be up-to-date and we could screw it up (e.g. skin or team).
 					break;
@@ -1419,8 +1547,8 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 			
 			if(!found) {
 				notes << "reconnecting client " << newcl->debugName(false) << " doesn't have worm ";
-				notes << w->get()->getID() << ":" << w->get()->getName() << " anymore, removing that worm globally" << endl;
-				removeWormList.insert(w->get());
+				notes << w->getID() << ":" << w->getName() << " anymore, removing that worm globally" << endl;
+				removeWormList.insert(w);
 			}
 		}
 	}
@@ -1432,16 +1560,16 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	std::set<CWorm*> newJoinedWorms;
 	
 	// search slots for new worms
-	for (size_t i = 0; i < newWorms.size(); ++i) {
+	for (int i = 0; i < numworms; ++i) {
 		if(ids[i] >= 0) continue; // this worm is already associated
 		
-		AttrUpdateByClientScope updateScope(newcl);
-		CWorm* w = AddWorm(newWorms[i], newcl);
+		CWorm* w = AddWorm(newWorms[i]);
 		if(w == NULL) {
 			warnings << "Server:Connect: cannot add " << i << "th worm for " << newcl->debugName(false) << endl;
 			break;
-		}		
+		}
 		
+		w->setClient(newcl);
 		ids[i] = w->getID();
 		newJoinedWorms.insert(w);
 
@@ -1458,11 +1586,23 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		if(strWelcomeMessage != "")
 			SendGlobalText(Replace(strWelcomeMessage, "<player>", w->getName()), TXT_NETWORK);		
 	}
+
 	
+	// Set the worm info
+	newcl->setNumWorms(numworms);
+	for (int i = 0;i < numworms;i++) {
+		if(ids[i] < 0) {
+			// Very strange, we should have catched this case earlier. This means that there were not enough open slots.
+			errors << "Server::ParseConnect: We didn't found a slot for " << newWorms[i].sName << " for " << newcl->debugName(false) << endl;
+			newcl->setWorm(i, NULL);
+			continue;
+		}
+		newcl->setWorm(i, &cWorms[ids[i]]);
+	}
 	
 	// remove bots if not wanted anymore
 	CheckForFillWithBots();
-	numworms = (int)game.wormsOfClient(newcl)->size(); // it was earlier when also local client could reconnect - should have no effect anymore
+	numworms = newcl->getNumWorms(); // it was earlier when also local client could reconnect - should have no effect anymore
 	net_socket->setRemoteAddress(adrFrom); // it could have been changed
 
 	{
@@ -1472,21 +1612,14 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		bytestr.writeString("lx::goodconnection");
 
 		// Tell the client the id's of the worms
-		for_each_iterator(CWorm*, w, game.wormsOfClient(newcl))
-			bytestr.writeInt(w->get()->getID(), 1);
+		for (int i = 0;i < newcl->getNumWorms(); i++)
+			bytestr.writeInt(newcl->getWorm(i)->getID(), 1);
 
 		bytestr.Send(net_socket.get());
-
-		// The client will know about the clients via the package above.
-		// We don't send obj-creation-info for these worms anymore.
-		// This is not as easy to cleanup because we anyway need a
-		// way to tell the client that it owns the worms.
-		for_each_iterator(CWorm*, w, game.wormsOfClient(newcl))
-			newcl->gameState->addObject(w->get()->thisRef);
 	}
 
 	// If we now the client version already, we can avoid this for newer clients.
-	if(newcl->getClientVersion() <= OLXBetaVersion(0,57,4)) {
+	if(newcl->getClientVersion() <= OLXBetaVersion(4)) {
 		// Let them know our version
 		CBytestream bytestr;
 		bytestr.writeInt(-1, 4);
@@ -1502,8 +1635,8 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	}
 	
 	// In older clients, it was possible to disallow that (which doesn't really make sense).
-	// In >=0.57 Beta9, we just always can use it. So we have to tell old clients that it's OK.
-	if(newcl->getClientVersion() < OLXBetaVersion(0,57,9)) {
+	// In >=Beta9, we just always can use it. So we have to tell old clients that it's OK.
+	if(newcl->getClientVersion() <= OLXVersion(0,57)) {
 		CBytestream bytestr;
 		bytestr.writeInt(-1, 4);
 		bytestr.writeString("lx:mouseAllowed");
@@ -1512,7 +1645,7 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 
 	// TODO: why is this still done here and not via feature array or similar?
 	// we do this since rev1897, i.e. since 0.57beta5
-	if (tLXOptions->bAllowStrafing) {
+	if (tLXOptions->tGameInfo.bAllowStrafing) {
 		CBytestream bytestr;
 		bytestr.writeInt(-1, 4);
 		bytestr.writeString("lx:strafingAllowed");
@@ -1539,7 +1672,7 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	checkVersionCompatibility(newcl, false);
 
 	
-	if( game.state == Game::S_Lobby )
+	if( iState == SVS_LOBBY )
 		// Tell new client about game lobby details like mod/map and all game settings.
 		// In game, we would send all these info in SendPrepareGame().
 		newcl->getNetEngine()->SendUpdateLobbyGame();
@@ -1555,7 +1688,7 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	
 	
 	// handling for connect during game
-	if( game.state != Game::S_Lobby ) {
+	if( iState != SVS_LOBBY ) {
 		// we already check for compatibility earlier
 		
 		if(!reconnectFrom) {
@@ -1564,23 +1697,18 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		}
 		newcl->setGameReady(false);
 
-		// A mid-game joiner has none of the synced state yet
-		// (a lobby joiner accumulates it over the lobby frames);
-		// send it now, before PrepareGame, so the client knows the mod (#973).
-		notes << "connect during game: " << newcl->debugName() << ", sending game state then PrepareGame" << endl;
-		SendGameStateUpdates(newcl);
-
-		if(newcl->getClientVersion() <= OLXBetaVersion(0,57,8))
+		for(std::set<CWorm*>::iterator w = newJoinedWorms.begin(); w != newJoinedWorms.end(); ++w) {
+			(*w)->Prepare(true);
+		}
+		
+		if(newcl->getClientVersion() <= OLXVersion(0,57))
 			// HINT: this is necessary because of beta8 which doesn't update all its state variables from preparegame
 			newcl->getNetEngine()->SendUpdateLobbyGame();
 		newcl->getNetEngine()->SendPrepareGame();
-		
-		// We have not sent the whole feature array in SendPrepareGame - we do this now seperately here
-		newcl->getNetEngine()->SendUpdateLobbyGame();
 	}	
 
-	if (!game.isLocalGame()) {
-		if( game.state == Game::S_Lobby )
+	if (tLX->iGameType != GME_LOCAL) {
+		if( iState == SVS_LOBBY )
 			SendWormLobbyUpdate(); // to everbody
 	}
 	
@@ -1589,7 +1717,7 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 	UpdateWorms();
 	
 
-	if( game.state != Game::S_Lobby ) {
+	if( iState != SVS_LOBBY ) {
 		newcl->getNetEngine()->SendTeamScoreUpdate();
 		
 		// TODO: what is the information of this hint? and does it apply here anyway?
@@ -1601,14 +1729,62 @@ void GameServer::ParseConnect(const SmartPointer<NetworkSocket>& net_socket, CBy
 		CServerConnection *cl = cClients;
 		for(int c = 0; c < MAX_CLIENTS; c++, cl++) {
 			if(cl->getStatus() != NET_CONNECTED) continue;
-			if(!game.wormsOfClient(cl)->isValid()) continue;
+			if(cl->getNumWorms() == 0) continue;
 			if(!cl->getGameReady()) continue;
 			cl->getNetEngine()->SendClientReady(newcl);
 		}
-
+		
+		/*
+		 // TODO: This should only be needed if gamemode or other stuff changed it to some unexpected value.
+		 // Should we perhaps change it? Or let gamemode (or other code) just take care about this anyway?
+		 // Set some info about the new worms
+		 for(std::set<CWorm*>::iterator w = newJoinedWorms.begin(); w != newJoinedWorms.end(); ++w) {
+		 for(int ii = 0; ii < MAX_CLIENTS; ii++)
+		 cClients[ii].getNetEngine()->SendWormScore( (*w) );
+		 }*/
+		
 		m_flagInfo->sendCurrentState(newcl);
 				
+		for(std::set<CWorm*>::iterator w = newJoinedWorms.begin(); w != newJoinedWorms.end(); ++w) {
+			PrepareWorm(*w);
+
+			// send other clients non-default worm properties of new worms 
+
+			if(CServerNetEngine::isWormPropertyDefault(*w)) continue;
+			
+			for( int i = 0; i < MAX_CLIENTS; i++ ) {
+				if( newcl == &cClients[i] ) continue;
+				if( cClients[i].getStatus() != NET_CONNECTED ) continue;
+				cClients[i].getNetEngine()->SendWormProperties(*w); // if we have changed them in prepare or so
+			}
+		}
+
 		newcl->getNetEngine()->SendWormProperties(true); // send new client other non-default worm properties
+	}
+	
+	
+	
+	// Share reliable channel bandwidth equally between all clients - 
+	// the amount of reliable data that should be transmitted is more-less the same for each client
+	// But we finetuning the delay between reliable packets
+	int clientsAmount = 0;
+	for(int c = 0; c < MAX_CLIENTS; c++) 
+	{
+		if(cClients[c].getStatus() != NET_CONNECTED) 
+			continue;
+		if( !cClients[c].isLocalClient() )
+			clientsAmount ++;
+	}
+	for(int c = 0; c < MAX_CLIENTS; c++) 
+	{
+		if(cClients[c].getStatus() != NET_CONNECTED) 
+			continue;
+		// TODO: finetune this coefficients
+		if( cClients[c].isLocalClient() )
+			cClients[c].getChannel()->LimitReliableStreamBandwidth( -1.0f ); // No limit
+		else
+			cClients[c].getChannel()->LimitReliableStreamBandwidth( getMaxUploadBandwidth() / clientsAmount * 0.5f, 
+																4.0f + cClients[c].getNetSpeed() );
 	}
 }
 
@@ -1620,7 +1796,7 @@ void GameServer::ParsePing(const SmartPointer<NetworkSocket>& net_socket)
 	// Ignore pings in local
 	// HINT: this can happen when you quit your server and go play local immediatelly - some
 	// people have not updated their serverlist yet and try to ping and query the server
-	if (game.isLocalGame())
+	if (tLX->iGameType != GME_HOST)
 		return;
 
 	NetworkAddr		adrFrom = net_socket->remoteAddress();
@@ -1644,7 +1820,7 @@ void GameServer::ParseTime(const SmartPointer<NetworkSocket>& tSocket)
 	// Ignore pings in local
 	// HINT: this can happen when you quit your server and go play local immediatelly - some
 	// people have not updated their serverlist yet and try to ping and query the server
-	if (game.isLocalGame())
+	if (tLX->iGameType != GME_HOST)
 		return;
 
 
@@ -1655,7 +1831,7 @@ void GameServer::ParseTime(const SmartPointer<NetworkSocket>& tSocket)
 	bs.Clear();
 	bs.writeInt(-1, 4);
 	bs.writeString("lx::timeis");
-	bs.writeFloat( (float)game.serverTime().seconds() );
+	bs.writeFloat( (float)fServertime.seconds() );
 
 	bs.Send(tSocket);
 }
@@ -1671,7 +1847,7 @@ void GameServer::ParseWantsJoin(const SmartPointer<NetworkSocket>& tSocket, CByt
 	// Ignore wants to join in local
 	// HINT: this can happen when you quit your server and go play local immediatelly - some
 	// people have not updated their serverlist yet and try to ping and query the server
-	if (game.isLocalGame())
+	if (tLX->iGameType != GME_HOST)
 		return;
 
 	// Allowed?
@@ -1682,10 +1858,10 @@ void GameServer::ParseWantsJoin(const SmartPointer<NetworkSocket>& tSocket, CByt
 	if (!tLXOptions->bWantsJoinBanned && cBanList.isBanned(ip))
 		return;
 	
-	//Check name length and resize if too long. 0.58 allows creation of oversized names using tricks.
-	if (Nick.size()>20)
-		Nick.resize(20);
-
+	//Truncate nicks longer than "legitimately" possible
+	if (Nick.size() > MAX_WORM_NAME_LENGTH)
+		Nick.resize(MAX_WORM_NAME_LENGTH);
+	
 	// Notify about the wants to join
 	if (networkTexts->sWantsJoin != "<none>")  {
 		std::string buf;
@@ -1706,16 +1882,24 @@ void GameServer::ParseQuery(const SmartPointer<NetworkSocket>& tSocket, CBytestr
 	// Ignore queries in local
 	// HINT: this can happen when you quit your server and go play local immediatelly - some
 	// people have not updated their serverlist yet and try to ping and query the server
-	if (game.isLocalGame())
+	if (tLX->iGameType != GME_HOST)
 		return;
 
 	bytestr.writeInt(-1, 4);
 	bytestr.writeString("lx::queryreturn");
 
+	// Get Port
+	size_t pos = ip.rfind(':');
+	if (pos != std::string::npos)
+		ip.substr(pos);
+	
+	//if(ip == "23401")
+	//	bytestr.writeString(OldLxCompatibleString(sName+" (private)")); // Not used anyway
+	//else
 	bytestr.writeString(OldLxCompatibleString(tLXOptions->sServerName));
-	bytestr.writeByte(game.worms()->size());
-	bytestr.writeByte(tLXOptions->iMaxPlayers);
-	bytestr.writeByte(oldLXStateInt());
+	bytestr.writeByte(iNumPlayers);
+	bytestr.writeByte(tLXOptions->tGameInfo.iMaxPlayers);
+	bytestr.writeByte(iState);
 	bytestr.writeByte(num);
 	// Beta8+ info - old clients will just skip it
 	bytestr.writeString( GetGameVersion().asString() );
@@ -1732,7 +1916,7 @@ void GameServer::ParseGetInfo(const SmartPointer<NetworkSocket>& tSocket, CBytes
 	// Ignore queries in local
 	// HINT: this can happen when you quit your server and go play local immediatelly - some
 	// people have not updated their serverlist yet and try to ping and query the server
-	if (game.isLocalGame())
+	if (tLX->iGameType != GME_HOST)
 		return;
 
 	CBytestream     bs;
@@ -1744,59 +1928,77 @@ void GameServer::ParseGetInfo(const SmartPointer<NetworkSocket>& tSocket, CBytes
 	bs.writeString("lx::serverinfo");
 
 	bs.writeString(OldLxCompatibleString(tLXOptions->sServerName));
-	bs.writeByte(tLXOptions->iMaxPlayers);
-	bs.writeByte(oldLXStateInt());
+	bs.writeByte(tLXOptions->tGameInfo.iMaxPlayers);
+	bs.writeByte(iState);
 
 	// TODO: check if we should append "levels/" string here, it was like this in old code
-	bs.writeString( game.state == Game::S_Playing ? "levels/" + gameSettings[FT_Map].as<LevelInfo>()->path.get() : gameSettings[FT_Map].as<LevelInfo>()->path.get() );
-	bs.writeString(gameSettings[FT_Mod].as<ModInfo>()->name);
-	bs.writeByte(game.gameMode()->GeneralGameType());
-	bs.writeInt16(((int)gameSettings[FT_Lives] < 0) ? WRM_UNLIM : (int)gameSettings[FT_Lives]);
-	bs.writeInt16((int)gameSettings[FT_KillLimit]);
-	bs.writeInt16((int)gameSettings[FT_LoadingTime]);
-	bs.writeBool(gameSettings[FT_Bonuses]);
+	bs.writeString( iState == SVS_PLAYING ? "levels/" + tLXOptions->tGameInfo.sMapFile : tLXOptions->tGameInfo.sMapFile );
+	bs.writeString(tLXOptions->tGameInfo.sModName);
+	bs.writeByte(getGameMode()->GeneralGameType());
+	bs.writeInt16((tLXOptions->tGameInfo.iLives < 0) ? WRM_UNLIM : tLXOptions->tGameInfo.iLives);
+	bs.writeInt16(tLXOptions->tGameInfo.iKillLimit);
+	bs.writeInt16(tLXOptions->tGameInfo.iLoadingTime);
+	bs.writeBool(tLXOptions->tGameInfo.bBonusesOn);
 
 
 	// Players
-	bs.writeByte(game.worms()->size());
-	
-	for_each_iterator(CWorm*, w, game.worms()) {
-		bs.writeString(RemoveSpecialChars(w->get()->getName()));
-		bs.writeInt(w->get()->getScore(), 2);
+	int     numplayers = 0;
+	int     p;
+	CWorm *w = cWorms;
+	for (p = 0;p < MAX_WORMS;p++, w++) {
+		if (w->isUsed())
+			numplayers++;
 	}
 
+	bs.writeByte(numplayers);
+	w = cWorms;
+	for (p = 0;p < MAX_WORMS;p++, w++) {
+		if (w->isUsed()) {
+			bs.writeString(RemoveSpecialChars(w->getName()));
+			bs.writeInt(w->getScore(), 2);
+		}
+	}
+
+	w = cWorms;
 	// Write out lives
-	for_each_iterator(CWorm*, w, game.worms()) {
-		bs.writeInt(w->get()->getLives(), 2);
+	for (p = 0;p < MAX_WORMS;p++, w++) {
+		if (w->isUsed())
+			bs.writeInt(w->getLives(), 2);
 	}
 
 	// Write out IPs
-	for_each_iterator(CWorm*, w, game.worms()) {
-		std::string addr;
-		if (NetAddrToString(w->get()->getClient()->getChannel()->getAddress(), addr))  {
-			size_t pos = addr.find(':');
-			if (pos != std::string::npos)
-				addr.erase(pos, std::string::npos);
-		} else {
-			errors << "Cannot convert address for worm " << w->get()->getName() << endl;
-		}
+	w = cWorms;
+	for (p = 0; p < MAX_WORMS; p++, w++)  {
+		if (w->isUsed())  {
+			std::string addr = "0.0.0.0";
+			// Disabled for privacy reasons
+			/*
+			if (NetAddrToString(w->getClient()->getChannel()->getAddress(), addr))  {
+				size_t pos = addr.rfind(':');
+				if (pos != std::string::npos)
+					addr.erase(pos, std::string::npos);
+			} else {
+				errors << "Cannot convert address for worm " << w->getName() << endl;
+			}
 
-		if (addr.size() == 0)
-			addr = "0.0.0.0";
-		bs.writeString(addr);
+			if (addr.size() == 0)
+				addr = "0.0.0.0";
+			*/
+			bs.writeString(addr);
+		}
 	}
 
 	// Write out my version (we do this since Beta5)
 	bs.writeString(GetFullGameName());
 
 	// since Beta7
-	bs.writeFloat(gameSettings[FT_GameSpeed]);
+	bs.writeFloat(tLXOptions->tGameInfo.features[FT_GameSpeed]);
 	
 	// since Beta9
-	CServerNetEngineBeta9::WriteFeatureSettings(&bs, Version());
+	CServerNetEngineBeta9::WriteFeatureSettings(&bs);
 
 	// Game mode name
-	bs.writeString(game.gameMode()->Name());
+	bs.writeString(getGameMode()->Name());
 
 	bs.Send(tSocket);
 }
@@ -1889,8 +2091,8 @@ void GameServer::ParseServerRegistered(const SmartPointer<NetworkSocket>& tSocke
 	if( tUdpMasterServers.size() == 0 )
 		return;
 	NetworkAddr addr, addr6;
-	std::string domain = tUdpMasterServers[0].substr( 0, tUdpMasterServers[0].rfind(":") );
-	int port = atoi(tUdpMasterServers[0].substr( tUdpMasterServers[0].rfind(":") + 1 ));
+	std::string domain = tUdpMasterServers[0].substr( 0, tUdpMasterServers[0].rfind(':') );
+	int port = atoi(tUdpMasterServers[0].substr( tUdpMasterServers[0].rfind(':') + 1 ));
 	if( !GetFromDnsCache(domain, addr, addr6) )
 		return;
 	SetNetAddrPort( addr, port );

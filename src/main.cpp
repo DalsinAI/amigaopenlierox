@@ -9,20 +9,18 @@
 
 
 #include <cassert>
-#include <cstdlib> // for std::atexit
+#include <setjmp.h>
 #include <sstream> // for print_binary_string
 #include <set>
 #include <string>
 
-#include "MainLoop.h"
-#include "TeeStdoutHandler.h"
 #include "LieroX.h"
 #include "IpToCountryDB.h"
 #include "AuxLib.h"
 #include "CClient.h"
 #include "CServer.h"
 #include "ConfigHandler.h"
-#include "OLXConsole.h"
+#include "console.h"
 #include "GfxPrimitives.h"
 #include "FindFile.h"
 #include "InputEvents.h"
@@ -45,16 +43,9 @@
 #include "Music.h"
 #include "Debug.h"
 #include "TaskManager.h"
-#include "HTTP.h"
 #include "CGameMode.h"
 #include "ConversationLogger.h"
-#include "OLXCommand.h"
-#include "game/Mod.h"
-#include "gusanos/gusanos.h"
-#include "game/Game.h"
-#include "sound/SoundsBase.h"
-#include "game/ServerList.h"
-#include "client/StdinCLISupport.h"
+#include "Command.h"
 
 #include "DeprecatedGUI/CBar.h"
 #include "DeprecatedGUI/Graphics.h"
@@ -68,23 +59,37 @@
 #include <sys/stat.h>
 #endif
 
-#ifdef WIN32
-#include <Windows.h>
+#ifdef __ANDROID__
+#include <SDL/SDL_android.h>
 #endif
 
 #include <libxml/parser.h>
 
-#ifdef __MINGW32_VERSION
-#include <SDL_main.h>
+// TODO: i hate globals ...
+// we have to create a basic class Game or something
+
+lierox_t	*tLX = NULL;
+
+bool        bDisableSound = false;
+#ifdef DEDICATED_ONLY
+bool		bDedicated = true;
+bool		bJoystickSupport = false;
+#else //DEDICATED_ONLY
+bool		bDedicated = false;
+#ifdef DISABLE_JOYSTICK
+bool		bJoystickSupport = false;
+#else
+bool		bJoystickSupport = true;
 #endif
+#endif //DEDICATED_ONLY
+bool		bRestartGameAfterQuit = false;
+TStartFunction startFunction = NULL;
+void*		startFunctionData = NULL;
+ConversationLogger *convoLogger = NULL;
 
 
-
-static bool enableStdinCLI = true;
-
-static void ParseArguments_BeforeInit(int argc, char *argv[]);
-static void ParseArguments_AfterInit(int argc, char *argv[]);
-static void quitConsoleIOThreads();
+keyboard_t	*kb = NULL;
+IpToCountryDB *tIpToCountryDB = NULL;
 
 static std::list<std::string> startupCommands;
 
@@ -128,56 +133,6 @@ void print_binary_string(const std::string& txt) {
 	notes << buf << endl;
 }
 
-struct IgnoreSilentScope {
-	static int count;
-	static int oldN, oldH, oldW;
-	IgnoreSilentScope() {
-		if(count == 0) {
-			oldN = notes.minCoutVerb;
-			oldH = hints.minCoutVerb;
-			oldW = warnings.minCoutVerb;
-			notes.minCoutVerb = 0;
-			hints.minCoutVerb = 0;
-			warnings.minCoutVerb = 0;
-		}
-		count++;
-	}
-	~IgnoreSilentScope() {
-		count--;
-		if(count == 0) {
-			notes.minCoutVerb = oldN;
-			hints.minCoutVerb = oldH;
-			warnings.minCoutVerb = oldW;
-		}
-	}
-};
-int IgnoreSilentScope::count;
-int IgnoreSilentScope::oldN;
-int IgnoreSilentScope::oldH;
-int IgnoreSilentScope::oldW;
-
-
-struct StartupCLI : CmdLineIntf, CmdLineIntf::ExecScope {
-	SmartPointer<IgnoreSilentScope> ignoreSilentScope;
-
-	virtual void execNow(const Command &cmd) {
-		ignoreSilentScope = new IgnoreSilentScope();
-		notes << "startup command: " << cmd.cmd << endl;
-	}
-
-	virtual void pushReturnArg(const std::string& str) {
-		notes << "Ret: " << str << endl;
-	}
-
-	virtual void finalizeReturn() {
-		//notes << "Ret." << endl; // annoying
-	}
-
-	virtual void writeMsg(const std::string& msg, CmdLineMsgType type) {
-		notes << msg << endl;
-	}
-};
-
 static void DoSystemChecks() {
 	// sadly, these sizeof are directly used in CGameScript.cpp/CMap.cpp
 	// TODO: fix this issue
@@ -185,59 +140,393 @@ static void DoSystemChecks() {
 	static_assert(sizeof(short) == 2, "sizeof_short__equals2");
 	static_assert(sizeof(int) == 4, "sizeof_int__equals4");
 	static_assert(sizeof(float) == 4, "sizeof_float__equals4");
+	// sometimes the return value of SendMessage is used as a pointer
+	static_assert(sizeof(DWORD) == sizeof(void*), "sizeof_dword__equals_p");
 }
 
 
+char binaryfilename[2048] = {0};
 
-void setBinaryDirAndName(char* argv0);
+const char* GetBinaryFilename() { return binaryfilename; }
 
-// ParseArguments will set this eventually to true
-bool afterCrash = false;
-static bool afterCrashInformedUser = false;
+#ifndef WIN32
+sigjmp_buf longJumpBuffer;
+#endif
+
+static ThreadPoolItem* mainLoopThread = NULL;
+static int MainLoopThread(void*);
 
 
-extern "C" int real_main(int argc, char *argv[]);
-
-// OLX_UNITTEST is defined for the olx_tests target, whose main() lives in
-// tests/unit/test_main.cpp; disable this one there to avoid two main()s.
-#if (!defined(__APPLE__) || defined(OLX_USE_STD_MAIN)) && !defined(OLX_UNITTEST)
-int main(int argc, char *argv[]) {
-	return real_main(argc, argv);
+static SDL_Event QuitEventThreadEvent() {
+	SDL_Event ev;
+	ev.type = SDL_USEREVENT;
+	ev.user.code = UE_QuitEventThread;	
+	return ev;
 }
-#endif
 
 
-///////////////////
-// Main entry point
-int real_main(int argc, char *argv[])
-{
-#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
-	if(DoCrashReport(argc, argv)) return 0;
-#endif
+static void startMainLockDetector() {
+	struct MainLockDetector : Action {
+		bool wait(Uint32 time) {
+			if(!tLX) return false;
+			AbsTime oldTime = tLX->currentTime;
+			for(Uint32 t = 0; t < time; t += 100) {
+				if(!tLX) return false;
+				if(tLX->bQuitGame) return false;						
+				if(oldTime != tLX->currentTime) return true;
+				SDL_Delay(100);
+			}
+			return true;
+		}
+		int handle() {
+			// We should always have tLX!=NULL here as we uninit it after the thread-shutdown now.
+			while(tLX && !tLX->bQuitGame) {
+				AbsTime oldTime = tLX->currentTime;
+				if(!wait(1000)) return 0;
+				if(!tLX) return 0;
+				if(tLX->bQuitGame) return 0;
+				if(IsWaitingForEvent()) continue;
+				
+				// HINT: Comment that out and you'll find a lot of things in OLX which could be improved.
+				// WARNING: This is the only code here which could lead to very rare crashes.
+				//if(!cClient || cClient->getStatus() != NET_PLAYING) continue;
+				
+				// check if the mainthread is hanging
+				if(oldTime == tLX->currentTime) {
+					warnings << "possible lock of game thread detected" << endl;
+					//OlxWriteCoreDump("mainlock");
+					//RaiseDebugger();
+					
+					if(!wait(5*1000)) return 0;
+					if(tLX && !tLX->bQuitGame && oldTime == tLX->currentTime) {
+						hints << "Still locked after 5 seconds. Current threads:" << endl;
+						threadPool->dumpState(stdoutCLI());
+						hints << "Free system memory: " << (GetFreeSysMemory() / 1024) << " KB" << endl;
+						hints << "Cache size: " << (cCache.GetCacheSize() / 1024) << " KB" << endl;
+					}
+					else continue;
+					
+					// pause for a while, don't be so hard
+					if(!wait(25*1000)) return 0;
+					if(tLX && !tLX->bQuitGame && oldTime == tLX->currentTime) {
+						warnings << "we still are locked after 30 seconds" << endl;
+						if(tLXOptions && tLXOptions->bFullscreen) {
+							notes << "we are in fullscreen, going to window mode now" << endl;
+							tLXOptions->bFullscreen = false;
+							doSetVideoModeInMainThread();
+							notes << "setting window mode sucessfull" << endl;
+						}
+					}
+					else continue;
+				
+					// pause for a while, don't be so hard
+					if(!wait(25*1000)) return 0;
+					if(tLX && !tLX->bQuitGame && oldTime == tLX->currentTime) {
+						errors << "we still are locked after 60 seconds" << endl;
+						if(!AmIBeingDebugged()) {
+							errors << "aborting now" << endl;
+							abort();
+						}
+					}
+				}
+			}
+			return 0;
+		}
+	};
+	threadPool->start(new MainLockDetector(), "main lock detector", true);
+}
 
-	ParseArguments_BeforeInit(argc, argv);
 
-	// do that before teeStdoutInit so it might fall back to a safer version
-	Result stdinCLIinitRes(true);
-	if(enableStdinCLI)
-		stdinCLIinitRes = initStdinCLISupport();
-	teeStdoutInit();
+static bool menu_startgame = false;
 
-	// Backstop join for the console I/O threads; the shutdown paths join them
-	// explicitly first, since exit() can free the tee thread's statics (#1111).
-	std::atexit(quitConsoleIOThreads);
-
-	mainThreadId = getCurrentThreadId();
-	assert(mainThreadId != (ThreadId)-1);
-	setCurThreadName("Main Thread");
-	setCurThreadPriority(0.5f);
+struct VideoHandler {
+	SDL_mutex* mutex;
+	SDL_cond* sign;
+	int framesInQueue;
+	bool videoModeReady;
 	
+	VideoHandler() : mutex(NULL), sign(NULL), framesInQueue(0), videoModeReady(true) {
+		mutex = SDL_CreateMutex();
+		sign = SDL_CreateCond();
+	}
+	
+	~VideoHandler() {
+		SDL_DestroyMutex(mutex); mutex = NULL;
+		SDL_DestroyCond(sign); sign = NULL;
+	}
+	
+	void frame() {
+		{
+			ScopedLock lock(mutex);
+			if(!videoModeReady) return;
+			SDL_CondBroadcast(sign);
+			if(framesInQueue > 0) framesInQueue--;
+			else return;
+			VideoPostProcessor::process();
+		}
+		
+		flipRealVideo();
+	}
+	
+	void setVideoMode() {
+		bool makeFrame = false;
+		{
+			ScopedLock lock(mutex);
+			SetVideoMode();
+			videoModeReady = true;
+			SDL_CondBroadcast(sign);
+			
+			if(framesInQueue > 0) {
+				framesInQueue = 0;
+				makeFrame = true;
+				VideoPostProcessor::process();
+			}
+		}
+		
+		if(makeFrame)
+			flipRealVideo();
+	}
+	
+	void pushFrame() {
+		// wait for current drawing
+		ScopedLock lock(mutex);
+	
+		while(framesInQueue > 0)
+			SDL_CondWait(sign, mutex);
+		
+		SDL_Event ev;
+		ev.type = SDL_USEREVENT;
+		ev.user.code = UE_DoVideoFrame;
+		if(SDL_PushEvent(&ev) == 0) {
+			framesInQueue++;
+			VideoPostProcessor::flipBuffers();
+		} else
+			warnings << "failed to push videoframeevent" << endl;
+		
+	}
+	
+	void requestSetVideoMode() {
+		ScopedLock lock(mutex);
+		SDL_Event ev;
+		ev.type = SDL_USEREVENT;
+		ev.user.code = UE_DoSetVideoMode;
+		if(SDL_PushEvent(&ev) == 0) {
+			videoModeReady = false;
+			while(!videoModeReady)
+				SDL_CondWait(sign, mutex);
+		}
+		else
+			warnings << "failed to push setvideomode event" << endl;
+	}
+};
+
+static VideoHandler videoHandler;
+
+#if !defined(WIN32) && !defined(__amigaos__) // AmigaOS: no fork(), no mmap(): log with freopen() as on Windows
+
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+
+static char* teeOlxOutputFile = NULL;
+static const size_t MAXFILENAMESIZE = 2048;
+
+const char* GetLogFilename() { if(teeOlxOutputFile) return teeOlxOutputFile; return ""; }
+
+#include <unistd.h>
+#include <signal.h>
+
+static void teeOlxOutputToFileHandler(int c) {
+	static std::string buffer;
+	static std::string currentOlxOutputFilename = "";
+	static FILE* out = NULL;
+
+	if(c == EOF) {
+		if(out) fclose(out);
+		out = NULL;
+		return;
+	}
+	
+	char ch = c;
+	if(out)
+		fwrite(&ch, 1, 1, out);
+	else
+		buffer += c;
+	
+	if(ch == '\n' && currentOlxOutputFilename != teeOlxOutputFile) {
+		if(out) fclose(out);
+		out = NULL;
+		currentOlxOutputFilename = teeOlxOutputFile;
+		if(currentOlxOutputFilename != "") {
+			out = fopen(currentOlxOutputFilename.c_str(), "a");
+			if(out)
+				// We want to have everything written immediatly, to have the last output when it crashes
+				setvbuf(out, NULL, _IONBF, 0);				
+			if(out && !buffer.empty()) {
+				fwrite(buffer.c_str(), buffer.size(), 1, out);
+				buffer = "";
+			}
+		}
+	}
+}
+
+static void teeOlxOutputHandler(int in, int out) {
+	unsigned long c = 0;
+	const static bool printlinenum = false; // just for debugging
+	bool newline = true;
+	
+	// The main process will quit this fork by closing the pipe.
+	// There will be problems if this fork terminates earlier.
+#ifndef __ANDROID__
+	signal(SIGINT, SIG_IGN);
+	signal(SIGTERM, SIG_IGN);
+#endif
+	while( true ) {
+		char ch = 0;
+		if(read(in, &ch, 1) <= 0) break;
+		if(printlinenum && newline) {
+			char tmp[10];
+			sprintf(tmp, "%06lu: ", c);
+			write(out, &tmp, 8);
+			c++;
+			newline = false;
+		}
+		write( out, &ch, 1 );
+		if(ch == '\n')
+			newline = true;
+		teeOlxOutputToFileHandler((unsigned char)ch);
+	}
+	
+	teeOlxOutputToFileHandler(EOF);
+}
+
+struct TeeStdoutInfo {
+	pid_t proc;
+	int pipeend;
+	int oldstdout;
+	int oldstderr;
+};
+
+static TeeStdoutInfo teeStdoutInfo = {0,0,0,0};
+
+#include <sys/errno.h>
+#include <cstdio>
+#include <cstring>
+
+void teeStdoutInit() {
+	int pipe_to_handler[2];
+
+#ifdef __APPLE__
+	teeOlxOutputFile = (char*) mmap(0, MAXFILENAMESIZE, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANON, 0, 0);
+#else	
+	int fd = open("/dev/zero", O_RDWR);
+	if(fd < 0) {
+		errors << "teeStdout: cannot open dummy file" << endl;
+		return;
+	}
+	
+	teeOlxOutputFile = (char*) mmap(0, MAXFILENAMESIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+#endif
+	
+	if(!teeOlxOutputFile || teeOlxOutputFile == (char*)-1) {
+		teeOlxOutputFile = NULL;
+		errors << "teeStdout: cannot mmap: " << strerror(errno) << endl;
+		return;
+	}
+	
+	if(pipe(pipe_to_handler) != 0) { // error creating pipe
+		errors << "teeStdout: cannot create pipe: " << strerror(errno) << endl;		
+		return;
+	}
+	
+	pid_t p = fork();
+	if(p < 0) { // error forking
+		errors << "teeStdout: cannot fork: " << strerror(errno) << endl;		
+		return;
+	}
+	else if(p == 0) { // fork		
+		close(pipe_to_handler[1]);
+		teeOlxOutputHandler(pipe_to_handler[0], STDOUT_FILENO);
+		_exit(0);
+	}
+	else { // parent
+		close(pipe_to_handler[0]);
+		teeStdoutInfo.proc = p;
+		teeStdoutInfo.pipeend = pipe_to_handler[1];
+		teeStdoutInfo.oldstdout = dup(STDOUT_FILENO);
+		teeStdoutInfo.oldstderr = dup(STDERR_FILENO);
+		dup2(pipe_to_handler[1], STDOUT_FILENO);
+		dup2(pipe_to_handler[1], STDERR_FILENO);
+		setvbuf(stdout, NULL, _IONBF, 0);
+		setvbuf(stderr, NULL, _IONBF, 0);
+	}
+}
+
+void teeStdoutFile(const std::string& file) {
+	if(!teeOlxOutputFile) return;
+		
+	if(file.size() >= MAXFILENAMESIZE - 1) {
+		errors << "teeStdoutFile: filename " << file << " too big" << endl;
+		strcpy(teeOlxOutputFile, "");
+		return;
+	}
+	
+	strcpy(teeOlxOutputFile, file.c_str());
+}
+
+#include <sys/wait.h>
+
+// NOTE: We are calling this also when we crashed, so be sure that we only do save operations here!
+void teeStdoutQuit(bool wait = true) {
+	if(teeStdoutInfo.proc) {
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+		close(teeStdoutInfo.pipeend);
+		// The forked process should quit itself now.
+		if(wait) waitpid(teeStdoutInfo.proc, NULL, 0);
+
+		// Recover stdout/err
+		dup2(teeStdoutInfo.oldstdout, STDOUT_FILENO);
+		dup2(teeStdoutInfo.oldstderr, STDERR_FILENO);
+		close(teeStdoutInfo.oldstdout);
+		close(teeStdoutInfo.oldstderr);
+		printf("Standard Out/Err recovered\n");
+	}
+	
+	if(teeOlxOutputFile) {
+		munmap(teeOlxOutputFile, MAXFILENAMESIZE);
+		teeOlxOutputFile = NULL;
+	}
+}
+
+#else
+
+static char teeLogfile[2048] = "stdout.txt";
+
+void teeStdoutInit() {}
+void teeStdoutFile(const std::string& f) {
+	if(f.size() < sizeof(teeLogfile) - 1)
+		strcpy(teeLogfile, f.c_str());
+	else
+		errors << "teeStdoutFile: filename " << f << " is too long" << endl;
+	
+	// If you would just see the old output, it would look kind of strange
+	// that it suddenly stops, so print where we continue.
+	notes << "Logfile: " << f << endl;
+
+	if(freopen(Utf8ToSystemNative(f).c_str(), "a", stdout) == NULL) {
+		freopen("stdout.txt", "a", stdout); // reopen fallback
+		errors << "Could not open logfile" << endl;
+		return;
+	}
+	// no caching for stdout/logfile, it should be written immediatly to
+	// have the important information in case of a crash
+	setvbuf(stdout, NULL, _IONBF, 0);
+	
+	// print some messages again because they are missing in the logfile
 	hints << GetFullGameName() << " is starting ..." << endl;
 #ifdef DEBUG
 	hints << "This is a DEBUG build." << endl;
-#endif
-#ifdef OLX_GIT_HASH
-	hints << "Built from git hash: " << OLX_GIT_HASH << endl;
 #endif
 #ifdef DEDICATED_ONLY
 	hints << "This is a DEDICATED_ONLY build." << endl;
@@ -245,16 +534,108 @@ int real_main(int argc, char *argv[])
 	notes << "Free memory: " << (GetFreeSysMemory() / 1024 / 1024) << " MB" << endl;
 	notes << "Current time: " << GetDateTimeText() << endl;
 
-	if(!stdinCLIinitRes)
-		notes << "stdin CLI support init failed: " << stdinCLIinitRes.humanErrorMsg << endl;
+	// print the searchpaths, this may be very usefull for the user
+	notes << "Searchpaths (in this order):\n";
+	for(searchpathlist::const_iterator p2 = tSearchPaths.begin(); p2 != tSearchPaths.end(); p2++) {
+		std::string path = *p2;
+		ReplaceFileVariables(path);
+		notes << "  " << path << "\n";
+	}
+	notes << "Searchpaths finished." << endl;
 
+	// we still miss some more output but let's hope that this is enough
+}
+void teeStdoutQuit(bool wait = true) {}
+const char* GetLogFilename() { return teeLogfile; }
+
+#endif
+
+static void saveSetBinFilename(const std::string& f) {
+	if(f.size() < sizeof(binaryfilename) - 1)
+		strcpy(binaryfilename, f.c_str());
+}
+
+void setBinaryDirAndName(char* argv0) {
+#ifdef __amigaos__
+	// No PATH to search (getenv("PATH") is NULL), and from the Workbench
+	// argv is libnix's WBStartup message, not names: the program's drawer
+	// is PROGDIR:, and the program is PROGDIR:OpenLieroX.
+	binary_dir = "PROGDIR:";
+	saveSetBinFilename(binary_dir + "OpenLieroX");
+	return;
+#endif
+	saveSetBinFilename(SystemNativeToUtf8(argv0)); // set system native binary filename
+	binary_dir = SystemNativeToUtf8(argv0);
+	size_t slashpos = findLastPathSep(binary_dir);
+	if(slashpos != std::string::npos)  {
+		binary_dir.erase(slashpos);
+
+	} else {
+		binary_dir = ".";
+		
+		// We where called somewhere and located in some PATH.
+		// Search which one.
+#ifdef WIN32
+		static const char* PATHENTRYSEPERATOR = ";";
+#else
+		static const char* PATHENTRYSEPERATOR = ":";
+#endif
+		std::vector<std::string> paths = explode(getenv("PATH"), PATHENTRYSEPERATOR);
+		for(std::vector<std::string>::iterator p = paths.begin(); p != paths.end(); ++p) {
+			if(IsFileAvailable(SystemNativeToUtf8(*p) + "/" + binaryfilename, true)) {
+				binary_dir = SystemNativeToUtf8(*p);
+				saveSetBinFilename(binary_dir + "/" + binaryfilename);
+				return;
+			}
+		}
+		
+		// Hm, nothing found. Nothing we can do about it...
+	}
+}
+
+// ParseArguments will set this eventually to true
+static bool afterCrash = false;
+static bool afterCrashInformedUser = false;
+
+///////////////////
+// Main entry point
+int main(int argc, char *argv[])
+{
+#ifndef __ANDROID__
+	if(DoCrashReport(argc, argv)) return 0;
+#endif
+
+	teeStdoutInit();
+	
+	setCurThreadName("Main Thread");
+	setCurThreadPriority(0.5f);
+	
+	hints << GetFullGameName() << " is starting ..." << endl;
+#ifdef DEBUG
+	hints << "This is a DEBUG build." << endl;
+#endif
+#ifdef DEDICATED_ONLY
+	hints << "This is a DEDICATED_ONLY build." << endl;
+#endif
+	notes << "Free memory: " << (GetFreeSysMemory() / 1024 / 1024) << " MB" << endl;
+	notes << "Current time: " << GetDateTimeText() << endl;
+	{
+		char cwd[PATH_MAX] = "";
+		getcwd(cwd, sizeof(cwd));
+		notes << "Current directory: " << cwd << endl;
+	}
+	
 	// Initialize the LieroX structure
 	tLX = new lierox_t;
 
 	DoSystemChecks();
 	if(!InitNetworkSystem())
 		errors << "Failed to initialize the network library" << endl;
+#ifdef __amigaos__
+	InitThreadPool(4); // each thread is an AmigaOS process; the pool grows when it needs to
+#else
 	InitThreadPool();
+#endif
 	
 	setBinaryDirAndName(argv[0]);
 
@@ -272,8 +653,7 @@ startpoint:
 	}
 
 	teeStdoutFile(GetWriteFullFileName("logs/OpenLieroX - " + GetDateTimeFilename() + ".txt", true));
-	activateStdinCLIHistory();
-#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+#ifndef __ANDROID__
 	CrashHandler::init();
 #endif
 
@@ -281,18 +661,13 @@ startpoint:
 		SystemError("Could not load network strings.");
 		return -1;
 	}
-	
-	if(!Taunts::Init()) {
-		SystemError("Could not load taunts.");
-		return -1;
-	}
 
 	CSSParser::test_css();
 
-	// Parse the arguments
+    // Parse the arguments
 	// do it after the loading of the options as this can
 	// overwrite the default options
-	ParseArguments_AfterInit(argc, argv);
+	ParseArguments(argc, argv);
 
 	// Start the G15 support, it's suitable that the display is showing while loading.
 #ifdef WITH_G15
@@ -315,7 +690,8 @@ startpoint:
 		return -1;
 	}
 	
-	if (!bDedicated && !VideoPostProcessor::videoSurface().get()) {
+	kb = GetKeyboard();
+	if (!bDedicated && !VideoPostProcessor::videoSurface()) {
 		SystemError("Could not find screen.");
 		return -1;
 	}
@@ -326,20 +702,20 @@ startpoint:
 
 	tLX->currentTime = GetTime();
 
-	DrawLoading(70, "Initializing menu system");
+	DrawLoading(60, "Initializing menu system");
 
 	// Initialize menu
-	if(!DeprecatedGUI::Menu_Initialize()) {
-		SystemError("Error: Could not initialize the menu system.\nError when loading graphics files");
+	if(!DeprecatedGUI::Menu_Initialize(&menu_startgame)) {
+        SystemError("Error: Could not initialize the menu system.\nError when loading graphics files");
 		return -1;
 	}
 
 	// speedup for Menu_Start()
-	DrawLoading(90, "Loading main menu");
-	DeprecatedGUI::bSkipStart = true;
+	DrawLoading(85, "Loading main menu");
+	DeprecatedGUI::iSkipStart = true;
 	DeprecatedGUI::tMenu->iMenuType = DeprecatedGUI::MNU_MAIN;
 	DeprecatedGUI::Menu_MainInitialize();
-
+	
 	// Initialize chat logging
 	convoLogger = new ConversationLogger();
 	if (tLXOptions->bLogConvos)
@@ -347,11 +723,203 @@ startpoint:
 
 	// Setup the global keys
 	tLX->setupInputs();
-	
+
+	DrawLoading(99, "Loading Physics Engine");
+	PhysicsEngine::Init();
+
 	DrawLoading(100, "Done! Starting menu");
 
 	// Everything loaded, this is not needed anymore
 	ShutdownLoading();
+
+	if(startFunction != NULL) {
+		if(!startFunction(startFunctionData)) {
+			SystemError("ERROR: startfunction not successfull");
+			return -1;
+		}
+		// reset the data; the startfunction is intended to be called only once
+		startFunction = NULL;
+		startFunctionData = NULL;
+	}
+
+	for(std::list<std::string>::iterator i = startupCommands.begin(); i != startupCommands.end(); ++i) {
+		// execute as if it would have been entered in ingame console
+		notes << "startup command: " << *i << endl;
+		Con_Execute(*i);
+	}
+	startupCommands.clear(); // don't execute them again
+		
+	mainLoopThread = threadPool->start(MainLoopThread, NULL, "mainloop");
+	
+	startMainLockDetector();
+	
+	if(!bDedicated) {
+		// Get all SDL events and push them to our event queue.
+		// We have to do that in the same thread where we inited the video because of SDL.
+		SDL_Event ev;
+		memset( &ev, 0, sizeof(ev) );
+		while(true) {
+#ifdef __amigaos__
+			// OpenGPU's SDL_WaitEvent (under sdl12-compat) did not wake for the
+			// events the game thread pushes (video frames, quit), only for input:
+			// the game stalled until the mouse moved. Poll instead.
+			struct AmigaEvents { static int wait(SDL_Event* e) {
+				while(!SDL_PollEvent(e)) SDL_Delay(2);
+				return 1;
+			} };
+			while( AmigaEvents::wait(&ev) ) {
+#else
+			while( SDL_WaitEvent(&ev) ) {
+#endif
+				if(ev.type == SDL_USEREVENT) {
+					switch(ev.user.code) {
+						case UE_QuitEventThread:
+							goto quit;
+						case UE_DoVideoFrame:
+							videoHandler.frame();
+							continue;
+						case UE_DoSetVideoMode:
+							videoHandler.setVideoMode();
+							continue;
+						case UE_DoActionInMainThread:
+							((Action*)ev.user.data1)->handle();
+							delete (Action*)ev.user.data1;
+							continue;
+					}
+				}
+				if( ev.type == SDL_SYSWMEVENT ) {
+					EvHndl_SysWmEvent_MainThread( &ev );
+					continue;
+				}
+				mainQueue->push(ev);
+			}
+			
+			notes << "error while waiting for next event" << endl;
+			SDL_Delay(200);
+		}
+	}
+	
+quit:
+	threadPool->wait(mainLoopThread, NULL);
+	mainLoopThread = NULL;
+	
+	if(!bRestartGameAfterQuit)
+		CrashHandler::restartAfterCrash = false;
+	
+	PhysicsEngine::UnInit();
+
+	ShutdownLieroX();
+
+	notes << "waiting for all left threads and tasks" << endl;
+#ifdef __ANDROID__
+	if(!bRestartGameAfterQuit) {
+		exit(0); // Force quit without waiting to hide the app window
+	}
+#endif
+
+	taskManager->finishQueuedTasks();
+	threadPool->waitAll(); // do that before uniniting task manager because some threads could access it
+
+	// do that after shutting down the timers and other threads
+	ShutdownEventQueue();
+	
+	UnInitTaskManager();
+
+	if(bRestartGameAfterQuit) {
+		bRestartGameAfterQuit = false;
+		hints << "-- Restarting game --" << endl;
+#ifdef __ANDROID__
+		SDL_ANDROID_RestartMyself("");
+#endif
+
+		goto startpoint;
+	}
+
+	UnInitThreadPool();
+
+	// Network
+	QuitNetworkSystem();
+
+	// LieroX structure
+	// HINT: must be after end of all threads because we could access it
+	if(tLX) {
+		delete tLX;
+		tLX = NULL;
+	}
+	
+	notes << "Good Bye and enjoy your day..." << endl;
+
+	// Uninit the crash handler after all other code
+#ifndef __ANDROID__
+	CrashHandler::uninit();
+#endif
+
+	teeStdoutQuit();
+	return 0;
+}
+
+// note: important to have const char* here because std::string is too dynamic, could be screwed up when returning
+void SetCrashHandlerReturnPoint(const char* name) {
+#if !defined(WIN32) && !defined(__ANDROID__)
+	if(sigsetjmp(longJumpBuffer, true) != 0) {
+		hints << "returned from sigsetjmp in " << name << endl;
+		if(!tLXOptions) {
+			notes << "we already have tLXOptions uninitialised, exiting now" << endl;
+			exit(10);
+			return;
+		}
+		if(tLXOptions->bFullscreen) {
+			notes << "we are in fullscreen, going to window mode now" << endl;
+			tLXOptions->bFullscreen = false;
+			doSetVideoModeInMainThread();
+			notes << "back in window mode" << endl;
+		}
+	}
+#endif	
+}
+
+void doVideoFrameInMainThread() {
+	if(bDedicated) return;
+	videoHandler.pushFrame();
+}
+
+void doSetVideoModeInMainThread() {
+	if(bDedicated) return;
+	videoHandler.requestSetVideoMode();
+}
+
+void doVppOperation(Action* act) {
+	{
+		ScopedLock lock(videoHandler.mutex);
+		act->handle();
+	}
+	delete act;
+}
+
+void doActionInMainThread(Action* act) {
+	if(bDedicated) {
+		warnings << "doActionInMainThread cannot work correctly in dedicated mode" << endl;
+		// we will just put it to the main queue instead
+		mainQueue->push(act);
+		return;
+	}
+	
+	SDL_Event ev;
+	ev.type = SDL_USEREVENT;
+	ev.user.code = UE_DoActionInMainThread;
+	ev.user.data1 = act;
+	if(SDL_PushEvent(&ev) != 0) {
+		errors << "failed to push custom action event" << endl;
+	}
+}
+
+
+static std::string quitEngineFlagReason;
+static bool inMainGameLoop = false;
+
+static int MainLoopThread(void*) {
+	setCurThreadPriority(0.5f);
+	tLX->bQuitGame = false;
 
 	if(afterCrash && !afterCrashInformedUser) {
 		afterCrashInformedUser = true;
@@ -365,101 +933,106 @@ startpoint:
 									   "for fixing the problem.\n\nThanks!", DeprecatedGUI::LMB_OK);
 	}
 
-	game.init();
-
-	if(startFunction != NULL) {
-		if(!startFunction(startFunctionData)) {
-			SystemError("ERROR: startfunction not successfull");
-			return -1;
+	while(!tLX->bQuitGame) {
+		SetCrashHandlerReturnPoint("MainLoopThread before lobby");
+		
+		cClient->SetSocketWithEvents(true);
+		cServer->SetSocketWithEvents(true);
+		menu_startgame = false; // the menu has a reference to this variable
+		ResetQuitEngineFlag();
+		DeprecatedGUI::Menu_Start();	// Start and run the menu, won't return 'till user joins game / exits
+		cClient->SetSocketWithEvents(false);
+		cServer->SetSocketWithEvents(false);
+		
+		if(!menu_startgame) {
+			// Quit
+			tLX->bQuitGame = true;
+			break;
 		}
-		// reset the data; the startfunction is intended to be called only once
-		startFunction = NULL;
-		startFunctionData = NULL;
+		
+		if(tLX->bQuitEngine)
+			// If we already set the quitengine flag, we want to go back to the menu.
+			// Sometimes, when we get both a PrepareGame and a GotoLobby packet in
+			// a single menu-frame, we quit the menu and set the quitengine flag
+			continue;
+		
+		// Pre-game initialization
+		if(!bDedicated) FillSurface(VideoPostProcessor::videoSurface(), tLX->clBlack);
+		
+		ClearEntities();
+		
+		ProcessEvents();
+		notes << "MaxFPS is " << tLXOptions->nMaxFPS << endl;
+		
+		//cCache.ClearExtraEntries(); // Do not clear anything before game started, it may be slow
+		
+		notes << "GameLoopStart" << endl;
+		inMainGameLoop = true;
+		if( DedicatedControl::Get() )
+			DedicatedControl::Get()->GameLoopStart_Signal();
+
+		CrashHandler::recoverAfterCrash = tLXOptions->bRecoverAfterCrash && GetGameVersion().releasetype == Version::RT_NORMAL;
+		
+		//
+        // Main game loop
+        //
+		ResetQuitEngineFlag();
+		AbsTime oldtime = GetTime();
+		while(!tLX->bQuitEngine) {
+			
+			tLX->currentTime = GetTime();
+			SetCrashHandlerReturnPoint("main game loop");
+			
+			// Timing
+			tLX->fDeltaTime = tLX->currentTime - oldtime;
+			tLX->fRealDeltaTime = tLX->fDeltaTime;
+			oldtime = tLX->currentTime;
+			
+			// cap the delta
+			if(tLX->fDeltaTime.seconds() > 0.5f) {
+				warnings << "deltatime " << tLX->fDeltaTime.seconds() << " is too high" << endl;
+				tLX->fDeltaTime = 0.5f; // don't simulate more than 500ms, it could crash the game
+			}
+			
+			ProcessEvents();
+			
+			// Main frame
+			GameLoopFrame();
+			
+			doVideoFrameInMainThread();
+			CapFPS();
+		}
+		
+		CrashHandler::recoverAfterCrash = false;
+		
+		PhysicsEngine::Get()->uninitGame();
+		
+		notes << "GameLoopEnd: " << quitEngineFlagReason << endl;
+		inMainGameLoop = false;
+		if( DedicatedControl::Get() )
+			DedicatedControl::Get()->GameLoopEnd_Signal();		
+
+		cCache.ClearExtraEntries(); // Game ended - clear cache
+		
 	}
 
-	initLuaGlobal();
-
-	for(std::list<std::string>::iterator i = startupCommands.begin(); i != startupCommands.end(); ++i) {
-		SmartPointer<CmdLineIntf::ExecScope> startupCLI = new StartupCLI();
-		Execute(dynamic_cast<CmdLineIntf*>(startupCLI.get()), startupCLI, *i);
-	}
-	startupCommands.clear(); // don't execute them again
-
-	doMainLoop();
-	
-	quitLuaGlobal();
-
-	if(!bRestartGameAfterQuit)
-		CrashHandler::restartAfterCrash = false;
-	
-	if(bRestartGameAfterQuit) {
-		// A restart keeps the engine (worker threads, network, tLX) alive and
-		// re-inits, so tear down only the per-run subsystems, not the rest.
-		ShutdownLieroX();
-		notes << "waiting for all left threads and tasks" << endl;
-		taskManager->finishQueuedTasks();
-		// So a hung HTTP request can't block waitAll forever.
-		SetHttpTransfersAborting(true);
-		threadPool->waitAll(); // before uniniting the task manager: some threads could access it
-		SetHttpTransfersAborting(false); // we restart below
-		ShutdownEventQueue();
-		UnInitTaskManager();
-		game.state = Game::S_Inactive; // reset this. otherwise, we would quit if it is still S_Quit.
-		bRestartGameAfterQuit = false;
-		hints << "-- Restarting game --" << endl;
-		goto startpoint;
-	}
-
-	ShutdownEverything(); // also joins the console I/O threads
-
-	notes << "Good Bye and enjoy your day..." << endl;
-
-#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
-	// Uninit the crash handler after all other code
-	CrashHandler::uninit();
-#endif
+	SDL_Event quitEv = QuitEventThreadEvent();
+	if(!bDedicated)
+		while(SDL_PushEvent(&quitEv) < 0) {}
 
 	return 0;
 }
 
 
-static void ParseArguments_BeforeInit(int argc, char *argv[]) {
-	for(int i=1; i<argc; i++) {
-		char* a = argv[i];
-		if( stricmp(a, "-disablestdincli") == 0 ) {
-			enableStdinCLI = false;
-		}
-		else if( stricmp(a, "-disablecrashhandler") == 0 ) {
-			CrashHandler::enableCrashHandler = false;
-		}
-		else if( stricmp(a, "-silent") == 0 ) {
-			notes.minCoutVerb = 2;
-			hints.minCoutVerb = 2;
-			warnings.minCoutVerb = 1;
-		}
-		// -version prints the version and quits, before any init
-		else if( stricmp(a, "-version") == 0 || stricmp(a, "--version") == 0 ) {
-			printf("%s\n", GetFullGameName());
-			exit(0);
-		}
-	}
-}
 
-
-// Join the stdin-CLI and tee-stdout worker threads before exit():
-// exit() runs their static std::thread destructors,
-// and a still-joinable std::thread terminates the process.
-// Registered via atexit(), so it covers every exit() path.
-static void quitConsoleIOThreads() {
-	quitStdinCLISupport();
-	teeStdoutQuit();
-}
-
-static void ParseArguments_AfterInit(int argc, char *argv[])
+///////////////////
+// Parse the arguments
+void ParseArguments(int argc, char *argv[])
 {
     // Parameters passed to OpenLieroX overwrite the loaded options
+    char *a;
     for(int i=1; i<argc; i++) {
-		char* a = argv[i];
+        a = argv[i];
 
         // -opengl
         // Turns OpenGL on
@@ -484,6 +1057,7 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
         // Turns off the sound
         if( stricmp(a, "-nosound") == 0 ) {
             bDisableSound = true;
+            tLXOptions->bSoundOn = false;
         } else
 
         // -dedicated
@@ -491,6 +1065,8 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
         if( stricmp(a, "-dedicated") == 0 ) {
             bDedicated = true;
 			bDisableSound = true;
+			// this setting will be temporarly because we don't save options at end in dedicated mode
+            tLXOptions->bSoundOn = false;
         } else
 
 		// -dedscript
@@ -500,6 +1076,7 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
 				bDedicated = true;
 				bDisableSound = true;
 				// these settings will be temporarly because we don't save options at end in dedicated mode
+				tLXOptions->bSoundOn = false;
 				tLXOptions->sDedicatedScript = argv[++i];
 			}
 			else
@@ -539,7 +1116,7 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
 
 		if( stricmp(a, "-aftercrash") == 0) {
 			afterCrash = true;
-		} else
+		}
 
 #ifdef WIN32
 		// -console
@@ -556,17 +1133,6 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
 		} else
 #endif
 
-#ifdef DEBUG
-		// -nettest
-		// Test CChannel reliability, then quit
-		if( !stricmp(a, "-nettest") ) {
-			InitializeLieroX();
-			TestCChannelRobustness();
-			ShutdownEverything();
-			exit(0);
-		} else
-#endif
-
 		// -help
 		// Displays help and quits
         if( !stricmp(a, "-h") || !stricmp(a, "-help") || !stricmp(a, "--help") || !stricmp(a, "/?")) {
@@ -576,7 +1142,6 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
      		printf("   -opengl       OpenLieroX will use OpenGL for drawing\n");
      		printf("   -noopengl     Explicitly disable using OpenGL\n");
      		printf("   -dedicated    Dedicated mode\n");
-     		printf("   -script scr   Run a dedicated server with the given script\n");
      		printf("   -nojoystick   Disable Joystick support\n");
      		printf("   -nosound      Disable sound\n");
      		printf("   -window       Run in window mode\n");
@@ -587,37 +1152,42 @@ static void ParseArguments_AfterInit(int argc, char *argv[])
 			#ifdef DEBUG
      		printf("   -nettest      Test CChannel reliability\n");
 			#endif
-     		printf("   -silent       Reduce the console verbosity\n");
-     		printf("   -version      Print the version and quit\n");
-     		printf("   -help         Print this help and quit\n");
+     		printf("   -skin         Turns on new skinned GUI - it's unfinished yet\n");
+     		printf("   -noskin       Turns off new skinned GUI\n");
 
-			// Still before InitializeLieroX(), so most subsystems are not up,
-			// but startup already brought up the worker threads and network.
-			// ShutdownEverything() is safe here and stops those cleanly.
-     		ShutdownEverything();
+			// Shutdown and quit
+			// ShutdownLieroX() works only correct when everything was inited because ProcessEvents() is used.
+			// Therefore we just ignore a good clean up and just quit here.
+			// This is not nice but still nicer than getting a segfault.
+			// It is not worth to fix this in a nicer way as it is fixed anyway when we use the new engine system.
      		exit(0);
-        } else
-
-		// handled in ParseArguments_BeforeInit; recognized here so they don't warn
-		if( !stricmp(a, "-disablestdincli") || !stricmp(a, "-disablecrashhandler") || !stricmp(a, "-silent") ) {
-			// nothing to do
-		} else
-
-			warnings << "unknown option: " << a << endl;
+        }
+		#ifdef DEBUG
+		if( !stricmp(a, "-nettest") )
+		{
+			InitializeLieroX();
+			TestCChannelRobustness();
+			ShutdownLieroX();
+     		exit(0);
+		}
+		#endif
     }
+	if (getenv("SDL_RESTART_PARAMS") != NULL) {
+		startupCommands.push_back("connect \"" + std::string(getenv("SDL_RESTART_PARAMS")) + "\"");
+	}
 }
 
 
 ///////////////////
 // Initialize the game
-bool InitializeLieroX()
+int InitializeLieroX()
 {
 	notes << "Hello there, I am initializing me now..." << endl;
 
 	LIBXML_TEST_VERSION;
 
 	// Initialize the aux library
-	if(!InitializeAuxLib()) {
+	if(!InitializeAuxLib("config.cfg",16,0)) {
         SystemError("strange problems with the aux library");
 		return false;
 	}
@@ -626,6 +1196,7 @@ bool InitializeLieroX()
 	AutoSetupHTTPProxy();
 
 	tLX->bVideoModeChanged = false;
+	tLX->bQuitGame = false;
 	tLX->bQuitCtrlC = false;
 	tLX->debug_string = "";
 	tLX->currentTime = 0;
@@ -643,6 +1214,8 @@ bool InitializeLieroX()
 
 	// Initialize the loading screen
 	InitializeLoading();
+
+	//DrawLoading(0, "Initializing network");
 
 	DrawLoading(5, "Initializing client and server");
 
@@ -663,12 +1236,7 @@ bool InitializeLieroX()
 		return false;
 	}
 
-	
-	DrawLoading(10, "Loading Gusanos engine");
-	gusInitBase();
-
-	
-	DrawLoading(15, "Initializing game entities");
+	DrawLoading(10, "Initializing game entities");
 
 	// Initialize the entities
 	if(!InitializeEntities()) {
@@ -676,7 +1244,7 @@ bool InitializeLieroX()
 		return false;
 	}
 
-	DrawLoading(20, "Loading graphics");
+	DrawLoading(15, "Loading graphics");
 
 
 	// Load the graphics
@@ -703,11 +1271,6 @@ bool InitializeLieroX()
 	// Load the profiles
 	LoadProfiles();
 
-	// Ensure the default local (split-screen) player profiles exist, recreating
-	// any that are missing (e.g. a players.dat that predates players 3 and 4).
-	if(!bDedicated)
-		EnsureDefaultLocalPlayerProfiles();
-
 	if(bDedicated)
 		if(!DedicatedControl::Init()) {
 			errors << "couldn't init dedicated control" << endl;
@@ -722,24 +1285,124 @@ bool InitializeLieroX()
 }
 
 
+///////////////////
+// Game loop
+void GameLoopFrame()
+{
+	HandlePendingCommands();
+	
+	if(bDedicated)
+		DedicatedControl::Get()->GameLoop_Frame();
+
+    if(tLX->bQuitEngine)
+        return;
+
+	// Check if user pressed screenshot key
+	if (tLX->cTakeScreenshot.isDownOnce())  {
+		PushScreenshot("scrshots", "");
+	}
+	
+	// Switch between window and fullscreen mode
+	// Switch only if delta time is low enough. This is because when the game does not
+	// respond for >30secs and the user presses cSwitchMode in the meantime, the mainlock-detector
+	// would switch to window and here we would switch again to fullscreen which is stupid.
+	if( tLX->cSwitchMode.isUp() && tLX && tLX->fRealDeltaTime < 1.0f )  {
+		// Set to fullscreen
+		tLXOptions->bFullscreen = !tLXOptions->bFullscreen;
+
+		// Set the new video mode
+		doSetVideoModeInMainThread();
+
+		tLX->cSwitchMode.reset();
+	}
+
+#ifdef WITH_G15
+	if (OLXG15)
+		OLXG15->gameFrame();
+#endif //WITH_G15
+
+	if(tLXOptions->bEnableChat)
+		ProcessIRC();
+
+	// Local
+	switch (tLX->iGameType)  {
+	case GME_LOCAL:
+		cClient->Frame();
+		cServer->Frame();
+
+		// If we are connected, just start the game straight away (bypass lobby in local)
+		if(cClient->getStatus() == NET_CONNECTED) {
+			if(cServer->getState() == SVS_LOBBY) {
+				std::string errMsg;
+				if(!cServer->StartGame(&errMsg)) {
+					errors << "starting game in local game failed for reason: " << errMsg << endl;
+					DeprecatedGUI::Menu_MessageBox("Error", "Error while starting game: " + errMsg);
+					GotoLocalMenu();
+					return;
+				}
+			}
+		}
+
+		if(tLX && !tLX->bQuitEngine)
+			cClient->Draw(VideoPostProcessor::videoSurface());
+		break;
+
+
+	// Hosting
+	case GME_HOST:
+		cClient->Frame();
+		cServer->Frame();
+
+		if(tLX && !tLX->bQuitEngine)
+			cClient->Draw(VideoPostProcessor::videoSurface());
+		break;
+
+	// Joined
+	case GME_JOIN:
+		cClient->Frame();
+		if(tLX && !tLX->bQuitEngine)
+			cClient->Draw(VideoPostProcessor::videoSurface());
+		break;
+
+	} // SWITCH
+	
+	cClient->resetDebugStr();
+	
+	EnableSystemMouseCursor(false);
+}
+
+
+///////////////////
+// Quit back to the menu
+void QuittoMenu()
+{
+	SetQuitEngineFlag("QuittoMenu");
+    DeprecatedGUI::Menu_SetSkipStart(false);
+	cClient->Disconnect();
+}
 
 //////////////////
 // Go to local menu
 void GotoLocalMenu()
 {
-	if(game.isServer() && !game.isLocalGame()) {
+	if(tLX->iGameType == GME_HOST) {
 		warnings << "called GotoLocalMenu as host, ignoring..." << endl;
 		return;
 	}
 
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		warnings << "called GotoLocalMenu as client, ignoring..." << endl;
 		return;
 	}
 	
-	notes << "GotoLocalMenu" << endl;
-	if(game.state > Game::S_Inactive)
-		game.state = Game::S_Inactive;
+	SetQuitEngineFlag("GotoLocalMenu");
+	cClient->Disconnect();
+	cServer->Shutdown();
+	cClient->Shutdown();
+	if(!bDedicated) {
+		DeprecatedGUI::Menu_SetSkipStart(true);
+		DeprecatedGUI::Menu_LocalInitialize();
+	}
 }
 
 //////////////////
@@ -747,8 +1410,12 @@ void GotoLocalMenu()
 void GotoNetMenu()
 {
 	notes << "GotoNetMenu" << endl;
-	if(game.state > Game::S_Inactive)
-		game.state = Game::S_Inactive;
+	SetQuitEngineFlag("GotoNetMenu");
+	cClient->Disconnect();
+	if(!bDedicated) {
+		DeprecatedGUI::Menu_SetSkipStart(true);
+		DeprecatedGUI::Menu_NetInitialize();
+	}
 }
 
 ////////////////////
@@ -756,7 +1423,7 @@ void GotoNetMenu()
 static void InitializeLoading()  {
 	if(bDedicated) return; // ignore this case
 
-	FillSurface(VideoPostProcessor::videoSurface().get(), Color(0,0,0));
+	FillSurface(VideoPostProcessor::videoSurface(), Color(0,0,0));
 
 	int bar_x, bar_y, bar_label_x, bar_label_y,bar_dir;
 	bool bar_visible;
@@ -799,11 +1466,12 @@ static void InitializeLoading()  {
 /////////////////////
 // Draw the loading
 static void DrawLoading(byte percentage, const std::string &text)  {
-	notes << "Loading (" << (int)percentage << "%): " << text << endl;
-
-	if(bDedicated)
+	if(bDedicated) {
+		notes << "Loading: " << text << endl;
 		return;
-	if(cLoading.bmpBackground.get() == NULL)
+	}
+
+	if (cLoading.bmpBackground.get() == NULL)
 		return;
 
 	// Update the repainted area
@@ -811,19 +1479,22 @@ static void DrawLoading(byte percentage, const std::string &text)  {
 	int y = MIN(cLoading.cBar->GetY(), cLoading.iBackgroundY);
 	int w = MAX(cLoading.bmpBackground.get()->w, cLoading.cBar->GetWidth());
 	int h = MAX(cLoading.bmpBackground.get()->h, cLoading.cBar->GetHeight());
-	DrawRectFill(VideoPostProcessor::videoSurface().get(), x, y, x+w, y+h, Color(0,0,0));
+	DrawRectFill(VideoPostProcessor::videoSurface(), x, y, x+w, y+h, Color(0,0,0));
 
 	if (cLoading.bmpBackground.get() != NULL)
-		DrawImage(VideoPostProcessor::videoSurface().get(), cLoading.bmpBackground, cLoading.iBackgroundX, cLoading.iBackgroundY);
+		DrawImage(VideoPostProcessor::videoSurface(), cLoading.bmpBackground, cLoading.iBackgroundX, cLoading.iBackgroundY);
 
 	if (cLoading.cBar)  {
 		cLoading.cBar->SetPosition(percentage);
-		cLoading.cBar->Draw( VideoPostProcessor::videoSurface().get() );
+		cLoading.cBar->Draw( VideoPostProcessor::videoSurface() );
 	}
 
-	tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), cLoading.iLabelX, cLoading.iLabelY, tLX->clLoadingLabel, text);
+	tLX->cFont.Draw(VideoPostProcessor::videoSurface(), cLoading.iLabelX, cLoading.iLabelY, tLX->clLoadingLabel, text);
 
-	doVideoFrameInMainThread();
+	// we are in the main thread, so we can call this directly
+	VideoPostProcessor::flipBuffers();
+	VideoPostProcessor::process();
+	flipRealVideo();
 }
 
 ////////////////////
@@ -840,18 +1511,13 @@ void ShutdownLieroX()
 {
 	notes << "Shutting me down..." << endl;
 
-	// Free the loaded game content while all subsystems are still up
-	// (see Game::uninit), so it is not torn down in ~Game at exit.
-	// Skip on a restart: the engine keeps running and reuses game.
-	if(!bRestartGameAfterQuit)
-		game.uninit();
-
 	// Options
 	// Save already here in case some other method crashes
-	if(!bDedicated && tLXOptions) // only save if not dedicated and options are loaded
+	if(!bDedicated) // only save if not in dedicated mode
 		tLXOptions->SaveToDisc();
-		
-	DeprecatedGUI::CChatWidget::GlobalDestroy();	
+	
+	DeprecatedGUI::CChatWidget::GlobalDestroy();
+	
 	ShutdownIRC(); // Disconnect from IRC
 
 	if(bDedicated)
@@ -860,8 +1526,6 @@ void ShutdownLieroX()
 	if( ! bDedicated )
 		ShutdownBackgroundMusic();
 
-	ShutdownSounds();
-
     Con_Shutdown();
 
 	ShutdownLoading();  // In case we're called when an error occured
@@ -869,8 +1533,6 @@ void ShutdownLieroX()
 	DeprecatedGUI::ShutdownGraphics();
 
 	ShutdownFontCache();
-
-	ServerList::get()->shutdown();
 
 	DeprecatedGUI::Menu_Shutdown();
 	ShutdownProfiles();
@@ -914,8 +1576,6 @@ void ShutdownLieroX()
 	// Event system
 	ShutdownEventSystem();
 
-	gusQuit();
-
 	// SDL, Cache and other small stuff
 	ShutdownAuxLib();
 
@@ -923,12 +1583,12 @@ void ShutdownLieroX()
 #ifdef DEBUG
 	ShutdownCacheDebug();
 #endif
-	
+
 	// Save and clear options
 
 	// HINT: save the options again because some could get changed in CServer/CClient destructors and shutdown functions
 	// TODO: like what changes? why are there options saved both in CServer/CClient structure and in options?
-	if(!bDedicated && tLXOptions) // only save if not dedicated and options are loaded
+	if(!bDedicated) // only save if not in dedicated mode
 		tLXOptions->SaveToDisc();
 
 	ShutdownOptions();
@@ -953,47 +1613,56 @@ void ShutdownLieroX()
 }
 
 
-// Full ordered teardown for error/early-exit paths on partial init:
-// subsystems, worker threads, task manager, network, tLX, then the console
-// I/O threads -- joined here so they don't race exit()'s teardown (#1111).
-void ShutdownEverything()
-{
-	ShutdownLieroX();
-
-	notes << "waiting for all left threads and tasks" << endl;
-	if(taskManager)
-		taskManager->finishQueuedTasks();
-	// So a hung HTTP request can't block waitAll forever (no reset: we are quitting).
-	SetHttpTransfersAborting(true);
-	if(threadPool)
-		threadPool->waitAll(); // before uniniting the task manager: some threads could access it
-	ShutdownEventQueue();
-	UnInitTaskManager();
-	UnInitThreadPool();
-
-	QuitNetworkSystem();
-
-	// HINT: must be after the end of all threads because they could access it
-	if(tLX) {
-		delete tLX;
-		tLX = NULL;
-	}
-
-	// Join the console I/O threads before returning to exit():
-	// exit() destroys the function-local statics the tee thread uses,
-	// so a tee thread still running would read freed memory and abort (#1111).
-	quitStdinCLISupport();
-	teeStdoutQuit();
+void ResetQuitEngineFlag() {
+	tLX->bQuitEngine = false;
 }
 
+void SetQuitEngineFlag(const std::string& reason) {
+	Warning_QuitEngineFlagSet("SetQuitEngineFlag(" + reason + "): ");
+	quitEngineFlagReason = reason;
+	tLX->bQuitEngine = true;
+	// If we call this from within the menu, the menu should shutdown.
+	// It will be restarted then in the next frame.
+	// If we are not in the menu (i.e. in maingameloop), this has no
+	// effect as we set it to true in Menu_Start().
+	if(DeprecatedGUI::tMenu)
+		DeprecatedGUI::tMenu->bMenuRunning = false;
+	// If we were in menu, because we forced the menu restart above,
+	// we must set this, otherwise OLX would quit (because of current maingamelogic).
+	if(DeprecatedGUI::bGame)
+		*DeprecatedGUI::bGame = true;
+}
+
+bool Warning_QuitEngineFlagSet(const std::string& preText) {
+	if(tLX->bQuitEngine) {
+		hints << preText << endl;
+		warnings << "bQuitEngine is set because: " << quitEngineFlagReason << endl;
+		return true;
+	}
+	return false;
+}
+
+
+struct CheckFileForMap {
+	typedef FileListCacheIntf::FileList List;
+	void operator()(List& filelist, const std::string& abs_filename) {
+		std::string mapName = CMap::GetLevelName(abs_filename, true);
+		if(mapName != "") filelist.insert( List::value_type(GetBaseFilename(abs_filename), mapName) );
+	}
+};
+static FileListCache<CheckFileForMap> mapListInstance("map", "levels");
+FileListCacheIntf* mapList = &mapListInstance;
 
 
 struct CheckDirForMod {
 	typedef FileListCacheIntf::FileList List;
 	void operator()(List& filelist, const std::string& abs_filename) {
-		ModInfo info = infoForMod(abs_filename, true);
-		if(info.valid)
-			filelist.insert( List::value_type(info.path, info.name) );
+		size_t sep = findLastPathSep(abs_filename);
+		if(sep != std::string::npos) {
+			std::string name;
+			if(CGameScript::CheckFile(abs_filename, name, true))
+				filelist.insert( List::value_type(abs_filename.substr(sep+1), name) );
+		}
 	}
 };
 static FileListCache<CheckDirForMod> modListInstance("mod", "", false, FM_DIR);
@@ -1040,24 +1709,31 @@ void updateFileListCaches() {
 	// just create one single task for all because it wouldn't make it faster by doing that parallel
 	struct Updater : Task {
 		Updater() { name = "updateFileListCaches"; }
-		Result handle() {
-			if(breakSignal) return "break";
+		int handle() {
 			mapList->update();
-			if(breakSignal) return "break";
 			modList->update();
-			if(breakSignal) return "break";
 			skinList->update();
-			if(breakSignal) return "break";
 			settingsPresetList->update();
-			return true;
-		}
-		std::string statusText() {
-			return "Updating file list cache ...";
+			return 0;
 		}
 	};
-	taskManager->start(new Updater(), TaskManager::QT_QueueToSameTypeAndBreakCurrent);
+	taskManager->start(new Updater(), false);
 }
 
 
 
+GameState currentGameState() {
+	if(!cClient || cClient->getStatus() == NET_DISCONNECTED) return S_INACTIVE;
+	if(tLX->iGameType == GME_JOIN) {
+		if(cClient->getStatus() == NET_CONNECTING) return S_CLICONNECTING;
+		if(!cClient->getGameReady()) return S_CLILOBBY;
+		if(cClient->getStatus() == NET_PLAYING) return S_CLIPLAYING;
+		return S_CLIWEAPONS;
+	}
+	if(!cServer->isServerRunning()) return S_INACTIVE;
+	//if(!DeprecatedGUI::tMenu || DeprecatedGUI::tMenu->bMenuRunning);
+	if(cServer->getState() == SVS_LOBBY) return S_SVRLOBBY;
+	if(cServer->getState() == SVS_GAME) return S_SVRWEAPONS;
+	return S_SVRPLAYING;
+}
 

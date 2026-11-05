@@ -1,5 +1,0 @@
-col_layer=3
-light_radius=180
-
-on timer(2)
- remove()

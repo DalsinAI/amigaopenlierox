@@ -11,7 +11,6 @@
 #ifndef __CIMAGE_H__DEPRECATED_GUI__
 #define __CIMAGE_H__DEPRECATED_GUI__
 
-#include "DeprecatedGUI/CWidget.h"
 #include "InputEvents.h"
 #include "GfxPrimitives.h"
 #include "DynDraw.h"
@@ -85,7 +84,7 @@ public:
     void			Create()		{ iType = wid_Image; }
 	void			Destroy()		{  }
 
-	std::string	getPath()		{ return sPath; }
+	inline std::string	getPath()		{ return sPath; }
 	SmartPointer<DynDrawIntf> getSurface()	{ return tImage; }
 	void			Change(const std::string& Path);
 	void			Change(const SmartPointer<DynDrawIntf>& bmpImg);
@@ -102,9 +101,9 @@ public:
 	int		KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate);
 	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate)		{ return IMG_NONE; }
 
-	uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2);
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param) { return 0; }
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param)  { return 0; }
+	DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2);
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param) { return 0; }
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param)  { return 0; }
 
 	void	Draw(SDL_Surface * bmpDest);
 };

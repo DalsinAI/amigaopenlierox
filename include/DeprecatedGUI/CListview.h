@@ -22,7 +22,6 @@
 #include "DeprecatedGUI/CScrollbar.h"
 #include "DynDraw.h"
 #include "Utils.h"
-#include "CodeAttributes.h"
 
 namespace DeprecatedGUI {
 
@@ -135,6 +134,7 @@ public:
 		tItems = NULL;
 		tLastItem = NULL;
 		tSelected = NULL;
+		tPreviousMouseSelection = NULL;
 		iItemCount=0;
 		bGotScrollbar = false;
 		iType = wid_Listview;
@@ -146,6 +146,8 @@ public:
 		iGrabbed = 0;
 		bOldStyle = false;
 		iSavedScrollbarPos = 0;
+		bFingerDragged = false;
+		iFingerDraggedPos = 0;
 		iLastChar = 0;
 		bDrawBorder = true;
 		bNeedsRepaint = true;
@@ -190,11 +192,14 @@ private:
 	
 	AbsTime			fLastMouseUp;
 	int				iClickedSub;
+	lv_item_t		*tPreviousMouseSelection;
 
 	// Scrollbar
 	CScrollbar		cScrollbar;
 	bool			bGotScrollbar;
 	int				iSavedScrollbarPos;
+	bool			bFingerDragged;
+	int				iFingerDraggedPos;
 
 	// Tooltips
 	bool			bTooltipVisible;
@@ -236,9 +241,9 @@ public:
 
 	void	Draw(SDL_Surface * bmpDest);
 
-	uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2);
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param);
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param);
+	DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2);
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param);
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param);
 
 	void	ReadjustScrollbar();
 	void	SetupScrollbar(int x, int y, int h, bool always_visible);
@@ -260,6 +265,12 @@ public:
 	}
 	void	AddSubitem(int iType, const std::string& sText, const SmartPointer<SDL_Surface> & img, CWidget *wid, int iVAlign, Color iColour, const std::string& tooltip = "") {
 		AddSubitem(iType, sText, DynDrawFromSurface(img), wid, iVAlign, iColour, tooltip);		
+	}
+	void	AddSubitem(const std::string& sText, int iVAlign = VALIGN_MIDDLE, const std::string& tooltip = "") {
+		AddSubitem(LVS_TEXT, sText, (DynDrawIntf*)NULL, NULL, iVAlign, tooltip);
+	}
+	void	AddSubitem(const std::string& sText, int iVAlign, Color iColour, const std::string& tooltip = "") {
+		AddSubitem(LVS_TEXT, sText, (DynDrawIntf*)NULL, NULL, iVAlign, iColour, tooltip);
 	}
 
 	void	RemoveItem(int iIndex);
@@ -303,8 +314,8 @@ public:
 	void	SaveScrollbarPos()    { iSavedScrollbarPos = cScrollbar.getValue(); }
 	void	RestoreScrollbarPos() { cScrollbar.setValue(iSavedScrollbarPos); iSavedScrollbarPos = 0; }
 
-	INLINE bool	NeedsRepaint()  {return bNeedsRepaint; }
-	INLINE void	SetRepaint(bool _r)  { bNeedsRepaint = _r; }  // Explicitly set this listview needs to be repainted
+	inline bool	NeedsRepaint()  {return bNeedsRepaint; }
+	inline void	SetRepaint(bool _r)  { bNeedsRepaint = _r; }  // Explicitly set this listview needs to be repainted
 	
 	void	setMouseOverEventEnabled(bool b)	{ bMouseOverEventEnabled = b; }
 	int		getMouseOverIndex()		 { if(tMouseOver) return tMouseOver->iIndex; else return -1; }

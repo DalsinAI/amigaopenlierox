@@ -38,7 +38,13 @@ void CTitleButton::Draw(SDL_Surface * bmpDest)
 
 int CTitleButton::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 {
-	if (isActivationKey(keysym))
+	if (keysym == SDLK_RETURN ||
+		keysym == SDLK_KP_ENTER ||
+		keysym == SDLK_LALT ||
+		keysym == SDLK_LCTRL ||
+		keysym == SDLK_LSHIFT ||
+		keysym == SDLK_x ||
+		keysym == SDLK_z)
 		return TBT_CLICKED;
 	return TBT_NONE;
 }

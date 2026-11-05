@@ -12,7 +12,7 @@
 #include <map>
 #include "Debug.h"
 #include "FlagInfo.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "CServer.h"
 #include "CClient.h"
 #include "LieroX.h"
@@ -24,8 +24,7 @@
 #include "CGameSkin.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "GfxPrimitives.h"
-#include "game/CMap.h"
-#include "game/Game.h"
+#include "CMap.h"
 
 #define FLAG_FRAME_WIDTH 32
 #define FLAG_FRAME_HEIGHT 18
@@ -34,10 +33,9 @@
 #define FLAG_HEIGHT 18
 
 Flag::Flag(int i) : id(i), holderWorm(-1), atSpawnPoint(true), skin(NULL) {
-	skin = new CGameSkin(FLAG_FRAME_WIDTH, FLAG_FRAME_HEIGHT, FLAG_SPACING, FLAG_WIDTH, FLAG_HEIGHT, true);
-	skin->Change("../data/gfx/flags.png");
-
-	if(i >= 0 && i < MAX_TEAMS) {
+	skin = new CGameSkin("../data/gfx/flags.png", FLAG_FRAME_WIDTH, FLAG_FRAME_HEIGHT, FLAG_SPACING, FLAG_WIDTH, FLAG_HEIGHT);
+	
+	if(i >= 0 && i < 4) {
 		skin->Colorize(tLX->clTeamColors[i]);
 	}
 }
@@ -54,7 +52,7 @@ Flag& Flag::operator=(const Flag& f) {
 	spawnPoint = f.spawnPoint;
 	atSpawnPoint = f.atSpawnPoint;
 	if(f.skin)
-		skin = new CGameSkin(*f.skin, true);
+		skin = new CGameSkin(*f.skin);
 	else
 		skin = NULL;
 	return *this;
@@ -71,8 +69,10 @@ CVec Flag::getPos() {
 	if(atSpawnPoint)
 		return spawnPoint.pos;
 	if(holderWorm >= 0) {
-		CWorm* w = game.wormById(holderWorm, false);
-		if(w) return w->getPos();
+		if(tLX->iGameType == GME_JOIN)
+			return cClient->getRemoteWorms()[holderWorm].getPos();
+		else
+			return cServer->getWorms()[holderWorm].getPos();
 	}
 	return pos;
 }
@@ -128,13 +128,13 @@ bool FlagInfo::removeFlag(int id) {
 
 static void drawFlagSpawnPoint(Flag* flag, SDL_Surface* bmpDest, CViewport* v) {
 	SDL_Surface* bmp = NULL;
-	if(flag->id >= 0 && flag->id < MAX_TEAMS)
+	if(flag->id >= 0 && flag->id < 4)
 		bmp = DeprecatedGUI::gfxGame.bmpFlagSpawnpoint[flag->id].get();
 	else
 		bmp = DeprecatedGUI::gfxGame.bmpFlagSpawnpointDefault.get();
 	
-	CMap* map = game.gameMap();
-	VectorD2<int> p = v->physicToReal(flag->spawnPoint.pos, cClient->getGameLobby()[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
+	CMap* map = cClient->getMap();
+	VectorD2<int> p = v->physicToReal(flag->spawnPoint.pos, cClient->getGameLobby()->features[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
 	
 	DrawImage(bmpDest, bmp, p.x - bmp->w/2, p.y - bmp->h/2);
 }
@@ -142,10 +142,10 @@ static void drawFlagSpawnPoint(Flag* flag, SDL_Surface* bmpDest, CViewport* v) {
 static void drawUnattachedFlag(Flag* flag, SDL_Surface* bmpDest, CViewport* v) {
 	if(flag->skin == NULL) return;
 	
-	CMap* map = game.gameMap();
-	VectorD2<int> p = v->physicToReal(flag->getPos(), cClient->getGameLobby()[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
+	CMap* map = cClient->getMap();
+	VectorD2<int> p = v->physicToReal(flag->getPos(), cClient->getGameLobby()->features[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
 	
-	int f = ((int) game.serverTime().seconds() *7);
+	int f = ((int) cClient->serverTime().seconds() *7);
 	if (flag->skin->getFrameCount() != 0)
 		f %= flag->skin->getFrameCount(); // every skin has exactly 21 frames
 	
@@ -172,8 +172,8 @@ void FlagInfo::drawWormAttachedFlag(CWorm* worm, SDL_Surface* bmpDest, CViewport
 	
 	// see CWorm::Draw() for all these calculations
 	
-	CMap* map = game.gameMap();
-	VectorD2<int> p = v->physicToReal(worm->getPos(), cClient->getGameLobby()[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
+	CMap* map = cClient->getMap();
+	VectorD2<int> p = v->physicToReal(worm->getPos(), cClient->getGameLobby()->features[FT_InfiniteMap], map->GetWidth(), map->GetHeight());
 
 	int f = ((int) worm->frame()*7);
 	int ang = (int)( (worm->getAngle()+90)/151 * 7 );
@@ -192,7 +192,7 @@ void FlagInfo::drawOnMiniMap(CMap* cMap, SDL_Surface* bmpDest, uint miniX, uint 
 		Flag& flag = i->second;
 
 		Uint8 r = 255,g=255,b=255;
-		if(flag.id >= 0 && flag.id < MAX_TEAMS) {
+		if(flag.id >= 0 && flag.id < 4) {
 			r = tLX->clTeamColors[flag.id].r;
 			g = tLX->clTeamColors[flag.id].g;
 			b = tLX->clTeamColors[flag.id].b;
@@ -212,32 +212,32 @@ void FlagInfo::drawOnMiniMap(CMap* cMap, SDL_Surface* bmpDest, uint miniX, uint 
 
 
 void FlagInfo::checkWorm(CWorm* worm) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::checkWorm: this function is only supposed to be called by the server" << endl;
 		return;
 	}
 	
 	if(!worm->getAlive()) return;
 	
-	if(!cServer || !cServer->isServerRunning() || !game.gameMode()) {
+	if(!cServer || !cServer->isServerRunning() || !cServer->getGameMode()) {
 		errors << "FlagInfo::checkWorm: server is corrupt" << endl;
 		return;
 	}
 	
-	float flagPointRadius = game.gameMode()->FlagPointRadius(); flagPointRadius = flagPointRadius*flagPointRadius;
-	float flagRadius = game.gameMode()->FlagRadius(); flagRadius *= flagRadius;
+	float flagPointRadius = cServer->getGameMode()->FlagPointRadius(); flagPointRadius *= flagPointRadius;
+	float flagRadius = cServer->getGameMode()->FlagRadius(); flagRadius *= flagRadius;
 	
 	for(Flags::iterator i = data->flags.begin(); i != data->flags.end(); ++i) {
 		if( (worm->getPos() - i->second.spawnPoint.pos).GetLength2() < flagPointRadius ) {
-			game.gameMode()->hitFlagSpawnPoint(worm, &i->second);
+			cServer->getGameMode()->hitFlagSpawnPoint(worm, &i->second);
 			
 			if(i->second.atSpawnPoint)
-				game.gameMode()->hitFlag(worm, &i->second);
+				cServer->getGameMode()->hitFlag(worm, &i->second);
 		}
 		
 		if(!i->second.atSpawnPoint && i->second.holderWorm < 0) {
 			if( (worm->getPos() - i->second.pos).GetLength2() < flagRadius ) {
-				game.gameMode()->hitFlag(worm, &i->second);			
+				cServer->getGameMode()->hitFlag(worm, &i->second);			
 			}
 		}
 	}
@@ -345,7 +345,7 @@ void FlagInfo::skipUpdate(CBytestream* bs) {
 
 
 Flag* FlagInfo::applyInitFlag(int id, const CVec& spawnPos) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::applyInitFlag: this function is only supposed to be called by the server" << endl;
 		return NULL;
 	}
@@ -363,7 +363,7 @@ Flag* FlagInfo::applyInitFlag(int id, const CVec& spawnPos) {
 }
 
 void FlagInfo::applyRemoveFlag(int id) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::applyRemoveFlag: this function is only supposed to be called by the server" << endl;
 		return;
 	}
@@ -378,7 +378,7 @@ void FlagInfo::applyRemoveFlag(int id) {
 }
 
 void FlagInfo::applyCustomPos(Flag* flag, const CVec& pos) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::applyCustomPos: this function is only supposed to be called by the server" << endl;
 		return;
 	}
@@ -394,7 +394,7 @@ void FlagInfo::applyCustomPos(Flag* flag, const CVec& pos) {
 }
 
 void FlagInfo::applySpawnPos(Flag* flag, const CVec& spawnPos) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::applySpawnPos: this function is only supposed to be called by the server" << endl;
 		return;
 	}
@@ -410,7 +410,7 @@ void FlagInfo::applySpawnPos(Flag* flag, const CVec& spawnPos) {
 }
 
 void FlagInfo::applyHolderWorm(Flag* flag, int w) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::applyHolderWorm: this function is only supposed to be called by the server" << endl;
 		return;
 	}
@@ -426,7 +426,7 @@ void FlagInfo::applyHolderWorm(Flag* flag, int w) {
 }
 
 void FlagInfo::applySetBack(Flag* flag) {
-	if(game.isClient()) {
+	if(tLX->iGameType == GME_JOIN) {
 		errors << "FlagInfo::applySetBack: this function is only supposed to be called by the server" << endl;
 		return;
 	}

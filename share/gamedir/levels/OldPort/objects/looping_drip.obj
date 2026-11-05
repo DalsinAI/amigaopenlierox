@@ -1,9 +1,0 @@
-invisible = 1
-col_layer=-1
-bounce_factor = -1
-
-on timer(0,2000)
-shoot_particles ( drip.obj , 1)
-
-
-

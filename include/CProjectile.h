@@ -21,10 +21,10 @@
 #include <vector>
 #include <map>
 #include "Event.h"
-#include "olx-types.h"
+#include "types.h"
 #include "Color.h"
 #include "Consts.h"
-#include "game/CGameObject.h"
+#include "CGameObject.h"
 
 struct SDL_Surface;
 class CWorm;
@@ -75,10 +75,10 @@ class CProjectile: public CGameObject {
 	friend struct Proj_TimerEvent;
 	friend struct Proj_DoActionInfo;
 	friend struct Proj_Action;
-	friend ProjCollisionType LX56Projectile_checkCollAndMove(CProjectile* const prj, TimeDiff dt, CMap *map);
-	friend ProjCollisionType LX56Projectile_checkCollAndMove_Frame(CProjectile* const prj, TimeDiff dt, CMap *map);
-	friend ProjCollisionType FinalWormCollisionCheck(CProjectile* proj, const CVec& vFrameOldPos, const CVec& vFrameOldVel, TimeDiff dt, ProjCollisionType curResult);
-	friend void Projectile_HandleAttractiveForceForProjectiles(CProjectile* const prj, TimeDiff dt);
+	friend ProjCollisionType LX56Projectile_checkCollAndMove(CProjectile* const prj, TimeDiff dt, CMap *map, CWorm* worms);
+	friend ProjCollisionType LX56Projectile_checkCollAndMove_Frame(CProjectile* const prj, TimeDiff dt, CMap *map, CWorm* worms);
+	friend ProjCollisionType FinalWormCollisionCheck(CProjectile* proj, const CVec& vFrameOldPos, const CVec& vFrameOldVel, CWorm* worms, TimeDiff dt, ProjCollisionType curResult);
+	friend void Projectile_HandleAttractiveForceForProjectiles(CProjectile* const prj, TimeDiff dt, CWorm* worms);
 public:
 	// Constructor
 	CProjectile() {
@@ -91,6 +91,7 @@ public:
 		fLastTrailProj = AbsTime(0);
 		iRandom = 0;
         fRotation = 0;
+		health = 0;
 	}
 
 	// Types
@@ -154,7 +155,7 @@ private:
 	
 	
 	// used in LX56 physics
-	int ProjWormColl(CVec pos);
+	int ProjWormColl(CVec pos, CWorm *worms);
 	bool MapBoundsCollision(int px, int py);
 	ColInfo TerrainCollision(int px, int py);
 	bool HandleCollision(const CProjectile::ColInfo &c, const CVec& oldpos, const CVec& oldvel, TimeDiff dt);
@@ -163,9 +164,6 @@ public:
 	// Methods
 
 
-	IVec	size() const { return IVec(radius.x,radius.y); }
-	Color renderColorAt(/* relative coordinates */ int x, int y) const { return iColour; }
-	
 	void	Spawn(proj_t *_proj, CVec _pos, CVec _vel, int _rot, int _owner, int _random, AbsTime time, AbsTime ignoreWormCollBeforeTime);
 
     void	Draw(SDL_Surface * bmpDest, CViewport *view);

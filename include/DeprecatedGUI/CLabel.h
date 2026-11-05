@@ -19,14 +19,9 @@
 
 
 
-#include "DeprecatedGUI/CWidget.h"
 #include "InputEvents.h"
 #include "StringUtils.h"
 #include "Color.h"
-#include "CodeAttributes.h"
-
-class ScriptVar_t;
-class CGuiLayoutBase;
 
 
 namespace DeprecatedGUI {
@@ -73,7 +68,13 @@ private:
 public:
 	// Methods
 
-	void	Create(); 
+	void	Create() 
+	{ 
+		iWidth = tLX->cFont.GetWidth(sText); 
+		iHeight = tLX->cFont.GetHeight(sText);
+		if( bCenter ) 
+			iX -= iWidth / 2;
+	}
 	void	Destroy() { }
 
 	//These events return an event id, otherwise they return -1
@@ -85,16 +86,41 @@ public:
 	int		KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)	{ return LBL_NONE; }
 	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate)	{ return LBL_NONE; }
 
-	uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2);
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param);
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param);
+	DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2)	{ return 0; }
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param) { 
+			if (iMsg == LBS_SETTEXT) 
+				{sText = sStr; iWidth = tLX->cFont.GetWidth(sText); iHeight = tLX->cFont.GetHeight(sText);} 
+			return 0; 	}
 
-	void	ChangeColour(Color col);
-	void	setText(const std::string& sStr);
-	std::string getText() const;
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param)  { return 0; }
+
+	void	ChangeColour(Color col)			{ iColour = col; }
+	void	setText(const std::string& sStr)	{sText = sStr; iWidth = tLX->cFont.GetWidth(sText); iHeight = tLX->cFont.GetHeight(sText);};
+	std::string getText() const { return sText; }
 	
 	// Draw the label
-	void	Draw(SDL_Surface * bmpDest);
+	inline void	Draw(SDL_Surface * bmpDest) {
+		if (bRedrawMenu)
+			redrawBuffer();
+		if( bVar )
+			if( *bVar )
+				sText = "yes";
+			else
+				sText = "no";
+		else if( iVar )
+			sText = itoa( *iVar );
+		else if( fVar )
+			sText = ftoa( *fVar );
+		else if( sVar )
+			sText = *sVar;
+		if( bCenter )
+		{
+			int width = tLX->cFont.GetWidth(sText);
+			iX += ( iWidth - width ) / 2;
+			iWidth = width;
+		}
+		tLX->cFont.Draw(bmpDest, iX, iY, iColour,sText); 
+	}
 };
 
 }; // namespace DeprecatedGUI

@@ -20,10 +20,9 @@
 #include <string>
 #include <cassert>
 #include <SDL.h>
-#include "olx-types.h"
+#include "types.h"
 #include "InternDataClass.h"
 #include "Event.h"
-#include "util/Result.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4786)
@@ -78,7 +77,6 @@ bool	GetFromDnsCache(const std::string& name, NetworkAddr& addr4, NetworkAddr& a
 // general networking
 bool	InitNetworkSystem();
 bool	QuitNetworkSystem();
-void	ReportPendingSigpipe();
 
 
 class NetworkSocket {

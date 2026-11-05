@@ -21,15 +21,14 @@
 #define __CINPUT_H__
 
 #include <string>
-#include <vector>
-#include "InputEvents.h"
 
 
 // Input variable types
 #define		INP_NOTUSED			-1
 #define		INP_KEYBOARD		0
 #define		INP_MOUSE			1
-#define		INP_JOYSTICK		2
+#define		INP_JOYSTICK1		2
+#define		INP_JOYSTICK2		3
 
 
 // Joystick data
@@ -42,102 +41,68 @@
 #define		JOY_TURN_RIGHT		6
 #define		JOY_THROTTLE_LEFT	7
 #define		JOY_THROTTLE_RIGHT	8
-#define		JOY_HAT				9
-#define		JOY_TRIGGER_LEFT	10
-#define		JOY_TRIGGER_RIGHT	11
 
 struct KeyboardEvent;
 
 class CInput {
+	friend void HandleNextEvent();
+	friend void HandleCInputs_UpdateDownOnceForNonKeyboard();
+	friend void HandleCInputs_UpdateUpForNonKeyboard();
+	friend void HandleCInputs_KeyEvent(KeyboardEvent& ev);
+
 public:
 	CInput();
 	~CInput();
 
 private:
-	// A single physical binding (one key, mouse button or joystick control).
-	// A CInput can hold several of these so that one game action may be bound
-	// to multiple inputs (e.g. a keyboard key and a gamepad button); the
-	// action is considered active when any of the bindings is active.
-	struct Binding {
-		int		Type; // keyboard, mouse or joystick
-		int		Data;
-		int		SdlIndex;
-		int		JoystickIndex; // 0-based pad index for INP_JOYSTICK
-		std::string m_name; // the config token this binding parsed from (e.g. "j1_button_south")
-		ModifiersState m_modifiers; // required modifier keys for keyboard bindings
+	// Attributes
 
-		// HINT: currently these are only used for keyboard exept nDownOnce
-		int		nDown;
-		int		nDownOnce; // this is also updated for non-keyboards with currently the old code
-		int		nUp;
-		bool	bDown;
+	int		Type; // keyboard, mouse or joystick
+	int		Data;
+	int		Extra;
+	std::string m_EventName;
+	bool	resetEachFrame;
 
-		Binding() : Type(INP_NOTUSED), Data(0), SdlIndex(0), JoystickIndex(0),
-					nDown(0), nDownOnce(0), nUp(0), bDown(false) {}
+	// HINT: currently these are only used for keyboard exept nDownOnce
+	// TODO: change this in HandleNextEvent() and here
+	int		nDown;
+	int		nDownOnce; // this is also updated for non-keyboards with currently the old code
+	int		nUp;
+	bool	bDown;
 
-		bool	setup(const std::string& text); // parse a single binding token
-
-		bool	isUsed() const { return Type >= 0; }
-		bool	isJoystick() const { return Type == INP_JOYSTICK; }
-		bool	isKeyboard() const { return Type == INP_KEYBOARD; }
-
-		bool	isUp() const;
-		bool	isDown() const;
-		int		wasDown() const;
-		int		wasDown_withoutRepeats() const { return nDownOnce; }
-		int		wasUp() const;
-		int		getJoystickValue() const;
-		bool	isJoystickThrottle() const;
-		void	reset() { nDown = nDownOnce = nUp = 0; }
-	};
-
-	std::vector<Binding>	m_bindings;
-	std::string				m_EventName; // the original (possibly comma-separated) config string
-	bool					resetEachFrame;
+private:
+	int		wasDown_withoutRepeats() const;
 
 public:
 	// Methods
 
+	int		Load(const std::string& name, const std::string& section);
 	int		Setup(const std::string& text);
 	static void InitJoysticksTemp(); // call this if CInput::Wait shall recognise joystick events
 	static void UnInitJoysticksTemp();
-	// True while CInput::Wait is in use (between the two calls above).
-	// Gamepad buttons must not be mirrored as menu keys then, or they could be captured as a key.
-	static bool IsWaitingForInput();
-	// SDL_CONTROLLERDEVICEADDED / SDL_CONTROLLERDEVICEREMOVED hotplug
-	// handlers. Without these, controllers plugged in after startup
-	// (or surfaced late by the platform — e.g. browser Gamepad API
-	// only exposing pads after the user's first button press) are
-	// invisible to the engine.
-	static void OnControllerAdded(int deviceIndex);
-	static void OnControllerRemoved(int instanceId);
 	static int Wait(std::string& strText); // TODO: change this name. this function doesn't realy wait, it just checks the event-state
-	bool	isUsed() const;
-	bool	isJoystick() const;
-	bool	isJoystickDown() const;     // true if any joystick binding is currently down
-	bool	isJoystickDownOnce() const; // true if any joystick binding was just pressed
-	bool	isKeyboard() const;
-	bool	usesKeyboardKey(int sym) const; // true if any keyboard binding is bound to this key sym
+	bool	isUsed() { return Type >= 0; }
+	int		getData() { return Data; }
+	int		getType() { return Type; }
+	bool	isJoystick() { return Type == INP_JOYSTICK1 || Type == INP_JOYSTICK2; }
+	bool	isKeyboard() { return Type == INP_KEYBOARD; }
 	void	setResetEachFrame(bool r)	{ resetEachFrame = r; }
 	bool	getResetEachFrame()			{ return resetEachFrame; }
 	int		getJoystickValue();
+	bool	isJoystickAxis();
 	bool	isJoystickThrottle();
 
 	bool	isUp();
 	bool	isDown() const;
 	bool	isDownOnce();
-	int		wasDown(bool withRepeats) const;
+	int wasDown(bool withRepeats) const {
+		if(withRepeats) return wasDown();
+		else return wasDown_withoutRepeats();
+	}
 	int		wasDown() const; // checks if there was such an event in the queue; returns the count of presses (down-events)
 	int		wasUp(); // checks if there was an keyup-event; returns the count of up-events
 
 	std::string getEventName() { return m_EventName; }
-	// onlyAvailable drops bindings that can't currently fire (e.g. an absent gamepad)
-	std::string getEventName(bool onlyAvailable) const;
-
-	// event handling, called from the global input-event dispatchers
-	void	handleKeyEvent(const KeyboardEvent& ev);
-	void	updateDownOnceForNonKeyboard();
-	void	updateUpForNonKeyboard();
 
 	// resets the current state
 	// this is called automatically if resetEachFrame
@@ -147,8 +112,13 @@ public:
 
 
 // Keyboard structure
-struct keys_t {
-	char	text[16];	// Keep string local to speed up lookup.
+class keys_t { public:
+#ifndef _MSC_VER
+	std::string	text;
+#else
+	// TODO: this is absolute no solution!
+	char text[16];
+#endif
 	int		value;
 	
 	static int keySymFromName(const std::string & name);
@@ -156,35 +126,17 @@ struct keys_t {
 
 
 // Joystick structure
-struct joystick_t {
-	char	text[16];	// Keep string local to speed up lookup.
+class joystick_t { public:
+#ifndef _MSC_VER
+	std::string	text;
+#else
+	// TODO: this is absolute no solution!
+	char text[16];
+#endif
 	int		value;
-	int		sdl_index;
+	int		extra;
+	int		axis;
 };
-
-
-// Returns true if the given SDL keycode resolves to one of player 1's
-// configured action bindings (Ply1Controls). Used by the touch
-// auto-hide so player 2 pressing their keyboard keys doesn't dismiss
-// player 1's on-screen controls.
-bool isPlayer1KeyBinding(SDL_Keycode sym);
-
-// Returns the local player slot (0 = player 1, 1 = player 2) that the
-// given controller instance ID drives, or -1 if not registered.
-int  getControllerPlayerSlot(SDL_JoystickID instanceID);
-
-// Twin-stick controls: raw analog stick values for the given 0-based gamepad
-// slot, range -32768..32767 (0 if pad absent). Read directly so the twin-stick
-// aim/move logic doesn't depend on any configurable key bindings; the analog
-// sticks are reserved for twin-stick control and are not separately bindable.
-bool isPadPresent(int padIndex);
-int  getPadLeftStickX(int padIndex);
-int  getPadLeftStickY(int padIndex);
-int  getPadRightStickX(int padIndex);
-int  getPadRightStickY(int padIndex);
-// Deadzone in raw axis units below which a stick is treated as centered.
-// Shared with the classic binding code so there's a single source of truth.
-int  getPadStickDeadzone();
 
 
 

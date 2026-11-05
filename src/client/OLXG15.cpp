@@ -16,7 +16,7 @@
 #include "StringUtils.h"
 #include "Options.h"
 #include "LieroX.h"
-#include "game/CWorm.h"
+#include "CWorm.h"
 #include "WeaponDesc.h"
 #include "CClient.h"
 #include "CGameScript.h"
@@ -165,6 +165,8 @@ void OLXG15_t::gameFrame()
 			{
 				Weapons[i].changed = true;
 			}
+		case NET_PLAYING:
+			break;
 	}
 
 	if (showingSplash)

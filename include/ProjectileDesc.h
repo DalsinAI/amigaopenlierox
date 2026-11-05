@@ -15,7 +15,7 @@
 #include "ProjAction.h"
 #include "Geometry.h"
 
-class SoundSample;
+struct SoundSample;
 
 
 // Projectile types
@@ -78,25 +78,7 @@ static_assert(sizeof(Proj_AnimType) == sizeof(int), "Proj_AnimType__SizeCheck");
 
 // Projectile structure
 struct proj_t {
-	proj_t() : bmpImage(NULL) 
-	{
-		Type = PRJ_PIXEL;
-		Rotating = false;
-		RotIncrement = 0;
-		RotSpeed = 0;
-		UseAngle = false;
-		UseSpecAngle = false;
-		AngleImages = 0;
-		Animating = false;
-		AnimRate = 0.0f;
-		AnimType = ANI_ONCE;
-		UseCustomGravity = false;
-		Gravity = 0;
-		Dampening = 0.0f;
-		Width = 1;
-		Height = 1;
-		WeaponName = "";
-	}
+	proj_t() : bmpImage(NULL) {}
 	
 	std::string	filename;		// Compiler use (was 64b before)
 	
@@ -113,6 +95,12 @@ struct proj_t {
 	bool	Animating;
 	float	AnimRate;
 	Proj_AnimType AnimType;
+	int		AttractiveForce;  // How much will players/projectiles be attracted to this projectile
+	int AttractiveForceObjects;
+	int AttractiveForceClasses;
+	int		AttractiveForceRadius;  // Radius where the gravity is applied
+	bool	AttractiveForceThroughWalls;  // Should the gravity "go through" walls?
+	Proj_AttractiveType	AttractiveForceType;  // How the attractive force should behave
 	
 	// physical behaviour
 	bool	UseCustomGravity;
@@ -146,8 +134,6 @@ struct proj_t {
 	// event proj spawning (if no specific spawnInfo is set in Proj_Action)
 	Proj_SpawnInfo GeneralSpawnInfo;
 	
-	//  What weapon spawned this projectile
-	std::string WeaponName;
 	
 	SDL_Surface * bmpImage;	// Read-only var, managed by game script, no need in smartpointer
 	SmartPointer<SDL_Surface> bmpShadow;  // Pre-generated projectile shadow

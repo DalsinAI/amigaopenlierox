@@ -1,8 +1,8 @@
 /*
 	Condition wrapper
-
+	
 	OpenLieroX
-
+	
 	code under LGPL
 	created 11-05-2009
 */
@@ -10,25 +10,20 @@
 #ifndef __OLX__CONDITION_H__
 #define __OLX__CONDITION_H__
 
-#include <condition_variable>
-#include <chrono>
+#include <SDL_mutex.h>
 #include "Mutex.h"
 
-// Thin wrapper over std::condition_variable_any,
-// which can wait on any lock()/unlock() type -- here our Mutex.
 class Condition {
 private:
-	std::condition_variable_any cond;
+	SDL_cond* cond;
 public:
-	void signal() { cond.notify_one(); }
-	void broadcast() { cond.notify_all(); }
-
-	// mutex must be held by the caller;
-	// it is released while waiting and reacquired before returning.
-	void wait(Mutex& mutex) { cond.wait(mutex); }
-	bool wait(Mutex& mutex, unsigned int ms) {
-		return cond.wait_for(mutex, std::chrono::milliseconds(ms)) == std::cv_status::no_timeout;
-	}
+	Condition() { cond = SDL_CreateCond(); }
+	~Condition() { SDL_DestroyCond(cond); cond = NULL; }
+	
+	void signal() { SDL_CondSignal(cond); }
+	void broadcast() { SDL_CondBroadcast(cond); }
+	void wait(Mutex& mutex) { SDL_CondWait(cond, mutex.m_mutex); }
+	bool wait(Mutex& mutex, Uint32 ms) { return SDL_CondWaitTimeout(cond, mutex.m_mutex, ms) != SDL_MUTEX_TIMEDOUT; }
 };
 
 #endif

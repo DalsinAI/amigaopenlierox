@@ -20,11 +20,9 @@
 #include <list>
 #include <limits.h>
 #include <set>
-#include "olx-types.h"
+#include "types.h"
 #include "Color.h" // for StrToCol
-#include "Iter.h"
-#include "util/IPrintOutFct.h"
-#include "CodeAttributes.h"
+#include "Iterator.h"
 
 //
 // C-string handling routines
@@ -57,7 +55,7 @@
 
 // Strnlen definition for compilers that don't have it
 #if !defined(__USE_GNU) && _MSC_VER <= 1200
-	INLINE size_t strnlen(const char *str, size_t maxlen) {
+	inline size_t strnlen(const char *str, size_t maxlen) {
 		size_t i;
 		for(i = 0; (i < maxlen) && str[i]; ++i) {}
 		return i;
@@ -67,7 +65,7 @@
 // Misc cross-compiler compatibility problem solutions
 #ifdef WIN32
 #if (defined(_MSC_VER) && (_MSC_VER <= 1200))
-	INLINE int strncasecmp(const char *str1, const char *str2, size_t l) {
+	inline int strncasecmp(const char *str1, const char *str2, size_t l) {
 		return _strnicmp(str1, str2, l);
 	}
 #endif
@@ -75,14 +73,11 @@
 #	define snprintf	 _snprintf
 #	define stricmp _stricmp
 #	define fcloseall _fcloseall
-#	define strcasecmp	stricmp
-#elif defined(__EMSCRIPTEN__)
-// Emscripten ships <compat/string.h> with `extern char* strlwr(char*)`,
-// which clashes with the void-returning helper below. Use the system one
-// (it's a thin wrapper around tolower() too) and discard the return.
-#include <compat/string.h>
-#else
-INLINE void strlwr(char* string) {
+#	ifndef strcasecmp
+#		define strcasecmp	stricmp
+#	endif
+#elif !defined(__amigaos__) // libnix has its own
+inline void strlwr(char* string) {
 	if(string)
 		while( *string ) {
 			*string = (char)tolower( *string );
@@ -96,6 +91,26 @@ INLINE void strlwr(char* string) {
 // Case-insensitive comparison of two chars, behaves like stringcasecmp
 int chrcasecmp(const char c1, const char c2);
 
+/////////////
+// C-string itoa for non-windows compilers (on Windows it's defined in windows.h)
+#ifndef WIN32
+// TODOL remove this
+inline char* itoa(int val, char* buf, int base) {
+	int i = 29; // TODO: bad style
+	buf[i+1] = '\0';
+
+    do {
+        buf = "0123456789abcdefghijklmnopqrstuvwxyz"[val % base] + buf;
+        --i, val /= base;
+    } while(val && i);
+
+    return &buf[i+1];
+}
+
+// Cross-compiler compatibility
+#	define		stricmp		strcasecmp
+#endif
+
 
 //
 // C++ string (std::string) routines
@@ -103,7 +118,6 @@ int chrcasecmp(const char c1, const char c2);
 // HINT: use these where possible
 
 void			TrimSpaces(std::string& szLine);
-INLINE std::string	Trimmed(const std::string& s) { std::string ret(s); TrimSpaces(ret); return ret; }
 bool			replace(const std::string& text, const std::string& what, const std::string& with, std::string& result);
 bool			replace(std::string& text, const std::string& what, const std::string& with);
 std::string		Replace(const std::string & text, const std::string& what, const std::string& with);
@@ -128,20 +142,17 @@ short			stringcasecmp(const std::string& s1, const std::string& s2);
 bool			stringcaseequal(const std::string& s1, const std::string& s2);
 bool			subStrEqual(const std::string& s1, const std::string s2, size_t p);
 bool			subStrCaseEqual(const std::string& s1, const std::string s2, size_t p);
-INLINE bool		strStartsWith(const std::string& str, const std::string& start) { if(start.size() > str.size()) return false; return str.substr(0,start.size()) == start; }
-INLINE bool		strCaseStartsWith(const std::string& str, const std::string& start) { if(start.size() > str.size()) return false; return subStrCaseEqual(str,start,start.size()); }
+inline bool		strStartsWith(const std::string& str, const std::string& start) { if(start.size() > str.size()) return false; return str.substr(0,start.size()) == start; }
+inline bool		strCaseStartsWith(const std::string& str, const std::string& start) { if(start.size() > str.size()) return false; return subStrCaseEqual(str,start,start.size()); }
 size_t			maxStartingEqualStr(const std::list<std::string>& strs);
 size_t			maxStartingCaseEqualStr(const std::list<std::string>& strs);
 std::vector<std::string> splitstring(const std::string& str, size_t maxlen, size_t maxwidth, class CFont& font);
 std::string		splitStringWithNewLine(const std::string& str, size_t maxlen, size_t maxwidth, class CFont& font);
 std::string		GetFileExtension(const std::string& filename);
-std::string		GetFileExtensionWithDot(const std::string& filename);
 std::string		GetBaseFilename(const std::string& filename);
 std::string		GetBaseFilenameWithoutExt(const std::string& filename);
-std::string		GetFilenameWithoutExt(const std::string& filename);
 std::list<std::string> SplitFilename(const std::string& filename, size_t numPartsFromRight = (size_t)-1); // splits fn by PathSep
 std::string		GetDirName(const std::string& filename);
-bool			FilenameSimplePatternMatch(const std::string& filename, const std::string& pattern);
 size_t			stringcasefind(const std::string& text, const std::string& search_for);
 size_t			stringcaserfind(const std::string& text, const std::string& search_for);
 std::string		StripHtmlTags( const std::string & src );	// Also removes all "\r" and spaces at line beginning
@@ -161,12 +172,19 @@ std::string		EscapeHtmlTags( const std::string & src );	// Escape all "<" and ">
 
 bool			strSeemsLikeChatCommand(const std::string& str);
 
-INLINE size_t subStrCount(const std::string& str, const std::string& substr) {
+inline size_t subStrCount(const std::string& str, const std::string& substr) {
 	size_t c = 0, p = 0;
 	while((p = str.find(substr, p)) != std::string::npos) { c++; p++; }
 	return c;
 }
 
+
+struct PrintOutFct {
+	virtual ~PrintOutFct() {}
+	virtual void print(const std::string&) const = 0;
+};
+
+struct NullOut : PrintOutFct { void print(const std::string&) const {} };
 
 // returns true if last char was a newline
 bool PrettyPrint(const std::string& prefix, const std::string& buf, const PrintOutFct& printOutFct, bool firstLineWithPrefix = true);
@@ -176,17 +194,17 @@ Iterator<char>::Ref HexDump(Iterator<char>::Ref start, const PrintOutFct& printO
 
 
 
-INLINE std::string FixedWidthStr_RightFill(const std::string& str, size_t w, char c) {
+inline std::string FixedWidthStr_RightFill(const std::string& str, size_t w, char c) {
 	assert(str.size() <= w);
 	return str + std::string(str.size() - w, c);
 }
 
-INLINE std::string FixedWidthStr_LeftFill(const std::string& str, size_t w, char c) {
+inline std::string FixedWidthStr_LeftFill(const std::string& str, size_t w, char c) {
 	assert(str.size() <= w);
 	return std::string(w - str.size(), c) + str;
 }
 
-INLINE void StripQuotes(std::string& value) {
+inline void StripQuotes(std::string& value) {
 	if( value.size() >= 2 )
 		if( value[0] == '"' && value[value.size()-1] == '"' )
 			value = value.substr( 1, value.size()-2 );	
@@ -194,7 +212,7 @@ INLINE void StripQuotes(std::string& value) {
 
 ////////////////////
 // Read a fixed-length C-string from a file
-INLINE std::string freadfixedcstr(FILE *fp, size_t maxlen) {
+inline std::string freadfixedcstr(FILE *fp, size_t maxlen) {
 	std::string fileData;
 	freadstr(fileData, maxlen, fp);
 	return ReadUntil(fileData, '\0');
@@ -202,15 +220,143 @@ INLINE std::string freadfixedcstr(FILE *fp, size_t maxlen) {
 
 ///////////////////
 // Convert a numerical position to iterator
-INLINE std::string::iterator PositionToIterator(std::string& str, size_t pos)  {
+inline std::string::iterator PositionToIterator(std::string& str, size_t pos)  {
 	std::string::iterator res = str.begin();
 	for (size_t i=0; i < pos && res != str.end(); ++i, res++)  {}
 	return res;
 }
 
 
+// Conversion functions from string to numbers
+
+template<typename T>
+T from_string(const std::string& s, std::ios_base& (*f)(std::ios_base&), bool& failed) {
+	std::istringstream iss(s); T t = T();
+	failed = (iss >> f >> t).fail();
+	return t;
+}
+
+template<typename T>
+T from_string(const std::string& s, std::ios_base& (*f)(std::ios_base&)) {
+	std::istringstream iss(s); T t = T();
+	iss >> f >> t;
+	return t;
+}
+
+template<typename T>
+T from_string(const std::string& s, bool& failed) {
+	std::istringstream iss(s); T t = T();
+	failed = (iss >> t).fail();
+	return t;
+}
 
 
+// Conversion functions from numbers to string
+
+template<typename T>
+std::string to_string(T val) {
+	std::ostringstream oss;
+	oss << val;
+	return oss.str();
+}
+
+template<>
+inline std::string to_string<bool>(bool val) {
+	if(val) return "true"; else return "false";
+}
+
+template<>
+inline std::string to_string<const char*>(const char* val) {
+	if(val) return val; else return "";
+}
+
+template<>
+inline bool from_string<bool>(const std::string& s, bool& fail) {
+	std::string s1(stringtolower(s));
+	TrimSpaces(s1);
+	if( s1 == "true" || s1 == "yes" || s1 == "on" ) return true;
+	else if( s1 == "false" || s1 == "no" || s1 == "off" ) return false;
+	return from_string<int>(s, fail) != 0;
+}
+
+template<> VectorD2<int> from_string< VectorD2<int> >(const std::string& s, bool& fail);
+template<> inline std::string to_string< VectorD2<int> >(VectorD2<int> v) { return "(" + to_string(v.x) + "," + to_string(v.y) + ")"; }
+
+template<typename T>
+T from_string(const std::string& s) {
+	bool fail; return from_string<T>(s, fail);
+}
+
+inline int atoi(const std::string& str)  { return from_string<int>(str);  }
+inline float atof(const std::string& str) { return from_string<float>(str);  }
+
+
+inline std::string ftoa(float val, int precision = -1)
+{
+	std::string res = to_string<float>(val);
+	if (precision != -1)  {
+		size_t dotpos = res.find_last_of('.');
+		if (dotpos == std::string::npos)  {
+			res += '.';
+			for (int i = 0; i < precision; i++)
+				res += '0';
+		} else {
+			res = res.substr(0, dotpos + precision);
+		}
+	}
+
+	return res;
+}
+
+inline std::string itoa(unsigned long num, short base=10)  {
+	std::string buf;
+
+	do {	
+		buf = "0123456789abcdefghijklmnopqrstuvwxyz"[num % base] + buf;
+		num /= base;
+	} while(num);
+
+	return buf;
+}
+
+// std::string itoa
+inline std::string itoa(long num, short base=10)  {
+	if(num >= 0)
+		return itoa((unsigned long)num, base);
+	else
+		return "-" + itoa((unsigned long)-num, base);
+}
+
+inline std::string itoa(int num, short base=10)  { return itoa((long)num,base); }
+inline std::string itoa(unsigned int num, short base=10)  { return itoa((unsigned long)num,base); }
+
+// If 64-bit long available?
+#ifdef ULLONG_MAX
+inline std::string itoa(unsigned long long num, short base=10)  {
+	std::string buf;
+
+	do {	
+		buf = "0123456789abcdefghijklmnopqrstuvwxyz"[num % base] + buf;
+		num /= base;
+	} while(num);
+
+	return buf;
+}
+#endif
+
+template<typename _T> std::string hex(_T num) { return itoa(num,16); }
+
+
+struct simple_reversestring_hasher {
+	size_t operator() (const std::string& str) const {
+		std::string::const_reverse_iterator pos = str.rbegin();
+		unsigned short nibble = 0;
+		size_t result = 0;
+		for(; pos != str.rend() && nibble < sizeof(size_t)*2; pos++, nibble++)
+			result += ((size_t)*pos % 16) << nibble*4;
+		return result;
+	}
+};
 
 struct stringcaseless {
 	bool operator()(const std::string& s1, const std::string& s2) const {

@@ -78,6 +78,11 @@ bool IRCClient::processConnecting()
 		return true;
 
 	// Check for DNS resolution
+	NetworkAddr ignored; // irc.quakenet.org has no IPv6 address, and I don't want to use irc.ipv6.quakenet.org
+
+	if(!GetFromDnsCache(m_chatServerAddrStr, m_chatServerAddr, ignored))
+		return false;
+
 	if (!IsNetAddrValid(m_chatServerAddr))
 		return false;
 
@@ -179,7 +184,7 @@ void IRCClient::process()
 {
 	// Re-connect once per 5 seconds
 	if (!m_socketConnected && !m_connecting)  {
-		if(tLX->currentTime - m_connectionClosedTime >= m_reconnectWaitTime)  {
+		if(tLX->currentTime - m_connectionClosedTime >= 5.0f)  {
 			m_connectionClosedTime = tLX->currentTime;
 			connect(m_chatServerAddrStr, m_chatServerChannel, m_myNick);
 		}
@@ -791,12 +796,9 @@ void IRCClient::parseNotice(const IRCClient::IRCCommand &cmd)
 void IRCClient::parseError(const IRCClient::IRCCommand &cmd)
 {
 	if (cmd.params.size() > 0)  {
-		std::string errMsg = cmd.params[0];
-		warnings("IRC server error: " + errMsg + "\n");
-		addChatMessage("Server error: " + errMsg, IRC_TEXT_NOTICE);
+		warnings("IRC server error: " + cmd.params[0] + "\n");
+		addChatMessage("Server error: " + cmd.params[0], IRC_TEXT_NOTICE);
 		disconnect();
-		if(errMsg.find("connect too fast") != std::string::npos)
-			m_reconnectWaitTime = 60.0f; // wait at least a minute
 	}
 }
 

@@ -79,7 +79,7 @@ void CFont::Shutdown() {
 bool CFont::IsColumnFree(int x) {
 	// it's only completelly see through
 	for (int y = 0; y < bmpFont.get()->h; y++) {
-		if ((GetPixel(bmpFont.get(), x, y) & bmpFont->format->Amask) != 0)
+		if ((GetPixel(bmpFont.get(), x, y) & ALPHASURFACE_AMASK) != 0)
 			return false;
 	}
 
@@ -90,6 +90,7 @@ bool CFont::IsColumnFree(int x) {
 // Calculate character widths, number of characters and offsets
 void CFont::Parse() {
 	int x;
+	UnicodeChar CurChar = FIRST_CHARACTER;
 	int cur_w;
 
 	// Lock the surface
@@ -140,21 +141,21 @@ void CFont::Parse() {
 		FontWidth.push_back(cur_w);
 		CharacterOffset.push_back(char_start);
 		NumCharacters++;
+		CurChar++;
 	}
 
 
 
 	// Unlock the surface
 	UnlockSurface(bmpFont);
-	
-	if(NumCharacters <= 10)
-		warnings << "CFont num chars = " << NumCharacters << " is much too low" << endl;
 }
 
 ///////////////////
 // Precalculate a font's colour
-void CFont::PreCalculate(const SmartPointer<SDL_Surface> & bmpSurf, Color colour)
-{
+void CFont::PreCalculate(const SmartPointer<SDL_Surface> & bmpSurf, Color colour) {
+	Uint32 pixel;
+	int x, y;
+
 	FillSurface(bmpSurf.get(), SDL_MapRGBA(bmpSurf.get()->format, 255, 0, 255, 0));
 
 	// Lock the surfaces
@@ -166,9 +167,9 @@ void CFont::PreCalculate(const SmartPointer<SDL_Surface> & bmpSurf, Color colour
 
 	// Outline font: replace white pixels with appropriate color, put black pixels
 	if (OutlineFont) {
-		for (int y = 0; y < bmpSurf.get()->h; y++) {
-			for (int x = 0; x < bmpSurf.get()->w; x++) {
-				Uint32 pixel = GetPixel(bmpFont.get(), x, y);
+		for (y = 0; y < bmpSurf.get()->h; y++) {
+			for (x = 0; x < bmpSurf.get()->w; x++) {
+				pixel = GetPixel(bmpFont.get(), x, y);
 				GetColour4(pixel, bmpFont.get()->format, &R, &G, &B, &A);
 
 				if (R == 255 && G == 255 && B == 255)    // White
@@ -181,9 +182,9 @@ void CFont::PreCalculate(const SmartPointer<SDL_Surface> & bmpSurf, Color colour
 		}
 	// Not outline: replace black pixels with appropriate color
 	} else {
-		for (int y = 0; y < bmpSurf.get()->h; y++) {
-			for (int x = 0; x < bmpSurf.get()->w; x++) {
-				Uint32 pixel = GetPixel(bmpFont.get(), x, y);
+		for (y = 0; y < bmpSurf.get()->h; y++) {
+			for (x = 0; x < bmpSurf.get()->w; x++) {
+				pixel = GetPixel(bmpFont.get(), x, y);
 				GetColour4(pixel, bmpFont.get()->format, &R, &G, &B, &A);
 
 				if (!R && !G && !B)   // Black
@@ -245,9 +246,9 @@ void CFont::DrawAdv(SDL_Surface * dst, int x, int y, int max_w, Color col, const
 	// Set the newrect width and use this newrect temporarily to draw the font
 	// We use this rect because of precached fonts which use SDL_Blit for drawing (and it takes care of cliprect)
 	SDL_Rect newrect = dst->clip_rect;
-	newrect.w = MIN(newrect.w, max_w);
-	newrect.x = MAX(newrect.x, x);
-	newrect.y = MAX(newrect.y, y);
+	newrect.w = MIN(newrect.w, (Uint16)max_w);
+	newrect.x = MAX(newrect.x, (Sint16)x);
+	newrect.y = MAX(newrect.y, (Sint16)y);
 	if (!ClipRefRectWith(newrect.x, newrect.y, newrect.w, newrect.h, (SDLRect&)dst->clip_rect))
 		return;
 

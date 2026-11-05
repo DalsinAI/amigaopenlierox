@@ -15,7 +15,7 @@
 
 
 #include "LieroX.h"
-#include "sound/SoundsBase.h"
+#include "Sounds.h"
 #include "DeprecatedGUI/Graphics.h"
 #include "DeprecatedGUI/Menu.h"
 #include "GfxPrimitives.h"
@@ -28,6 +28,7 @@
 #include "DeprecatedGUI/CSlider.h"
 #include "AuxLib.h"
 #include "ProfileSystem.h"
+#include "CWorm.h"
 
 
 namespace DeprecatedGUI {
@@ -77,7 +78,6 @@ enum {
 	vp_PlySkin
 };
 
-static void ReportInvalidPlayerName();
 
 ///////////////////
 // Initialize the player menu
@@ -127,7 +127,7 @@ void Menu_PlayerInitialize()
     cNewPlayer.Add( new CLabel("Type", tLX->clNormalLabel),Static,40,  232,0,  0);
     cNewPlayer.Add( new CCombobox(),           np_Type,  120, 230,120,17);
 
-	cNewPlayer.SendMessage(np_Name,TXM_SETMAX,20,0);
+	cNewPlayer.SendMessage(np_Name,TXM_SETMAX,MAX_WORM_NAME_LENGTH,0);
 	cNewPlayer.SendMessage( np_Name, TXM_SETFLAGS, TXF_NOUNICODE, 0); // Disable unicode for backward compatibility
 
 
@@ -191,10 +191,10 @@ void Menu_PlayerInitialize()
     cViewPlayers.Add( new CLabel("Type", tLX->clNormalLabel),                   Static, 350,202, 0,  0);
     cViewPlayers.Add( new CCombobox(),                              vp_Type,   400,200, 120,17);
 
-	cViewPlayers.SendMessage(vp_Name,TXM_SETMAX,20,0);
+	cViewPlayers.SendMessage(vp_Name,TXM_SETMAX,MAX_WORM_NAME_LENGTH,0);
 	cViewPlayers.SendMessage(vp_Name, TXM_SETFLAGS, TXF_NOUNICODE, 0); // Disable unicode for backward compatibility
 
-	cViewPlayers.SendMessage(vp_Players,		LVM_SETOLDSTYLE, (uintptr_t)0, 0);
+	cViewPlayers.SendMessage(vp_Players,		LVM_SETOLDSTYLE, (DWORD)0, 0);
 
     // Hide the AI stuff until 'Computer' type is selected
     cViewPlayers.getWidget(vp_AIDiffLbl)->setEnabled(false);
@@ -229,8 +229,8 @@ void Menu_PlayerFrame()
 {
 	int mouse = 0;
 
-	DrawImageAdv(VideoPostProcessor::videoSurface().get(), tMenu->bmpBuffer, 20,140, 20,140, 620,340);
-	DrawImageAdv(VideoPostProcessor::videoSurface().get(), tMenu->bmpBuffer, 140,110,  140,110,  400,30);
+	DrawImageAdv(VideoPostProcessor::videoSurface(), tMenu->bmpBuffer, 20,140, 20,140, 620,340);
+	DrawImageAdv(VideoPostProcessor::videoSurface(), tMenu->bmpBuffer, 140,110,  140,110,  400,30);
 
 	if(iPlayerMode == 0)
 		Menu_Player_NewPlayer(mouse);
@@ -238,6 +238,7 @@ void Menu_PlayerFrame()
 	else if(iPlayerMode == 1)
 		Menu_Player_ViewPlayers(mouse);
 }
+
 
 ///////////////////
 // Initialize the newplayer settings
@@ -260,9 +261,7 @@ void Menu_Player_NewPlayerInit()
 
     // Load the default skin
 	tMenu->cSkin.Change("default.png");
-	tMenu->cSkin.setDefaultColor(Color(128,128,128));
-	tMenu->cSkin.ColorizeDefault();
-	fPlayerSkinFrame = 0;
+    fPlayerSkinFrame = 0;
     bPlayerSkinAnimation = false;
     cNewPlayer.FocusWidget(pp_NewPlayerTab);
 }
@@ -278,14 +277,14 @@ void Menu_Player_ViewPlayerInit()
 	CListview *lv = (CListview *)cViewPlayers.getWidget(vp_Players);
     lv->Clear();
 
-	int i = 0;
-	for_each_iterator(SmartPointer<profile_t>, p, GetProfiles()) {
-		lv->AddItem("",i++,tLX->clListView);
-		if (p->get()->cSkin.getPreview().get())
-			lv->AddSubitem(LVS_IMAGE, "", p->get()->cSkin.getPreview(), NULL);
+	profile_t *p = GetProfiles();
+	for(; p; p=p->tNext) {
+		lv->AddItem("",p->iID,tLX->clListView);
+		if (p->cSkin.getPreview().get())
+			lv->AddSubitem(LVS_IMAGE, "", p->cSkin.getPreview(), NULL);
 		else
 			lv->AddSubitem(LVS_TEXT, " ", (DynDrawIntf*)NULL, NULL);
-		lv->AddSubitem(LVS_TEXT, p->get()->sName, (DynDrawIntf*)NULL, NULL);
+		lv->AddSubitem(LVS_TEXT, p->sName, (DynDrawIntf*)NULL, NULL);
 	}
 
 
@@ -293,9 +292,9 @@ void Menu_Player_ViewPlayerInit()
     Menu_Player_FillSkinCombo( (CCombobox *)cViewPlayers.getWidget(vp_PlySkin) );
 
     // Set the name of the first item in the list
-    int sel = (int)cViewPlayers.SendMessage( vp_Players, LVM_GETCURINDEX,(uintptr_t)0,0);
-	SmartPointer<profile_t> p = FindProfile(sel);
-    if(p.get()) {
+    int sel = cViewPlayers.SendMessage( vp_Players, LVM_GETCURINDEX,(DWORD)0,0);
+	p = FindProfile(sel);
+    if(p) {
         cViewPlayers.SendMessage( vp_Name,    TXS_SETTEXT, p->sName,0);
 
         cViewPlayers.SendMessage( vp_Red,	    SLM_SETVALUE, p->R, 0);
@@ -327,7 +326,7 @@ void Menu_Player_NewPlayer(int mouse)
 
 	// Process & draw the gui
 	ev = cNewPlayer.Process();
-	cNewPlayer.Draw(VideoPostProcessor::videoSurface().get());
+	cNewPlayer.Draw(VideoPostProcessor::videoSurface());
 
 	Uint8 r = ((CSlider *)cNewPlayer.getWidget(np_Red))->getValue();
 	Uint8 g = ((CSlider *)cNewPlayer.getWidget(np_Green))->getValue();
@@ -351,7 +350,7 @@ void Menu_Player_NewPlayer(int mouse)
 
 					// Shutdown
 					Menu_PlayerShutdown();
-					SaveProfiles();
+					//SaveProfiles();
 
 					// Leave
 					PlaySoundSample(sfxGeneral.smpClick);
@@ -363,34 +362,23 @@ void Menu_Player_NewPlayer(int mouse)
 			// Create
 			case np_Create:
 				if(ev->iEventMsg == BTN_CLICKED) {
+					PlaySoundSample(sfxGeneral.smpClick);
 
 					// Get the details
 					std::string name = ((CTextbox *)cNewPlayer.getWidget(np_Name))->getText();
-
-                                        TrimSpaces(name);
-
-                                        // Does not allow worm to have empty name
-                                        if(name == "") {
-                                            ReportInvalidPlayerName();
-
-                                            return;
-                                        }
-
-                                        PlaySoundSample(sfxGeneral.smpClick);
-
 					name = RemoveSpecialChars(name);  // Remove any special characters (backward compatibility)
 					std::string skin;
                     cNewPlayer.SendMessage(np_PlySkin, CBS_GETCURSINDEX, &skin, 0);
 
 					// Add the profile
-                    WormType* type = ( (int)cNewPlayer.SendMessage(np_Type,CBM_GETCURINDEX,(uintptr_t)0,0) == PRF_HUMAN->toInt() ) ? PRF_HUMAN : PRF_COMPUTER;
-                    int level = (int)cNewPlayer.SendMessage(np_AIDiff,SLM_GETVALUE,(uintptr_t)0,0);
+                    WormType* type = ( (int)cNewPlayer.SendMessage(np_Type,CBM_GETCURINDEX,(DWORD)0,0) == PRF_HUMAN->toInt() ) ? PRF_HUMAN : PRF_COMPUTER;
+                    int level = cNewPlayer.SendMessage(np_AIDiff,SLM_GETVALUE,(DWORD)0,0);
 
 					AddProfile(name, skin, "", "",r, g, b, type->toInt(), level);
 
 					// Shutdown
 					//Menu_PlayerShutdown();
-					SaveProfiles();
+					//SaveProfiles();
 
 					//Menu_MainInitialize();
 					Menu_Player_ViewPlayerInit();
@@ -402,7 +390,7 @@ void Menu_Player_NewPlayer(int mouse)
             case np_Type:
                 if(ev->iEventMsg == CMB_CHANGED) {
 
-                    int type = (int)cNewPlayer.SendMessage(np_Type,CBM_GETCURINDEX,(uintptr_t)0,0);
+                    int type = cNewPlayer.SendMessage(np_Type,CBM_GETCURINDEX,(DWORD)0,0);
 
                     // Hide the AI stuff if it is a human type of player
                     cNewPlayer.getWidget(np_AIDiffLbl)->setEnabled(type == PRF_COMPUTER->toInt());
@@ -418,7 +406,6 @@ void Menu_Player_NewPlayer(int mouse)
 
                     // Load the skin
 					tMenu->cSkin.Change(buf);
-					tMenu->cSkin.ColorizeDefault();
                 }
                 break;
 		}
@@ -427,15 +414,15 @@ void Menu_Player_NewPlayer(int mouse)
 
 	// Draw the colour
 	//DrawRectFill(VideoPostProcessor::videoSurface(), 260, 230, 280, 250, Color(r,g,b));
-	DrawRectFill(VideoPostProcessor::videoSurface().get(),  255, 195, 285, 225, tLX->clBlack);
-	Menu_DrawBox(VideoPostProcessor::videoSurface().get(),  255, 195, 285, 225);
+	DrawRectFill(VideoPostProcessor::videoSurface(),  255, 195, 285, 225, tLX->clBlack);
+	Menu_DrawBox(VideoPostProcessor::videoSurface(),  255, 195, 285, 225);
 	//DrawRect(VideoPostProcessor::videoSurface(),		255, 195, 285, 225, Color(128,128,128));
 
 
 	// Draw the colour component values
-	tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 250, 303, tLX->clNormalLabel, itoa(r));
-	tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 250, 323, tLX->clNormalLabel, itoa(g));
-	tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 250, 343, tLX->clNormalLabel, itoa(b));
+	tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 250, 303, tLX->clNormalLabel, itoa(r));
+	tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 250, 323, tLX->clNormalLabel, itoa(g));
+	tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 250, 343, tLX->clNormalLabel, itoa(b));
 
 	if(MouseInRect(255,195,30,30) && Mouse->Up)  {
 		if (bPlayerSkinAnimation)  {
@@ -447,7 +434,7 @@ void Menu_Player_NewPlayer(int mouse)
 		}
 	}
 
-	Menu_Player_DrawWormImage(VideoPostProcessor::videoSurface().get(), (int)(fPlayerSkinFrame)*7+(int)( fPlayerSkinAngle/151 * 7 )+4, 257, 200, r,g,b);
+	Menu_Player_DrawWormImage(VideoPostProcessor::videoSurface(), (int)(fPlayerSkinFrame)*7+(int)( fPlayerSkinAngle/151 * 7 )+4, 257, 200, r,g,b);
 
 	if(bPlayerSkinAnimation)  {
 		if (bAimingUp)
@@ -471,16 +458,16 @@ void Menu_Player_NewPlayer(int mouse)
 
 
     // Draw the difficulty level
-    int type = (int)cNewPlayer.SendMessage(np_Type,CBM_GETCURINDEX,(uintptr_t)0,0);
+    int type = cNewPlayer.SendMessage(np_Type,CBM_GETCURINDEX,(DWORD)0,0);
     if( type == PRF_COMPUTER->toInt() ) {
         static const std::string difflevels[] = {"Easy", "Medium", "Hard", "Xtreme"};
-        int level = (int)cNewPlayer.SendMessage(np_AIDiff,SLM_GETVALUE,(uintptr_t)0,0);
-        tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 250,363,tLX->clNormalLabel,difflevels[level]);
+        int level = cNewPlayer.SendMessage(np_AIDiff,SLM_GETVALUE,(DWORD)0,0);
+        tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 250,363,tLX->clNormalLabel,difflevels[level]);
 
     }
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
 
@@ -494,7 +481,7 @@ void Menu_Player_ViewPlayers(int mouse)
 
 	// Process & draw the gui
 	ev = cViewPlayers.Process();
-	cViewPlayers.Draw(VideoPostProcessor::videoSurface().get());
+	cViewPlayers.Draw(VideoPostProcessor::videoSurface());
 
 	if(ev) {
 
@@ -513,7 +500,7 @@ void Menu_Player_ViewPlayers(int mouse)
 
 					// Shutdown
 					Menu_PlayerShutdown();
-					SaveProfiles();
+					//SaveProfiles();
 
 					// Leave
 					PlaySoundSample(sfxGeneral.smpClick);
@@ -533,8 +520,8 @@ void Menu_Player_ViewPlayers(int mouse)
 					}
 					
 					int sel = lv->getCurIndex();
-					SmartPointer<profile_t> p = FindProfile(sel);
-					if(p.get()) {
+					profile_t *p = FindProfile(sel);
+					if(p) {
 						/*if(p->iType == PRF_HUMAN)*/ {
 
 							//
@@ -551,31 +538,30 @@ void Menu_Player_ViewPlayers(int mouse)
 							if(Menu_MessageBox("Confirmation",buf,LMB_YESNO) == MBR_YES) {
 
 								// Delete the profile
-								DeleteProfile(p);
+								DeleteProfile(p->iID);
 
 								// Add the players to the list
 								lv->Create();
 								lv->AddColumn("Players",22);
 								lv->AddColumn("",60);
-								
-								int i = 0;
-								for_each_iterator(SmartPointer<profile_t>, p, GetProfiles()) {
+								p = GetProfiles();
+								for(; p; p=p->tNext) {
 									//if(p->iType == PRF_COMPUTER)
 									//	continue;
-									lv->AddItem("",i++,tLX->clListView);
-									if (p->get()->cSkin.getPreview().get())
-										lv->AddSubitem(LVS_IMAGE, "", p->get()->cSkin.getPreview(), NULL);
+									lv->AddItem("",p->iID,tLX->clListView);
+									if (p->cSkin.getPreview().get())
+										lv->AddSubitem(LVS_IMAGE, "", p->cSkin.getPreview(), NULL);
 									else
 										lv->AddSubitem(LVS_TEXT, " ", (DynDrawIntf*)NULL, NULL);
-									lv->AddSubitem(LVS_TEXT, p->get()->sName, (DynDrawIntf*)NULL, NULL);
+									lv->AddSubitem(LVS_TEXT, p->sName, (DynDrawIntf*)NULL, NULL);
 								}
 							}
 						}
 
                         // Update the details
-                        int sel = (int)cViewPlayers.SendMessage(vp_Players,LVM_GETCURINDEX,(uintptr_t)0,0);
+                        int sel = cViewPlayers.SendMessage(vp_Players,LVM_GETCURINDEX,(DWORD)0,0);
 	                    p = FindProfile(sel);
-                        if(p.get()) {
+                        if(p) {
                             cViewPlayers.SendMessage( vp_Name,		TXS_SETTEXT,    p->sName,0);
                             cViewPlayers.SendMessage( vp_Red,	    SLM_SETVALUE,   p->R, 0);
 	                        cViewPlayers.SendMessage( vp_Green,		SLM_SETVALUE,   p->G, 0);
@@ -608,42 +594,23 @@ void Menu_Player_ViewPlayers(int mouse)
             // Apply button
             case vp_Apply:
                 if( ev->iEventMsg == BTN_CLICKED ) {
-                    int sel = (int)cViewPlayers.SendMessage(vp_Players, LVM_GETCURINDEX, (uintptr_t)0,0);
-	                SmartPointer<profile_t> p = FindProfile(sel);
-	                if(p.get()) {
-
-                        std::string name;
-                        cViewPlayers.SendMessage(vp_Name, TXS_GETTEXT, &name, 0);
-
-                        TrimSpaces(name);
-                        
-                        // Does not allow empty name
-                        if(name == "") {
-                            
-                            ReportInvalidPlayerName();
-                            cViewPlayers.SendMessage(vp_Name, TXS_SETTEXT, p->sName, 0);
-                            
-                            return;
-                        }
-
-                        p->sName = name;
-                        cViewPlayers.SendMessage(vp_Name, TXS_SETTEXT, p->sName, 0);
-
-                        p->R = (Uint8)cViewPlayers.SendMessage(vp_Red,SLM_GETVALUE,(uintptr_t)0,0);
-                        p->G = (Uint8)cViewPlayers.SendMessage(vp_Green,SLM_GETVALUE,(uintptr_t)0,0);
-                        p->B = (Uint8)cViewPlayers.SendMessage(vp_Blue,SLM_GETVALUE,(uintptr_t)0,0);
+                    int sel = cViewPlayers.SendMessage(vp_Players, LVM_GETCURINDEX, (DWORD)0,0);
+	                profile_t *p = FindProfile(sel);
+	                if(p) {
+                        cViewPlayers.SendMessage(vp_Name, TXS_GETTEXT, &p->sName, 0);
+                        p->R = (Uint8)cViewPlayers.SendMessage(vp_Red,SLM_GETVALUE,(DWORD)0,0);
+                        p->G = (Uint8)cViewPlayers.SendMessage(vp_Green,SLM_GETVALUE,(DWORD)0,0);
+                        p->B = (Uint8)cViewPlayers.SendMessage(vp_Blue,SLM_GETVALUE,(DWORD)0,0);
                         p->iType = ((CCombobox *)cViewPlayers.getWidget(vp_Type))->getSelectedIndex();
-                        p->nDifficulty = (int)cViewPlayers.SendMessage(vp_AIDiff, SLM_GETVALUE,(uintptr_t)0,0);
+                        p->nDifficulty = cViewPlayers.SendMessage(vp_AIDiff, SLM_GETVALUE,(DWORD)0,0);
 
 						// Reload the graphics
 						std::string buf;
-						buf = ((CCombobox *)cViewPlayers.getWidget(vp_PlySkin))->getSelectedItem()->index();
+						buf = ((CCombobox *)cViewPlayers.getWidget(vp_PlySkin))->getSelectedItem()->sIndex;
 						p->cSkin.Change(buf);
-						p->cSkin.setDefaultColor(Color(p->R, p->G, p->B));
-						p->cSkin.ColorizeDefault();
 
                         // Update the item
-                        lv_item_t *it = (lv_item_t *)cViewPlayers.SendMessage(vp_Players, LVM_GETCURITEM, (uintptr_t)0,0);
+                        lv_item_t *it = (lv_item_t *)cViewPlayers.SendMessage(vp_Players, LVM_GETCURITEM, (DWORD)0,0); // TODO: 64bit unsafe (pointer cast)
                         if(it) {
                             if(it->tSubitems) {
 								it->tSubitems->bmpImage = p->cSkin.getPreview();
@@ -672,9 +639,9 @@ void Menu_Player_ViewPlayers(int mouse)
             // Player listbox
             case vp_Players:
                 if( ev->iEventMsg == LV_CHANGED ) {
-                    int sel = (int)cViewPlayers.SendMessage(vp_Players,LVM_GETCURINDEX,(uintptr_t)0,0);
-	                SmartPointer<profile_t> p = FindProfile(sel);
-                    if(p.get()) {
+                    int sel = cViewPlayers.SendMessage(vp_Players,LVM_GETCURINDEX,(DWORD)0,0);
+	                profile_t *p = FindProfile(sel);
+                    if(p) {
                         cViewPlayers.SendMessage( vp_Name,		TXS_SETTEXT,    p->sName,0);
                         cViewPlayers.SendMessage( vp_Red,	    SLM_SETVALUE,   p->R, 0);
 	                    cViewPlayers.SendMessage( vp_Green,		SLM_SETVALUE,   p->G, 0);
@@ -697,7 +664,7 @@ void Menu_Player_ViewPlayers(int mouse)
             case vp_Type:
                 if( ev->iEventMsg == CMB_CHANGED ) {
 
-                    int type = (int)cViewPlayers.SendMessage(vp_Type,CBM_GETCURINDEX,(uintptr_t)0,0);
+                    int type = cViewPlayers.SendMessage(vp_Type,CBM_GETCURINDEX,(DWORD)0,0);
 
                     // Hide the AI stuff if it is a human type of player
                     cViewPlayers.getWidget(vp_AIDiffLbl)->setEnabled(type == PRF_COMPUTER->toInt());
@@ -713,7 +680,6 @@ void Menu_Player_ViewPlayers(int mouse)
 
                     // Load the skin
 					tMenu->cSkin.Change(buf);
-					tMenu->cSkin.ColorizeDefault();
                 }
                 break;
 		}
@@ -728,22 +694,22 @@ void Menu_Player_ViewPlayers(int mouse)
 	}
 	
 	int sel = lv->getCurIndex();
-	SmartPointer<profile_t> p = FindProfile(sel);
-	if(p.get()) {
+	profile_t *p = FindProfile(sel);
+	if(p) {
 
         Uint8 r = ((CSlider *)cViewPlayers.getWidget(vp_Red))->getValue();
 	    Uint8 g = ((CSlider *)cViewPlayers.getWidget(vp_Green))->getValue();
 	    Uint8 b = ((CSlider *)cViewPlayers.getWidget(vp_Blue))->getValue();
 
-        tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 530, 253, tLX->clNormalLabel, itoa(r));
-	    tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 530, 273, tLX->clNormalLabel, itoa(g));
-	    tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 530, 293, tLX->clNormalLabel, itoa(b));
+        tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 530, 253, tLX->clNormalLabel, itoa(r));
+	    tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 530, 273, tLX->clNormalLabel, itoa(g));
+	    tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 530, 293, tLX->clNormalLabel, itoa(b));
 
 		// Draw the worm image
-		DrawRectFill(VideoPostProcessor::videoSurface().get(),  300, 165, 330, 195, tLX->clBlack);
-		Menu_DrawBox(VideoPostProcessor::videoSurface().get(),  300, 165, 330, 195);
+		DrawRectFill(VideoPostProcessor::videoSurface(),  300, 165, 330, 195, tLX->clBlack);
+		Menu_DrawBox(VideoPostProcessor::videoSurface(),  300, 165, 330, 195);
 
-		Menu_Player_DrawWormImage(VideoPostProcessor::videoSurface().get(),(int)(fPlayerSkinFrame)*7+(int)( fPlayerSkinAngle/151 * 7 )+4, 301, 170, r, g, b);
+		Menu_Player_DrawWormImage(VideoPostProcessor::videoSurface(),(int)(fPlayerSkinFrame)*7+(int)( fPlayerSkinAngle/151 * 7 )+4, 301, 170, r, g, b);
 		if(MouseInRect(300,165,30,30) && Mouse->Up)  {
 			if (bPlayerSkinAnimation)  {
 				bPlayerSkinAnimation = false;
@@ -775,27 +741,18 @@ void Menu_Player_ViewPlayers(int mouse)
 	}
 
     // Draw the difficulty level
-    int type = (int)cViewPlayers.SendMessage(vp_Type,CBM_GETCURINDEX,(uintptr_t)0,0);
+    int type = cViewPlayers.SendMessage(vp_Type,CBM_GETCURINDEX,(DWORD)0,0);
     if( type == PRF_COMPUTER->toInt() ) {
         static const std::string difflevels[] = {"Easy", "Medium", "Hard", "Xtreme"};
-        int level = (int)(uintptr_t)CLAMP(cViewPlayers.SendMessage(vp_AIDiff,SLM_GETVALUE,(uintptr_t)0,0), (uintptr_t)0, (uintptr_t)3);
-        tLX->cFont.Draw(VideoPostProcessor::videoSurface().get(), 530,313,tLX->clNormalLabel, difflevels[level]);
+        int level = (DWORD)CLAMP(cViewPlayers.SendMessage(vp_AIDiff,SLM_GETVALUE,(DWORD)0,0), (DWORD)0, (DWORD)3);
+        tLX->cFont.Draw(VideoPostProcessor::videoSurface(), 530,313,tLX->clNormalLabel, difflevels[level]);
     }
 
 
 	// Draw the mouse
-	DrawCursor(VideoPostProcessor::videoSurface().get());
+	DrawCursor(VideoPostProcessor::videoSurface());
 }
 
-// Report an invalid name
-static void ReportInvalidPlayerName()
-{
-    PlaySoundSample(sfxGeneral.smpNotify);
-
-    if(!Menu_MessageBox("Invalid name", "Name cannot be empty!", LMB_OK)) {
-        PlaySoundSample(sfxGeneral.smpClick);
-    }
-}
 
 ///////////////////
 // Draw the worm image

@@ -12,7 +12,7 @@
 
 #include "sex.h"
 
-#include "util/Random.h"
+#include "MathLib.h"
 #include "StringUtils.h"
 
 

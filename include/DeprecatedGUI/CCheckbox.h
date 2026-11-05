@@ -17,10 +17,10 @@
 #ifndef __CCHECKBOX_H__DEPRECATED_GUI__
 #define __CCHECKBOX_H__DEPRECATED_GUI__
 
-#include "DeprecatedGUI/CWidget.h"
+
 #include "InputEvents.h"
 
-class ScriptVar_t;
+struct ScriptVar_t;
 
 namespace DeprecatedGUI {
 
@@ -82,12 +82,11 @@ public:
 
 
 	// Process a message sent
-	uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2) {
+	DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2) {
 
 				switch(iMsg) {
 					case CKM_SETCHECK:
 						bValue = Param1 != 0;
-						updatePointers();
 						return 0;
 					case CKM_GETCHECK:
 						return (int)bValue;
@@ -95,15 +94,14 @@ public:
 
 				return 0;
 			}
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param) { return 0; }
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param)  { return 0; }
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param) { return 0; }
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param)  { return 0; }
 
 
 	// Draw the title button
 	void	Draw(SDL_Surface * bmpDest);
 
 	bool	getValue()						{ return bValue; }
-	void	setValue(bool v)				{ bValue = v; updatePointers(); }
 
 	void	updatePointers()	{
 		if( bVar )

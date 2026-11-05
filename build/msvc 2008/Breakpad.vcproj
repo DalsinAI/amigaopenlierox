@@ -308,22 +308,6 @@
 			<File
 				RelativePath="..\..\src\breakpad\external\src\common\windows\pdb_source_line_writer.cc"
 				>
-				<FileConfiguration
-					Name="Debug|Win32"
-					>
-					<Tool
-						Name="VCCLCompilerTool"
-						AdditionalIncludeDirectories="&quot;$(VCInstallDir)include\&quot;;&quot;$(VCInstallDir)atlmfc\include\&quot;"
-					/>
-				</FileConfiguration>
-				<FileConfiguration
-					Name="Release|Win32"
-					>
-					<Tool
-						Name="VCCLCompilerTool"
-						AdditionalIncludeDirectories="$(VCInstallDir)atlmfc/include"
-					/>
-				</FileConfiguration>
 			</File>
 			<File
 				RelativePath="..\..\src\breakpad\external\src\common\string_conversion.cc"
@@ -364,14 +348,6 @@
 			<File
 				RelativePath="..\..\src\breakpad\external\src\processor\pathname_stripper.cc"
 				>
-				<FileConfiguration
-					Name="Debug|Win32"
-					>
-					<Tool
-						Name="VCCLCompilerTool"
-						DebugInformationFormat="3"
-					/>
-				</FileConfiguration>
 			</File>
 			<File
 				RelativePath="..\..\src\breakpad\external\src\processor\process_state.cc"

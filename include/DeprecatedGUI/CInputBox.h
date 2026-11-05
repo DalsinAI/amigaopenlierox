@@ -19,7 +19,6 @@
 
 #include "InputEvents.h"
 #include "DeprecatedGUI/CGuiSkinnedLayout.h"
-#include "CodeAttributes.h"
 
 namespace DeprecatedGUI {
 
@@ -39,15 +38,11 @@ enum {
 
 class CInputbox : public CWidget {
 public:
-	// Constructor.
-	// slot selects which binding of a comma-separated control value this box
-	// edits (0-based). -1 (the default) means the box represents the whole
-	// value, as before.
-	CInputbox(int val, const std::string& _text, SmartPointer<SDL_Surface> img, const std::string& name, int slot = -1) {
+	// Constructor
+	CInputbox(int val, const std::string& _text, SmartPointer<SDL_Surface> img, const std::string& name) {
 		iKeyvalue = val;
 		sText = _text;
 		sName = name;
-		iSlot = slot;
 
 		bmpImage = img;
 		iType = wid_Inputbox;
@@ -60,7 +55,6 @@ private:
 	// Attributes
 
 	int			iKeyvalue;
-	int			iSlot;
 	std::string	sText;
 	SmartPointer<SDL_Surface> bmpImage;
 	bool		bMouseOver;
@@ -81,12 +75,11 @@ public:
 	int		MouseWheelDown(mouse_t *tMouse)		{ return INB_NONE; }
 	int		MouseWheelUp(mouse_t *tMouse)		{ return INB_NONE; }
 	int		KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)	{ return INB_NONE; }
-	// Fires on key up, so the key reader opened by it does not see the same key press
-	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate);
+	int		KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate); // return event on key up so we won't process that same event inside key reader
 
 
 	// Process a message sent
-	INLINE uintptr_t SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2) {
+	inline DWORD SendMessage(int iMsg, DWORD Param1, DWORD Param2) {
 
 				if(iMsg == INM_GETVALUE) {
 						return iKeyvalue;
@@ -95,8 +88,8 @@ public:
 				return 0;
 			}
 
-	uintptr_t SendMessage(int iMsg, const std::string& sStr, uintptr_t Param) { return 0; }
-	uintptr_t SendMessage(int iMsg, std::string *sStr, uintptr_t Param)  {
+	DWORD SendMessage(int iMsg, const std::string& sStr, DWORD Param) { return 0; }
+	DWORD SendMessage(int iMsg, std::string *sStr, DWORD Param)  {
 		if (iMsg == INS_GETTEXT)  {
 			*sStr = sText;
 		}
@@ -107,25 +100,14 @@ public:
 	void	Draw(SDL_Surface * bmpDest);
 
 
-	INLINE int		getValue()						{ return iKeyvalue; }
-	INLINE void	setValue(int _v)					{ iKeyvalue = _v; }
-	INLINE int		getSlot()						{ return iSlot; }
-	INLINE std::string	getText()				{ return sText; }
-	INLINE void	setText(const std::string& _t)		{ sText = _t; }
-	INLINE std::string	getName()				{ return sName; }
+	inline int		getValue()						{ return iKeyvalue; }
+	inline void	setValue(int _v)					{ iKeyvalue = _v; }
+	inline std::string	getText()				{ return sText; }
+	inline void	setText(const std::string& _t)		{ sText = _t; }
+	inline std::string	getName()				{ return sName; }
 
 	static CInputbox * InputBoxSelected;
 	static std::string InputBoxLabel;	// "GUI.InputBoxLabel" skin string
-	friend class CInputboxInput;
-};
-
-class CInputboxInput: public CInputbox	// InputBoxDialog.xml should contain exactly one such control at the end
-{
-	public:
-	CInputboxInput();
-	~CInputboxInput();
-	
-	void	Draw(SDL_Surface * bmpDest) {};
 };
 
 } // namespace DeprecatedGUI

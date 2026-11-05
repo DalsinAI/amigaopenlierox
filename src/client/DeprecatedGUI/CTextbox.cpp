@@ -29,6 +29,7 @@
 #include "GfxPrimitives.h"
 #include "StringUtils.h"
 #include "Mutex.h"
+#include "Touchscreen.h"
 #include "DeprecatedGUI/CTextbox.h"
 
 
@@ -100,6 +101,7 @@ void CTextbox::OnTimerEvent(Timer::EventData ev)
 // Draw the text box
 void CTextbox::Draw(SDL_Surface * bmpDest)
 {
+	std::string buf = "";
 	std::string text = sText;
 
 	if (bRedrawMenu)
@@ -143,7 +145,9 @@ void CTextbox::Draw(SDL_Surface * bmpDest)
 
 	// Draw selection
 	if (iSelLength)  {
-		int x1=0,x2=0;  // Positions of the selection
+		buf = ""; // Delete the buffer
+		int x1,x2;  // Positions of the selection
+		x1=x2=0;
 
 		if (iSelLength > 0)  
 			iSelStart = iCurpos;
@@ -322,12 +326,22 @@ int CTextbox::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 	}
 
 	// Select all
-	if ((modstate.bCtrl || modstate.bGui) && keysym == SDLK_a) {
+	if ((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_a) {
 		iCurpos = Utf8StringSize(sText);
 		iSelStart = 0;
 		iSelLength = -((int)Utf8StringSize(sText));
 
 		return TXT_CHANGE;
+	}
+
+	if (keysym == SDLK_RETURN ||
+		keysym == SDLK_KP_ENTER ||
+		keysym == SDLK_LALT ||
+		keysym == SDLK_LCTRL ||
+		keysym == SDLK_LSHIFT) {
+		if (!GetTouchscreenTextInputShown()) {
+			ShowTouchscreenTextInput(sText);
+		}
 	}
 
 	// Enter
@@ -340,21 +354,21 @@ int CTextbox::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 	}
 
     // Ctrl-v or Super-v or Shift-Insert (paste)
-    if(((modstate.bCtrl || modstate.bGui) && keysym == SDLK_v ) ||
+    if(((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_v ) ||
 		( modstate.bShift && keysym == SDLK_INSERT )) {
         PasteText();
         return TXT_CHANGE;
     }
 
     // Ctrl-c or Super-c or Ctrl-insert (copy)
-    if(((modstate.bCtrl || modstate.bGui) && keysym == SDLK_c ) ||
-		( (modstate.bCtrl || modstate.bGui) && keysym == SDLK_INSERT )) {
+    if(((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_c ) ||
+		( (modstate.bCtrl || modstate.bMeta) && keysym == SDLK_INSERT )) {
         CopyText();
         return TXT_CHANGE;
     }
 
     // Ctrl-x or Super-x or Shift-Delete (cut)
-    if(((modstate.bCtrl || modstate.bGui) && keysym == SDLK_x ) ||
+    if(((modstate.bCtrl || modstate.bMeta) && keysym == SDLK_x ) ||
 		( modstate.bShift && keysym == SDLK_DELETE )) {
         CopyText();
 		Delete();
@@ -375,11 +389,6 @@ int CTextbox::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 		}
 	} else {  // Alt not pressed
 		sAltKey = "";
-	}
-
-	if(modstate.bCtrl && taunts->getTauntForKey( keysym ) != "" ) {
-		sText += taunts->getTauntForKey( keysym );
-		return TXT_ENTER;
 	}
 
 	// No visible character
@@ -406,8 +415,11 @@ int CTextbox::KeyUp(UnicodeChar c, int keysym, const ModifiersState& modstate)
 
 			// Convert the code
 			bool fail = false;
-			UnicodeChar in = (UnicodeChar)from_string<int>(sAltKey, fail);
-			
+#if _MSC_VER <= 1200
+			UnicodeChar in = (UnicodeChar)from_string<int>(sAltKey, fail);  // MSVC cannot convert string to UnicodeChar
+#else
+			UnicodeChar in = from_string<UnicodeChar>(sAltKey, fail);
+#endif
 			// Insert
 			if (!fail)
 				Insert(in);
@@ -562,6 +574,10 @@ int	CTextbox::MouseUp(mouse_t *tMouse, int nDown)
 	// We can lose focus now
 	bCanLoseFocus = true;
 
+	if (!GetTouchscreenTextInputShown()) {
+		ShowTouchscreenTextInput(sText);
+	}
+
 	return TXT_NONE;
 }
 
@@ -571,6 +587,15 @@ int CTextbox::MouseOver(mouse_t *tMouse)
 {
 	SetGameCursor(CURSOR_TEXT);
 	bCanLoseFocus = !tMouse->Down;
+
+	if (GetTouchscreenTextInputShown()) {
+		std::string text;
+		if (ProcessTouchscreenTextInput(&text)) {
+			setText(text);
+			return TXT_ENTER;
+		}
+	}
+
 	return TXT_MOUSEOVER;
 }
 
@@ -705,18 +730,18 @@ void CTextbox::setText(const std::string& buf) {
 
 ///////////////////
 // This widget is send a message
-uintptr_t CTextbox::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2) {
+DWORD CTextbox::SendMessage(int iMsg, DWORD Param1, DWORD Param2) {
 
 	switch(iMsg) {
 
 		// Get the text length
 		case TXM_GETTEXTLENGTH:
-			return (uintptr_t)Utf8StringSize(sText);
+			return (DWORD)Utf8StringSize(sText);
 			break;
 
 		// Set some flags
 		case TXM_SETFLAGS:
-			iFlags = (int)Param1;
+			iFlags = Param1;
 			break;
 
 		// Set the max length
@@ -732,7 +757,7 @@ uintptr_t CTextbox::SendMessage(int iMsg, uintptr_t Param1, uintptr_t Param2) {
 	return 0;
 }
 
-uintptr_t CTextbox::SendMessage(int iMsg, const std::string& sStr, uintptr_t Param)
+DWORD CTextbox::SendMessage(int iMsg, const std::string& sStr, DWORD Param)
 {
 	switch (iMsg)  {
 
@@ -746,7 +771,7 @@ uintptr_t CTextbox::SendMessage(int iMsg, const std::string& sStr, uintptr_t Par
 }
 
 
-uintptr_t CTextbox::SendMessage(int iMsg, std::string *sStr, uintptr_t Param)
+DWORD CTextbox::SendMessage(int iMsg, std::string *sStr, DWORD Param)
 {
 	switch (iMsg)  {
 
@@ -817,7 +842,7 @@ void CTextbox::PasteText()
 	txtlen = txtlen + newtxtlen;
 
     // If the text size is greater than the textbox size, scroll the text
-	while(tLX->cFont.GetWidth(Utf8SubStr(sText, iScrollPos, MAX<int>(0, (int)iCurpos - (int)iScrollPos))) > iWidth-5) {
+	while(tLX->cFont.GetWidth(Utf8SubStr(sText, iScrollPos, MAX<int>(0, iCurpos - iScrollPos))) > iWidth-5) {
 		iScrollPos++;
 	}
 }

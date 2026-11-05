@@ -28,8 +28,6 @@ namespace DeprecatedGUI {
 // Draw the button
 void CButton::Draw(SDL_Surface * bmpDest)
 {
-	if(!bVisible) return;
-	
 	// Don't draw empty image
 	if (!bmpImage.get())
 		return;
@@ -39,7 +37,7 @@ void CButton::Draw(SDL_Surface * bmpDest)
 			Menu_redrawBufferRect(iX,iY, iGoodWidth, 18);
 
 		int y2 = 5+iImageID*40;
-		if(bMouseOver || bSelected)
+		if(bMouseOver)
 			y2+=20;
 
 		DrawImageAdv(bmpDest,bmpImage, 5,y2, iX,iY, iGoodWidth, 18);
@@ -115,7 +113,13 @@ void CButton::Create()
 
 int CButton::KeyDown(UnicodeChar c, int keysym, const ModifiersState& modstate)
 {
-	if (isActivationKey(keysym))
+	if (keysym == SDLK_RETURN ||
+		keysym == SDLK_KP_ENTER ||
+		keysym == SDLK_LALT ||
+		keysym == SDLK_LCTRL ||
+		keysym == SDLK_LSHIFT ||
+		keysym == SDLK_x ||
+		keysym == SDLK_z)
 		return BTN_CLICKED;
 	return BTN_NONE;
 }

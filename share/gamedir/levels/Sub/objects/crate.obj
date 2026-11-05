@@ -1,4 +1,0 @@
-sprite=crate.bmp
-
-on detect_range(8,0,[1,2])
- damage(100)

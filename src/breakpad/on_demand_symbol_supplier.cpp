@@ -27,8 +27,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef NBREAKPAD
-
 #include <map>
 #include <string>
 #include <iostream>
@@ -98,36 +96,6 @@ OnDemandSymbolSupplier::GetSymbolFile(const CodeModule *module,
 	return s;
 }
 
-SymbolSupplier::SymbolResult
-OnDemandSymbolSupplier::GetCStringSymbolData(const CodeModule *module,
-                                             const SystemInfo *system_info,
-                                             string *symbol_file,
-                                             char **symbol_data) {
-	std::string symbol_data_string;
-	SymbolSupplier::SymbolResult result = GetSymbolFile(module,
-														system_info,
-														symbol_file,
-														&symbol_data_string);
-	if (result == FOUND) {
-		*symbol_data = new char[symbol_data_string.size() + 1];
-		if (*symbol_data == NULL) {
-			// Should return INTERRUPT on memory allocation failure.
-			return INTERRUPT;
-		}
-		strcpy(*symbol_data, symbol_data_string.c_str());
-		memory_buffers_.insert(make_pair(module->code_file(), *symbol_data));
-	}
-	return result;
-}
-
-void OnDemandSymbolSupplier::FreeSymbolData(const CodeModule *module) {
-	std::map<std::string, char *>::iterator it = memory_buffers_.find(module->code_file());
-	if (it != memory_buffers_.end()) {
-		delete [] it->second;
-		memory_buffers_.erase(it);
-	}
-}
-
 string OnDemandSymbolSupplier::GetLocalModulePath(const CodeModule *module) {
 	return module->code_file();
 }
@@ -159,13 +127,13 @@ bool OnDemandSymbolSupplier::GenerateSymbolFile(const CodeModule *module,
 	
 	// NOTE: We are using systempaths everywhere here.
 	// DumpSyms expects UTF8, so we have to convert that.
-	result = DumpSyms(SystemNativeToUtf8(module_path), symbol_path, system_info->cpu);
+	result = DumpSyms(SystemNativeToUtf8(module_path), symbol_path);
 
 #ifdef WIN32
 	if(!result)
 		// Strange situation, I don't really understand that.
 		// But seems to work sometimes.
-		result = DumpSyms(module_path, symbol_path, system_info->cpu);
+		result = DumpSyms(module_path, symbol_path);
 #endif
 
 	// Add the mapping
@@ -174,5 +142,3 @@ bool OnDemandSymbolSupplier::GenerateSymbolFile(const CodeModule *module,
 	
 	return result;
 }
-
-#endif

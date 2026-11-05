@@ -16,10 +16,9 @@
 // Karel Petranek
 
 #include <string>
-#include <libxml/tree.h>
 #include <libxml/xmlmemory.h>
+#include <libxml/tree.h> // xmlNodePtr (newer libxml2 has it only there)
 #include "Color.h"
-#include "CodeAttributes.h"
 
 int xmlGetInt(xmlNodePtr node, const std::string& name, int def = 0);
 float xmlGetFloat(xmlNodePtr node, const std::string& name, float def = 0);
@@ -27,7 +26,7 @@ Color xmlGetColour(xmlNodePtr node, const std::string& name, const Color& def = 
 std::string xmlGetString(xmlNodePtr node, const std::string& name, const std::string& def = "");
 bool xmlGetBool(xmlNodePtr node, const std::string& name, bool def = false);
 std::string xmlNodeText(xmlNodePtr node, const std::string& def);
-INLINE bool xmlPropExists(xmlNodePtr node, const std::string& prop) { return xmlGetProp(node, (const xmlChar *)prop.c_str()) != NULL; }
+inline bool xmlPropExists(xmlNodePtr node, const std::string& prop) { return xmlGetProp(node, (const xmlChar *)prop.c_str()) != NULL; }
 std::string xmlGetBaseURL(xmlNodePtr node);
 std::string	xmlEntities(const std::string& text);
 void xmlEntityText(std::string& text);

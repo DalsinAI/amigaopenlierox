@@ -1,7 +1,11 @@
-#!/usr/bin/python3 -u
+#!/usr/bin/python -u
 
 # Dedicated Control handler script for OpenLieroX
 # (http://openlierox.sourceforge.net)
+
+# We're expecting this file to be run from "scripts" dir - that's from rev. 3260 or so
+# TODO: NO, we are not expecting this!
+# It was only done because this script is buggy and does not work otherwise.
 
 import os, sys, time
 
@@ -9,7 +13,7 @@ import os, sys, time
 # on Windows it cannot print errors to console
 # We should start logging as soon as possible, or we won't get errors about invalid config file
 if sys.platform == "win32":
-	sys.stderr = open("dedicated_control_errors.log", "w", buffering=1)
+	sys.stderr = open("dedicated_control_errors.log", "w", 0)
 
 # Add current dir to module search path
 sys.path.append( os.getcwd() )
@@ -32,15 +36,17 @@ __builtins__.cfg = cfg # Make it accessible from all modules
 
 import dedicated_control_handler as hnd # control handler
 
-
 ## The game loop ##
 
 hnd.init()
 
 io.messageLog("Dedicated_control started",io.LOG_INFO)
 
-# main loop
-while hnd.gameState != hnd.GAME_QUIT:
+def MainLoop():
 	hnd.signalHandler(io.getSignal())
+
+
+while hnd.gameState != hnd.GAME_QUIT:
+	MainLoop()
 
 io.messageLog("Dedicated_control stopped",io.LOG_INFO)
