@@ -4,12 +4,15 @@
 #   make -f amiga/Makefile.amigaos -j2 \
 #        STOVE=/path/to/openamigagcc-16.2.0-open4 \
 #        NDK=/path/to/OpenNDK/Include_H SDLKIT=/path/to/opengpu-sdk \
-#        DEPS=/path/to/m68k-amigaos
+#        DEPS=/path/to/m68k-amigaos OXP=/path/to/oxp/build-amiga
 #
 # STOVE is GFOpenAmigaGCC 16.2.0-open4 or later. SDLKIT is the OpenGPU
 # developer kit: libSDL.a is SDL 1.2 (sdl12-compat) with SDL 2's link
-# library inside. DEPS holds the Team's static zlib, libpng and libxml2
-# (amiga/deps/build-m68k-libs.sh builds them).
+# library inside. DEPS holds the Team's static zlib and libpng
+# (amiga/deps/build-m68k-libs.sh builds them). OXP is the Team's own XML
+# and HTML parser (DalsinAI/gfopenxml oxp/build-amiga.sh: include/ and
+# lib/liboxp.a); amiga/libxml_oxp.c gives the game the few libxml2 calls it
+# makes (its chat and news box's HTML) on it, so there is no libxml2.
 #
 # Cut: network play, the server list and HawkNL (amiga/Networking_loopback.cpp
 # keeps local games, which go through 127.0.0.1), libcurl, libzip and libgd
@@ -22,6 +25,7 @@ STOVE   ?= $(HOME)/CradleLab/toolchain/openamigagcc-16.2.0-open4-x86_64-linux
 NDK     ?= $(HOME)/CradleLab/gfopensdk/OpenNDK/Include_H
 SDLKIT  ?= /mnt/amigachrome/team2/deps/opengpu-sdk
 DEPS    ?= /mnt/amigachrome/team2/deps/m68k-amigaos
+OXP     ?= $(HOME)/gfopenxml/oxp/build-amiga
 CC      = $(STOVE)/bin/m68k-amigaos-gcc
 CXX     = $(STOVE)/bin/m68k-amigaos-g++
 STRIP   = $(STOVE)/bin/m68k-amigaos-strip
@@ -30,10 +34,10 @@ CPU     ?= -m68040 -m68881
 # sdl-config gives it for GCC 16 too).
 OPT     ?= -O2 -fomit-frame-pointer -fno-tree-loop-distribute-patterns
 
-DEFS    = -D__amigaos__ -DNBREAKPAD -DNDEBUG -DLIBXML_STATIC \
+DEFS    = -D__amigaos__ -DNBREAKPAD -DNDEBUG \
           '-DSYSTEM_DATA_DIR="PROGDIR:"' -DNO_SDL_GLU
 INC     = -Iamiga/include -Iinclude -I$(SDLKIT)/include/SDL \
-          -I$(DEPS)/include -I$(DEPS)/include/libxml2
+          -I$(DEPS)/include -I$(OXP)/include
 COMMON  = -noixemul $(OPT) $(CPU) $(DEFS) $(INC) -MMD -MP
 CXXFLAGS = $(COMMON) -include amiga/include/amiga_prelude.h -std=gnu++11 -fpermissive -Wno-deprecated-declarations
 CFLAGS   = $(COMMON)
@@ -44,7 +48,7 @@ AMIGAWARN = -Wall -Wextra
 WRAPS   = fopen freopen fclose fdopen open close closedir stat lstat opendir mkdir rmdir remove unlink \
           rename chdir access SDL_RWFromFile SDL_Delay
 LDFLAGS = -noixemul $(CPU) $(foreach w,$(WRAPS),-Wl,--wrap=$(w))
-LIBS    = -L$(SDLKIT)/lib -L$(DEPS)/lib -lSDL -lxml2 -lpng -lz -lpthread -lm
+LIBS    = -L$(SDLKIT)/lib -L$(DEPS)/lib -L$(OXP)/lib -lSDL -loxp -lpng -lz -lpthread -lm
 
 BUILD   = build/amigaos
 OBJDIR  = $(BUILD)/obj
@@ -62,7 +66,8 @@ SRC     = src/main.cpp src/breakpad/ExtractInfo.cpp \
           $(wildcard src/server/*.cpp)
 AMIGA_CXX = amiga/Networking_loopback.cpp amiga/Process_stub.cpp
 AMIGA_C   = amiga/amiga_paths.c amiga/amiga_screens.c amiga/amiga_delay.c amiga/stack.c \
-          amiga/png_rgba.c amiga/gd_png.c amiga/sdl_image_lite.c amiga/sdl_mixer_lite.c
+          amiga/png_rgba.c amiga/gd_png.c amiga/sdl_image_lite.c amiga/sdl_mixer_lite.c \
+          amiga/libxml_oxp.c
 OBJS    = $(SRC:%.cpp=$(OBJDIR)/%.o) $(AMIGA_CXX:%.cpp=$(OBJDIR)/%.o) \
           $(AMIGA_C:%.c=$(OBJDIR)/%.o)
 

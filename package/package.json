@@ -1,0 +1,29 @@
+{
+  "drawer": "OpenLieroX",
+  "drawer_icon": "amiga/icons/OpenLieroX-drawer.info",
+  "archive": "openlierox-{version}-68040",
+  "members": [
+    {
+      "name": "OpenLieroX",
+      "build": "OpenLieroX",
+      "check": "executable_sha256"
+    },
+    {
+      "name": "",
+      "tar": "drawer.tar"
+    }
+  ],
+  "aminet": [
+    ["Short", "OpenLieroX, the worms deathmatch, 68040+FPU"],
+    ["Author", "Jason Boettcher, Albert Zeyer, Karel Petranek and others; Amiga port: AmiCradle Team"],
+    ["Uploader", "AmiCradle Team"],
+    ["Type", "game/shoot"],
+    ["Version", "{version}"],
+    ["Requires", "AmigaOS 3.2, 68040/68060 with FPU, RTG, GFOpenGPU (SDL2.module)"],
+    ["Architecture", "m68k-amigaos >= 3.0"]
+  ],
+  "root": [
+    {"name": "Install-OpenLieroX", "repo": "package/installer/Install-OpenLieroX", "installer": true},
+    {"name": "Install-OpenLieroX.info", "repo": "package/installer/Install-OpenLieroX.info"}
+  ]
+}

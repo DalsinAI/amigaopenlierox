@@ -1,0 +1,13 @@
+{
+  "name": "OpenLieroX",
+  "version": "0.58_rc5-amiga1",
+  "drawer": "OpenLieroX",
+  "program": "OpenLieroX",
+  "cpu": "68040",
+  "fpu": true,
+  "space": 45000000,
+  "modules": ["SDL2.module"],
+  "keep": ["cfg"],
+  "parent": "Work:Games",
+  "badge": "../amiga/icons/art/olx.png"
+}
