@@ -28,7 +28,7 @@ Jason Boettcher's original licence for Liero Xtreme's code (zlib-style):
 
 The program is linked with: SDL 2 and sdl12-compat (zlib licence, the
 OpenGPU developer kit), libpng (libpng licence), zlib (zlib licence),
-libxml2 (MIT), and libnix and libstdc++ from the compiler (public domain
+OXP (MIT, the AmiCradle Team's own XML and HTML parser), and libnix and libstdc++ from the compiler (public domain
 / GPL with the runtime exception).
 
 The data

@@ -26,6 +26,17 @@ What you need
 - About 40 MB of disk.
 
 
+Installing
+----------
+
+Unpack the archive anywhere (on AmiCradle: SYS:Utilities/OpenCompress x
+openlierox-...lha RAM:), then double-click Install-OpenLieroX beside the
+OpenLieroX drawer: it checks for a 68040 with FPU and for SDL2.module (in
+LIBS:GFOpenGPU/, or copied there from LIBS:OpenGPU/), asks where to put the
+game (Work:Games by default) and updates an earlier install in place,
+keeping its cfg drawer (options, profiles, logs).
+
+
 Using it
 --------
 
@@ -49,6 +60,12 @@ Boost, with twice the source files. 0.58_rc5 needs far less: SDL 1.2,
 SDL_image and SDL_mixer (one call each, almost), libxml2, and libcurl,
 libzip, libgd and HawkNL for things that are cut here. It uses no Boost in
 the game (only Boost.Process for the dedicated server's scripts, cut).
+
+libxml2 is not linked. The game uses it only for HTML: the chat and news
+box (CBrowser) and stripping tags from text. amiga/libxml_oxp.c gives it
+those calls on OXP, the Team's own parser (DalsinAI/gfopenxml), whose HTML
+reader (oxp_html.h) reads the markup; the tree is copied into nodes of the
+shape the game walks, so chat lines that scroll away give their memory back.
 
 Our own SDL 1.2 shim, acsdl12, draws in 256 colours only, and OpenLieroX
 draws in 16/32 bits with alpha blending everywhere, so acsdl12 cannot run
@@ -119,7 +136,8 @@ Changes to upstream's files
 - src/common/Debug.cpp: no gdb core dumps. src/client/CrashHandler.cpp: the
   dummy crash handler. src/client/OpenExternBrowser.cpp: no browser.
 - include/StringUtils.h: libnix has its own strlwr(). include/XMLutils.h:
-  newer libxml2 declares xmlNodePtr in libxml/tree.h.
+  newer libxml2 declares xmlNodePtr in libxml/tree.h (amiga/include/libxml
+  has it there too).
 - amiga/include/amiga_prelude.h (included first): sigjmp_buf, sigsetjmp
   and siglongjmp as plain setjmp/longjmp (libnix has no sig* forms).
 
@@ -158,10 +176,13 @@ Building
          STOVE=~/CradleLab/toolchain/openamigagcc-16.2.0-open4-x86_64-linux \
          NDK=~/CradleLab/gfopensdk/OpenNDK/Include_H \
          SDLKIT=/mnt/amigachrome/team2/deps/opengpu-sdk \
-         DEPS=/mnt/amigachrome/team2/deps/m68k-amigaos
+         DEPS=/mnt/amigachrome/team2/deps/m68k-amigaos \
+         OXP=~/gfopenxml/oxp/build-amiga
 
-(those are the defaults). DEPS holds the Team's static zlib, libpng and
-libxml2: amiga/deps/build-m68k-libs.sh builds them (zlib, png, xml2).
+(those are the defaults). DEPS holds the Team's static zlib and libpng:
+amiga/deps/build-m68k-libs.sh builds them (zlib, png). OXP is
+DalsinAI/gfopenxml's oxp/build-amiga.sh output (include/, lib/liboxp.a).
+package/build-amiga.sh does all of it on a Cradle stove.
 The program is build/amigaos/OpenLieroX (OpenLieroX.debug unstripped), the
 drawer dist/OpenLieroX with dist/OpenLieroX.info.
 
