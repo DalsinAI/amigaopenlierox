@@ -491,7 +491,7 @@ public:
 		else if (m_print2)
 			m_print2->print(std::string(szText));
 		else
-			printf(szText);
+			printf("%s", szText);
 			
 		StackWalker::OnOutput(szText);
 	}
