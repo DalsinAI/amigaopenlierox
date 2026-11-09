@@ -105,6 +105,7 @@ package: $(BUILD)/$(PROG) $(ICONS) AMIGA_PORT.md amiga/Licences.txt COPYING.LIB
 	cp $(GAMEDIR)/default.css $(GAMEDIR)/default.png $(OUT)/
 	find $(OUT) -type d | while read d; do python3 amiga/tools/png_rgba.py "$$d"; done
 	cp AMIGA_PORT.md $(OUT)/ReadMe
+	cp amiga/Controls $(OUT)/Controls
 	cp COPYING.LIB $(OUT)/COPYING.LIB
 	cp amiga/Licences.txt $(OUT)/Licences
 	cp amiga/icons/OpenLieroX.info amiga/icons/ReadMe.info \
