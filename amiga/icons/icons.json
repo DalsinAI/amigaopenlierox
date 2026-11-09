@@ -1,10 +1,10 @@
 {
-  "about": "The Workbench icons of the OpenLieroX drawer: python3 /mnt/amigachrome/team2/tools/amicradle/scripts/port_icons.py amiga/icons/icons.json --out amiga/icons. The art is OpenLieroX's own program icon (share/OpenLieroX.64.png, LGPL like the program). OpenLieroX-drawer.info is the drawer's own icon, OpenLieroX.info beside the drawer; it has its own name here so as not to meet the program's OpenLieroX.info. Data.info is the icon of every data subdrawer (the Makefile copies it to each name).",
+  "about": "The Workbench icons of the OpenLieroX drawer: python3 /mnt/amigachrome/team2/tools/amicradle/scripts/port_icons.py amiga/icons/icons.json --out amiga/icons. The art (art/openlierox.svg, drawn as an OS 3.5 GlowIcon: shaped, shaded, see-through round the edges) is The AmiCradle Team's own, under the same terms as the other Amiga files; art/openlierox.png is it rendered at 128 x 128. OpenLieroX-drawer.info is the drawer's own icon, OpenLieroX.info beside the drawer; it has its own name here so as not to meet the program's OpenLieroX.info.",
   "drawer": {
     "name": "OpenLieroX",
     "file": "OpenLieroX-drawer.info"
   },
-  "badge": "art/olx.png",
+  "badge": "art/openlierox.png",
   "icons": [
     {
       "file": "OpenLieroX.info",
@@ -22,11 +22,6 @@
     {
       "file": "Licences.info",
       "kind": "readme"
-    },
-    {
-      "file": "Data.info",
-      "kind": "drawer",
-      "type": "drawer"
     }
   ]
 }

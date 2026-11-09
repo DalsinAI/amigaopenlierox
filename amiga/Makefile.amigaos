@@ -109,7 +109,6 @@ package: $(BUILD)/$(PROG) $(ICONS) AMIGA_PORT.md amiga/Licences.txt COPYING.LIB
 	cp amiga/Licences.txt $(OUT)/Licences
 	cp amiga/icons/OpenLieroX.info amiga/icons/ReadMe.info \
 	   amiga/icons/COPYING.LIB.info amiga/icons/Licences.info $(OUT)/
-	cd $(OUT) && find . -mindepth 1 -type d | while read d; do cp $(CURDIR)/amiga/icons/Data.info "$$d.info"; done
 	cp amiga/icons/OpenLieroX-drawer.info $(DIST)/OpenLieroX.info
 
 $(BUILD)/$(PROG): $(OBJS)
