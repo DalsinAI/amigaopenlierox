@@ -194,8 +194,8 @@ with -m68020 -m68881, because GCC 16 at -m68040 put FPCR in the register
 of a float-to-int store in CClient::ProcessMapDownloads (network map
 downloads, never reached here; -m68020 converts with fintrz).
 
-Icons: amiga/icons/icons.json, from OpenLieroX's own program icon
-(share/OpenLieroX.64.png):
+Icons: amiga/icons/icons.json, from our own GlowIcon art
+(amiga/icons/art/openlierox.svg):
 
     python3 /mnt/amigachrome/team2/tools/amicradle/scripts/port_icons.py \
         amiga/icons/icons.json --out amiga/icons
